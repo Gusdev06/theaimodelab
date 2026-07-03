@@ -1,0 +1,49 @@
+{
+  "auth": {
+    "EMAIL_ALREADY_EXISTS": "Email already registered",
+    "INVALID_CREDENTIALS": "Invalid email or password",
+    "INVALID_TOKEN": "Invalid or expired token",
+    "EMAIL_NOT_VERIFIED": "Please verify your email before signing in",
+    "UNAUTHORIZED": "Unauthorized",
+    "USER_NOT_FOUND": "User not found",
+    "GOOGLE_TOKEN_INVALID": "Invalid or expired Google token"
+  },
+  "credits": {
+    "INSUFFICIENT_CREDITS": "Insufficient credits. Required: {required}, available: {available}",
+    "PACKAGE_NOT_FOUND": "Credit package not found",
+    "INVALID_GENERATION_TYPE": "Invalid generation type"
+  },
+  "subscriptions": {
+    "ALREADY_SUBSCRIBED": "You already have an active subscription. Use upgrade or downgrade instead.",
+    "FREE_NOT_ALLOWED": "Cannot subscribe to the Free plan",
+    "SAME_PLAN": "You're already on this plan.",
+    "NOT_LOWER_PLAN": "The selected plan is not lower than current. Use upgrade.",
+    "NO_ACTIVE_SUBSCRIPTION": "No active subscription found",
+    "NO_STRIPE_LINK": "Subscription not linked to Stripe",
+    "NO_PRICE_ID": "Target plan has no price configured",
+    "ALREADY_CANCELED": "Subscription is already marked for cancellation",
+    "CANNOT_PAUSE_FREE": "Cannot pause the Free plan",
+    "NO_SCHEDULED_DOWNGRADE": "No scheduled downgrade found",
+    "NO_CANCEL_PENDING": "No active subscription with pending cancellation",
+    "PLAN_NOT_FOUND": "Plan not found"
+  },
+  "generations": {
+    "MAX_CONCURRENT_REACHED": "Concurrent generations limit reached",
+    "NSFW_CONTENT_DETECTED": "NSFW content detected in prompt",
+    "PROMPT_TOO_LONG": "Prompt exceeds character limit",
+    "INVALID_FILE_TYPE": "Unsupported file type",
+    "FILE_TOO_LARGE": "File exceeds maximum size",
+    "GENERATION_NOT_FOUND": "Generation not found",
+    "PLAN_UPGRADE_REQUIRED": "This feature is not available on your current plan"
+  },
+  "payments": {
+    "CURRENCY_NOT_SUPPORTED": "Currency not supported",
+    "STRIPE_ERROR": "Payment processing error",
+    "WEBHOOK_INVALID": "Invalid webhook"
+  },
+  "common": {
+    "NOT_FOUND": "Resource not found",
+    "BAD_REQUEST": "Bad request",
+    "INTERNAL_ERROR": "Internal server error"
+  }
+}

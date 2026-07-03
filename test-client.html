@@ -1,0 +1,1038 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The AI Model Lab — Test Client</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: system-ui, sans-serif;
+      background: #0f0f0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+
+    .subtitle {
+      color: #666;
+      font-size: 0.85rem;
+      margin-bottom: 24px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+
+    .tab {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      background: #1e1e1e;
+      color: #888;
+      transition: all 0.15s;
+    }
+
+    .tab:hover {
+      background: #2a2a2a;
+      color: #ccc;
+    }
+
+    .tab.active {
+      background: #7c3aed;
+      color: #fff;
+    }
+
+    .panel {
+      display: none;
+    }
+
+    .panel.active {
+      display: block;
+    }
+
+    .card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+
+    .card h3 {
+      font-size: 0.95rem;
+      color: #ccc;
+      margin-bottom: 14px;
+    }
+
+    .field {
+      margin-bottom: 14px;
+    }
+
+    .field label {
+      display: block;
+      font-size: 0.8rem;
+      color: #888;
+      margin-bottom: 6px;
+    }
+
+    .field input,
+    .field select,
+    .field textarea {
+      width: 100%;
+      padding: 9px 12px;
+      border-radius: 6px;
+      border: 1px solid #333;
+      background: #111;
+      color: #e0e0e0;
+      font-size: 0.9rem;
+      outline: none;
+    }
+
+    .field input:focus,
+    .field select:focus,
+    .field textarea:focus {
+      border-color: #7c3aed;
+    }
+
+    .field textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+
+    select option {
+      background: #1a1a1a;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .row3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+    }
+
+    button.btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.9rem;
+      transition: all 0.15s;
+    }
+
+    button.btn-primary {
+      background: #7c3aed;
+      color: #fff;
+    }
+
+    button.btn-primary:hover {
+      background: #6d28d9;
+    }
+
+    button.btn-primary:disabled {
+      background: #3d1d7a;
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
+    button.btn-secondary {
+      background: #2a2a2a;
+      color: #ccc;
+    }
+
+    button.btn-secondary:hover {
+      background: #333;
+    }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      margin-bottom: 16px;
+    }
+
+    .status-bar.logged-in {
+      background: #0d2a0d;
+      border: 1px solid #1a5c1a;
+      color: #4caf50;
+    }
+
+    .status-bar.logged-out {
+      background: #2a1a0d;
+      border: 1px solid #5c3a1a;
+      color: #ff9800;
+    }
+
+    .result {
+      margin-top: 16px;
+    }
+
+    .result-media {
+      max-width: 100%;
+      border-radius: 8px;
+      display: block;
+      margin-top: 10px;
+    }
+
+    video.result-media {
+      width: 100%;
+    }
+
+    .log {
+      background: #111;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      padding: 12px;
+      font-size: 0.8rem;
+      font-family: monospace;
+      max-height: 200px;
+      overflow-y: auto;
+      color: #888;
+    }
+
+    .log .entry {
+      margin-bottom: 4px;
+    }
+
+    .log .entry.ok {
+      color: #4caf50;
+    }
+
+    .log .entry.err {
+      color: #f44336;
+    }
+
+    .log .entry.info {
+      color: #2196f3;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+    }
+
+    .badge-processing {
+      background: #1a3a5c;
+      color: #64b5f6;
+    }
+
+    .badge-completed {
+      background: #0d2a0d;
+      color: #4caf50;
+    }
+
+    .badge-failed {
+      background: #2a0d0d;
+      color: #f44336;
+    }
+
+    .history-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 12px 0;
+      border-bottom: 1px solid #222;
+    }
+
+    .history-item:last-child {
+      border-bottom: none;
+    }
+
+    .history-thumb {
+      width: 80px;
+      height: 60px;
+      object-fit: cover;
+      border-radius: 6px;
+      background: #222;
+    }
+
+    .history-info {
+      flex: 1;
+    }
+
+    .history-info .type {
+      font-size: 0.75rem;
+      color: #888;
+    }
+
+    .history-info .id {
+      font-size: 0.7rem;
+      color: #555;
+      font-family: monospace;
+      margin-top: 2px;
+    }
+
+    .file-label {
+      display: block;
+      padding: 30px;
+      border: 2px dashed #333;
+      border-radius: 6px;
+      text-align: center;
+      cursor: pointer;
+      color: #666;
+      font-size: 0.85rem;
+      transition: all 0.15s;
+    }
+
+    .file-label:hover {
+      border-color: #7c3aed;
+      color: #aaa;
+    }
+
+    .file-label.has-file {
+      border-color: #4caf50;
+      color: #4caf50;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid #555;
+      border-top-color: #7c3aed;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .api-url-field {
+      display: flex;
+      gap: 8px;
+    }
+
+    .api-url-field input {
+      flex: 1;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>The AI Model Lab — Test Client</h1>
+    <p class="subtitle">Interface de teste para a API</p>
+
+    <div id="statusBar" class="status-bar logged-out">
+      <span id="statusText">Nao autenticado</span>
+      <button class="btn btn-secondary" style="margin-left:auto;padding:4px 10px;font-size:0.8rem"
+        onclick="logout()">Sair</button>
+    </div>
+
+    <div style="margin-bottom:16px">
+      <div class="field api-url-field">
+        <input id="apiBase" type="text" value="https://clip-generator-theaimodelab-api.ernvcw.easypanel.host"
+          placeholder="Base URL da API" />
+        <button class="btn btn-secondary" onclick="saveBase()">Salvar</button>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" onclick="showTab('auth')">Auth</button>
+      <button class="tab" onclick="showTab('image')">Gerar Imagem</button>
+      <button class="tab" onclick="showTab('t2v')">Text → Video</button>
+      <button class="tab" onclick="showTab('i2v')">Image → Video</button>
+      <button class="tab" onclick="showTab('refs')">Video c/ Referencias</button>
+      <button class="tab" onclick="showTab('history')">Historico</button>
+    </div>
+
+    <!-- AUTH -->
+    <div id="panel-auth" class="panel active">
+      <div class="card">
+        <h3>Login</h3>
+        <div class="field"><label>Email</label><input id="loginEmail" type="email" value="" /></div>
+        <div class="field"><label>Senha</label><input id="loginPass" type="password" value="" /></div>
+        <button class="btn btn-primary" onclick="login()">Entrar</button>
+      </div>
+      <div class="card">
+        <h3>Registrar</h3>
+        <div class="field"><label>Nome</label><input id="regName" type="text" /></div>
+        <div class="field"><label>Email</label><input id="regEmail" type="email" /></div>
+        <div class="field"><label>Senha</label><input id="regPass" type="password" /></div>
+        <button class="btn btn-primary" onclick="register()">Criar conta</button>
+      </div>
+      <div class="log" id="authLog">
+        <div class="entry info">Aguardando acao...</div>
+      </div>
+    </div>
+
+    <!-- GENERATE IMAGE -->
+    <div id="panel-image" class="panel">
+      <div class="card">
+        <h3>Gerar Imagem (text-to-image / image-to-image)</h3>
+        <div class="field">
+          <label>Prompt</label>
+          <textarea id="imgPrompt">A futuristic cityscape at sunset, cyberpunk style</textarea>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>Modelo</label>
+            <select id="imgModel">
+              <option value="gemini-3-pro-image-preview">gemini-3-pro-image-preview</option>
+              <option value="gemini-3.1-flash-image-preview">gemini-3.1-flash-image-preview</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Resolucao</label>
+            <select id="imgRes">
+              <option value="RES_1K">1k</option>
+              <option value="RES_2K" selected>2k</option>
+              <option value="RES_4K">4k</option>
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>Aspect Ratio</label>
+            <select id="imgAspect">
+              <option value="">Padrao</option>
+              <option value="1:1">1:1</option>
+              <option value="16:9" selected>16:9</option>
+              <option value="9:16">9:16</option>
+              <option value="4:3">4:3</option>
+              <option value="3:4">3:4</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Mime Type saida</label>
+            <select id="imgMime">
+              <option value="image/png">image/png</option>
+              <option value="image/jpeg">image/jpeg</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label>Imagem de input (opcional — para image-to-image)</label>
+          <label class="file-label" id="imgFileLabel" for="imgFile">Clique para selecionar imagem (PNG/JPG)</label>
+          <input type="file" id="imgFile" accept="image/png,image/jpeg" style="display:none"
+            onchange="previewImgFile(this)" />
+        </div>
+        <button class="btn btn-primary" id="imgBtn" onclick="generateImage()">Gerar Imagem</button>
+      </div>
+      <div id="imgResult" class="result"></div>
+      <div class="log" id="imgLog"></div>
+    </div>
+
+    <!-- TEXT TO VIDEO -->
+    <div id="panel-t2v" class="panel">
+      <div class="card">
+        <h3>Text → Video</h3>
+        <div class="field">
+          <label>Prompt</label>
+          <textarea
+            id="t2vPrompt">A cinematic aerial shot of a coastal city at sunset, smooth camera movement</textarea>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>Modelo</label>
+            <select id="t2vModel">
+              <option value="veo-3.1-generate-001">veo-3.1-generate-001</option>
+              <option value="veo-3.1-fast-generate-001">veo-3.1-fast-generate-001</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Resolucao</label>
+            <select id="t2vRes">
+              <option value="RES_1080P" selected>1080p</option>
+              <option value="RES_4K">4k</option>
+              <option value="RES_720P">720p</option>
+            </select>
+          </div>
+        </div>
+        <div class="row3">
+          <div class="field">
+            <label>Duracao (seg)</label>
+            <input id="t2vDur" type="number" value="8" min="1" max="30" />
+          </div>
+          <div class="field">
+            <label>Aspect Ratio</label>
+            <select id="t2vAspect">
+              <option value="16:9" selected>16:9</option>
+              <option value="9:16">9:16</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Audio</label>
+            <select id="t2vAudio">
+              <option value="true" selected>Sim</option>
+              <option value="false">Nao</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label>Negative Prompt (opcional)</label>
+          <input id="t2vNeg" type="text" placeholder="blurry, low quality" />
+        </div>
+        <button class="btn btn-primary" id="t2vBtn" onclick="textToVideo()">Gerar Video</button>
+      </div>
+      <div id="t2vResult" class="result"></div>
+      <div class="log" id="t2vLog"></div>
+    </div>
+
+    <!-- IMAGE TO VIDEO -->
+    <div id="panel-i2v" class="panel">
+      <div class="card">
+        <h3>Image → Video</h3>
+        <div class="field">
+          <label>Prompt</label>
+          <textarea id="i2vPrompt">Animate this scene with smooth cinematic movement</textarea>
+        </div>
+        <div class="field">
+          <label>Primeiro frame (obrigatorio)</label>
+          <label class="file-label" id="i2vFirstLabel" for="i2vFirstFile">Clique para selecionar imagem</label>
+          <input type="file" id="i2vFirstFile" accept="image/png,image/jpeg" style="display:none"
+            onchange="previewFileLabel(this,'i2vFirstLabel')" />
+        </div>
+        <div class="field">
+          <label>Ultimo frame (opcional)</label>
+          <label class="file-label" id="i2vLastLabel" for="i2vLastFile">Clique para selecionar imagem</label>
+          <input type="file" id="i2vLastFile" accept="image/png,image/jpeg" style="display:none"
+            onchange="previewFileLabel(this,'i2vLastLabel')" />
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>Modelo</label>
+            <select id="i2vModel">
+              <option value="veo-3.1-generate-001">veo-3.1-generate-001</option>
+              <option value="veo-3.1-fast-generate-001">veo-3.1-fast-generate-001</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Resolucao</label>
+            <select id="i2vRes">
+              <option value="RES_1080P" selected>1080p</option>
+              <option value="RES_4K">4k</option>
+            </select>
+          </div>
+        </div>
+        <div class="row3">
+          <div class="field">
+            <label>Duracao (seg)</label>
+            <input id="i2vDur" type="number" value="8" min="1" max="30" />
+          </div>
+          <div class="field">
+            <label>Aspect Ratio</label>
+            <select id="i2vAspect">
+              <option value="16:9" selected>16:9</option>
+              <option value="9:16">9:16</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Audio</label>
+            <select id="i2vAudio">
+              <option value="true" selected>Sim</option>
+              <option value="false">Nao</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary" id="i2vBtn" onclick="imageToVideo()">Gerar Video</button>
+      </div>
+      <div id="i2vResult" class="result"></div>
+      <div class="log" id="i2vLog"></div>
+    </div>
+
+    <!-- VIDEO WITH REFERENCES -->
+    <div id="panel-refs" class="panel">
+      <div class="card">
+        <h3>Video com Imagens de Referencia</h3>
+        <div class="field">
+          <label>Prompt</label>
+          <textarea id="refsPrompt">A person walking through a futuristic city</textarea>
+        </div>
+        <div class="field">
+          <label>Imagens de referencia (ate 3, tipo "asset" ou "style")</label>
+          <div id="refImagesContainer">
+            <div class="ref-image-row" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+              <label class="file-label" style="flex:1;padding:12px" for="refFile0">Selecionar imagem</label>
+              <input type="file" id="refFile0" accept="image/png,image/jpeg" style="display:none"
+                onchange="previewFileLabel(this,'refFile0Label')" />
+              <select id="refType0"
+                style="padding:9px;border-radius:6px;border:1px solid #333;background:#111;color:#e0e0e0">
+                <option value="asset">asset</option>
+                <option value="style">style</option>
+              </select>
+            </div>
+          </div>
+          <button class="btn btn-secondary" style="margin-top:4px;font-size:0.8rem;padding:6px 12px"
+            onclick="addRefImage()">+ Adicionar imagem</button>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>Modelo</label>
+            <select id="refsModel">
+              <option value="veo-3.1-generate-001">veo-3.1-generate-001</option>
+              <option value="veo-3.1-fast-generate-001">veo-3.1-fast-generate-001</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Resolucao</label>
+            <select id="refsRes">
+              <option value="RES_1080P" selected>1080p</option>
+              <option value="RES_4K">4k</option>
+            </select>
+          </div>
+        </div>
+        <div class="row3">
+          <div class="field">
+            <label>Duracao (seg)</label>
+            <input id="refsDur" type="number" value="8" min="1" max="30" />
+          </div>
+          <div class="field">
+            <label>Aspect Ratio</label>
+            <select id="refsAspect">
+              <option value="16:9" selected>16:9</option>
+              <option value="9:16">9:16</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Audio</label>
+            <select id="refsAudio">
+              <option value="true" selected>Sim</option>
+              <option value="false">Nao</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary" id="refsBtn" onclick="videoWithRefs()">Gerar Video</button>
+      </div>
+      <div id="refsResult" class="result"></div>
+      <div class="log" id="refsLog"></div>
+    </div>
+
+    <!-- HISTORY -->
+    <div id="panel-history" class="panel">
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+          <h3 style="margin:0">Historico de Geracoes</h3>
+          <button class="btn btn-secondary" style="padding:6px 12px;font-size:0.8rem;margin-left:auto"
+            onclick="loadHistory()">Atualizar</button>
+        </div>
+        <div id="historyList">
+          <p style="color:#555;font-size:0.85rem">Clique em "Atualizar" para carregar</p>
+        </div>
+      </div>
+      <div class="log" id="histLog"></div>
+    </div>
+  </div>
+
+  <script>
+    // ── State ───────────────────────────────────────────────
+    let token = localStorage.getItem('theaimodelab_token') || '';
+    let userEmail = localStorage.getItem('theaimodelab_email') || '';
+    let apiBase = localStorage.getItem('theaimodelab_base') || 'https://clip-generator-theaimodelab-api.ernvcw.easypanel.host';
+    let refImageCount = 1;
+
+    document.getElementById('apiBase').value = apiBase;
+    updateStatus();
+
+    // ── Helpers ─────────────────────────────────────────────
+    function saveBase() {
+      apiBase = document.getElementById('apiBase').value.replace(/\/$/, '');
+      localStorage.setItem('theaimodelab_base', apiBase);
+      addLog('authLog', 'info', 'Base URL salva: ' + apiBase);
+    }
+
+    function api(path) { return apiBase + path; }
+
+    function headers(extra = {}) {
+      return { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...extra };
+    }
+
+    async function req(method, path, body, logId) {
+      try {
+        const opts = { method, headers: headers() };
+        if (body) opts.body = JSON.stringify(body);
+        const res = await fetch(api(path), opts);
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json?.message || json?.error || res.statusText);
+        return json;
+      } catch (e) {
+        addLog(logId, 'err', 'Erro: ' + e.message);
+        throw e;
+      }
+    }
+
+    function addLog(id, type, msg) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const d = document.createElement('div');
+      d.className = 'entry ' + type;
+      d.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+      el.appendChild(d);
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function setLoading(btnId, loading) {
+      const btn = document.getElementById(btnId);
+      if (!btn) return;
+      btn.disabled = loading;
+      btn.innerHTML = loading ? '<span class="spinner"></span> Aguarde...' : btn.dataset.label || btn.textContent;
+      if (!btn.dataset.label) btn.dataset.label = btn.textContent;
+    }
+
+    function updateStatus() {
+      const bar = document.getElementById('statusBar');
+      const txt = document.getElementById('statusText');
+      if (token) {
+        bar.className = 'status-bar logged-in';
+        txt.textContent = 'Autenticado como: ' + (userEmail || 'usuario');
+      } else {
+        bar.className = 'status-bar logged-out';
+        txt.textContent = 'Nao autenticado';
+      }
+    }
+
+    function showTab(name) {
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.getElementById('panel-' + name).classList.add('active');
+      event.target.classList.add('active');
+    }
+
+    function logout() {
+      token = '';
+      userEmail = '';
+      localStorage.removeItem('theaimodelab_token');
+      localStorage.removeItem('theaimodelab_email');
+      updateStatus();
+      addLog('authLog', 'info', 'Deslogado.');
+    }
+
+    // ── File → base64 ────────────────────────────────────────
+    function fileToBase64(file) {
+      return new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result.split(',')[1]);
+        r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+    }
+
+    function previewFileLabel(input, labelId) {
+      const label = document.getElementById(labelId) || input.previousElementSibling;
+      if (input.files[0]) {
+        const name = input.files[0].name;
+        label.textContent = '✓ ' + name;
+        label.classList.add('has-file');
+      }
+    }
+
+    function previewImgFile(input) {
+      const label = document.getElementById('imgFileLabel');
+      if (input.files[0]) {
+        label.textContent = '✓ ' + input.files[0].name;
+        label.classList.add('has-file');
+      }
+    }
+
+    // ── Polling ─────────────────────────────────────────────
+    function pollGeneration(id, logId, resultId, onComplete) {
+      addLog(logId, 'info', 'Polling geração ' + id + '...');
+      const interval = setInterval(async () => {
+        try {
+          const data = await req('GET', '/api/v1/generations/' + id, null, logId);
+          const status = data.status;
+          addLog(logId, 'info', 'Status: ' + status);
+          if (status === 'completed') {
+            clearInterval(interval);
+            addLog(logId, 'ok', 'Concluido! Creditos consumidos: ' + data.credits_consumed);
+            onComplete(data);
+          } else if (status === 'failed') {
+            clearInterval(interval);
+            addLog(logId, 'err', 'Falhou: ' + (data.error_message || 'erro desconhecido'));
+          }
+        } catch (e) {
+          clearInterval(interval);
+        }
+      }, 3000);
+    }
+
+    function renderResult(containerId, data) {
+      const el = document.getElementById(containerId);
+      const url = data.output_url;
+      if (!url) { el.innerHTML = '<p style="color:#888;font-size:0.85rem">Sem URL de output</p>'; return; }
+
+      const isVideo = url.match(/\.(mp4|webm|mov)/i) || data.type?.includes('video');
+      if (isVideo) {
+        el.innerHTML = `<video class="result-media" controls src="${url}"></video><p style="font-size:0.75rem;color:#555;margin-top:6px">${url}</p>`;
+      } else {
+        el.innerHTML = `<img class="result-media" src="${url}" alt="resultado" /><p style="font-size:0.75rem;color:#555;margin-top:6px">${url}</p>`;
+      }
+    }
+
+    // ── Auth ─────────────────────────────────────────────────
+    async function login() {
+      const email = document.getElementById('loginEmail').value;
+      const pass = document.getElementById('loginPass').value;
+      addLog('authLog', 'info', 'Fazendo login...');
+      try {
+        const data = await req('POST', '/api/v1/auth/login', { email, password: pass }, 'authLog');
+        token = data.accessToken;
+        userEmail = email;
+        localStorage.setItem('theaimodelab_token', token);
+        localStorage.setItem('theaimodelab_email', email);
+        updateStatus();
+        addLog('authLog', 'ok', 'Login OK! Token obtido.');
+      } catch (_) { }
+    }
+
+    async function register() {
+      const name = document.getElementById('regName').value;
+      const email = document.getElementById('regEmail').value;
+      const pass = document.getElementById('regPass').value;
+      addLog('authLog', 'info', 'Registrando...');
+      try {
+        const data = await req('POST', '/api/v1/auth/register', { name, email, password: pass }, 'authLog');
+        token = data.accessToken;
+        userEmail = email;
+        localStorage.setItem('theaimodelab_token', token);
+        localStorage.setItem('theaimodelab_email', email);
+        updateStatus();
+        addLog('authLog', 'ok', 'Registro OK! Logado automaticamente.');
+      } catch (_) { }
+    }
+
+    // ── Generate Image ────────────────────────────────────────
+    async function generateImage() {
+      if (!token) { alert('Faca login primeiro!'); return; }
+      setLoading('imgBtn', true);
+      document.getElementById('imgResult').innerHTML = '';
+      document.getElementById('imgLog').innerHTML = '';
+
+      const body = {
+        prompt: document.getElementById('imgPrompt').value,
+        model: document.getElementById('imgModel').value,
+        resolution: document.getElementById('imgRes').value,
+      };
+      const aspect = document.getElementById('imgAspect').value;
+      if (aspect) body.aspect_ratio = aspect;
+      body.mime_type = document.getElementById('imgMime').value;
+
+      const fileInput = document.getElementById('imgFile');
+      if (fileInput.files[0]) {
+        const b64 = await fileToBase64(fileInput.files[0]);
+        const mime = fileInput.files[0].type;
+        body.images = [{ base64: b64, mime_type: mime }];
+      }
+
+      addLog('imgLog', 'info', 'Enviando requisicao...');
+      try {
+        const data = await req('POST', '/api/v1/generations/generate-image', body, 'imgLog');
+        addLog('imgLog', 'ok', 'Criado! ID: ' + data.id + ' | Creditos: ' + data.credits_consumed);
+        setLoading('imgBtn', false);
+        pollGeneration(data.id, 'imgLog', 'imgResult', (d) => renderResult('imgResult', d));
+      } catch (_) {
+        setLoading('imgBtn', false);
+      }
+    }
+
+    // ── Text to Video ────────────────────────────────────────
+    async function textToVideo() {
+      if (!token) { alert('Faca login primeiro!'); return; }
+      setLoading('t2vBtn', true);
+      document.getElementById('t2vResult').innerHTML = '';
+      document.getElementById('t2vLog').innerHTML = '';
+
+      const body = {
+        prompt: document.getElementById('t2vPrompt').value,
+        model: document.getElementById('t2vModel').value,
+        resolution: document.getElementById('t2vRes').value,
+        duration_seconds: parseInt(document.getElementById('t2vDur').value),
+        aspect_ratio: document.getElementById('t2vAspect').value,
+        generate_audio: document.getElementById('t2vAudio').value === 'true',
+      };
+      const neg = document.getElementById('t2vNeg').value;
+      if (neg) body.negative_prompt = neg;
+
+      addLog('t2vLog', 'info', 'Enviando requisicao...');
+      try {
+        const data = await req('POST', '/api/v1/generations/text-to-video', body, 't2vLog');
+        addLog('t2vLog', 'ok', 'Criado! ID: ' + data.id + ' | Creditos: ' + data.credits_consumed);
+        setLoading('t2vBtn', false);
+        pollGeneration(data.id, 't2vLog', 't2vResult', (d) => renderResult('t2vResult', d));
+      } catch (_) {
+        setLoading('t2vBtn', false);
+      }
+    }
+
+    // ── Image to Video ────────────────────────────────────────
+    async function imageToVideo() {
+      if (!token) { alert('Faca login primeiro!'); return; }
+      const firstFile = document.getElementById('i2vFirstFile').files[0];
+      if (!firstFile) { alert('Selecione o primeiro frame!'); return; }
+
+      setLoading('i2vBtn', true);
+      document.getElementById('i2vResult').innerHTML = '';
+      document.getElementById('i2vLog').innerHTML = '';
+
+      const firstB64 = await fileToBase64(firstFile);
+      const body = {
+        prompt: document.getElementById('i2vPrompt').value,
+        model: document.getElementById('i2vModel').value,
+        resolution: document.getElementById('i2vRes').value,
+        duration_seconds: parseInt(document.getElementById('i2vDur').value),
+        aspect_ratio: document.getElementById('i2vAspect').value,
+        generate_audio: document.getElementById('i2vAudio').value === 'true',
+        first_frame: firstB64,
+        first_frame_mime_type: firstFile.type,
+      };
+
+      const lastFile = document.getElementById('i2vLastFile').files[0];
+      if (lastFile) {
+        body.last_frame = await fileToBase64(lastFile);
+        body.last_frame_mime_type = lastFile.type;
+      }
+
+      addLog('i2vLog', 'info', 'Enviando requisicao...');
+      try {
+        const data = await req('POST', '/api/v1/generations/image-to-video', body, 'i2vLog');
+        addLog('i2vLog', 'ok', 'Criado! ID: ' + data.id + ' | Creditos: ' + data.credits_consumed);
+        setLoading('i2vBtn', false);
+        pollGeneration(data.id, 'i2vLog', 'i2vResult', (d) => renderResult('i2vResult', d));
+      } catch (_) {
+        setLoading('i2vBtn', false);
+      }
+    }
+
+    // ── Video with References ─────────────────────────────────
+    function addRefImage() {
+      if (refImageCount >= 3) { alert('Maximo de 3 imagens de referencia'); return; }
+      const i = refImageCount;
+      const c = document.getElementById('refImagesContainer');
+      const row = document.createElement('div');
+      row.className = 'ref-image-row';
+      row.style = 'display:flex;gap:8px;align-items:center;margin-bottom:8px';
+      row.innerHTML = `
+    <label class="file-label" style="flex:1;padding:12px" id="refFile${i}Label" for="refFile${i}">Selecionar imagem</label>
+    <input type="file" id="refFile${i}" accept="image/png,image/jpeg" style="display:none"
+      onchange="previewFileLabel(this,'refFile${i}Label')" />
+    <select id="refType${i}" style="padding:9px;border-radius:6px;border:1px solid #333;background:#111;color:#e0e0e0">
+      <option value="asset">asset</option>
+      <option value="style">style</option>
+    </select>
+    <button class="btn btn-secondary" style="padding:6px 10px;font-size:0.8rem" onclick="this.parentElement.remove()">✕</button>
+  `;
+      c.appendChild(row);
+      // wire the file input click
+      const lbl = document.getElementById('refFile' + i + 'Label');
+      const inp = document.getElementById('refFile' + i);
+      lbl.addEventListener('click', () => inp.click());
+      refImageCount++;
+    }
+
+    // wire initial ref image label
+    document.querySelector('#refFile0').addEventListener('change', function () {
+      const lbl = this.previousElementSibling;
+      if (this.files[0]) { lbl.textContent = '✓ ' + this.files[0].name; lbl.classList.add('has-file'); }
+    });
+    document.querySelector('label[for="refFile0"]').addEventListener('click', () => {
+      document.getElementById('refFile0').click();
+    });
+
+    async function videoWithRefs() {
+      if (!token) { alert('Faca login primeiro!'); return; }
+      setLoading('refsBtn', true);
+      document.getElementById('refsResult').innerHTML = '';
+      document.getElementById('refsLog').innerHTML = '';
+
+      const refImages = [];
+      const rows = document.querySelectorAll('.ref-image-row');
+      for (let row of rows) {
+        const fileInput = row.querySelector('input[type=file]');
+        const typeSelect = row.querySelector('select');
+        if (fileInput.files[0]) {
+          const b64 = await fileToBase64(fileInput.files[0]);
+          refImages.push({ base64: b64, mime_type: fileInput.files[0].type, reference_type: typeSelect.value });
+        }
+      }
+
+      const body = {
+        prompt: document.getElementById('refsPrompt').value,
+        model: document.getElementById('refsModel').value,
+        resolution: document.getElementById('refsRes').value,
+        duration_seconds: parseInt(document.getElementById('refsDur').value),
+        aspect_ratio: document.getElementById('refsAspect').value,
+        generate_audio: document.getElementById('refsAudio').value === 'true',
+      };
+      if (refImages.length) body.reference_images = refImages;
+
+      addLog('refsLog', 'info', 'Enviando requisicao com ' + refImages.length + ' imagem(ns) de ref...');
+      try {
+        const data = await req('POST', '/api/v1/generations/video-with-references', body, 'refsLog');
+        addLog('refsLog', 'ok', 'Criado! ID: ' + data.id + ' | Creditos: ' + data.credits_consumed);
+        setLoading('refsBtn', false);
+        pollGeneration(data.id, 'refsLog', 'refsResult', (d) => renderResult('refsResult', d));
+      } catch (_) {
+        setLoading('refsBtn', false);
+      }
+    }
+
+    // ── History ──────────────────────────────────────────────
+    async function loadHistory() {
+      if (!token) { alert('Faca login primeiro!'); return; }
+      addLog('histLog', 'info', 'Carregando historico...');
+      try {
+        const data = await req('GET', '/api/v1/generations?limit=20', null, 'histLog');
+        const list = document.getElementById('historyList');
+        const items = data.data || data.items || [];
+        if (!items.length) { list.innerHTML = '<p style="color:#555;font-size:0.85rem">Nenhuma geracao encontrada</p>'; return; }
+
+        list.innerHTML = items.map(g => {
+          const thumb = g.thumbnail_url || g.output_url;
+          const isVideo = g.type?.includes('video');
+          const statusClass = 'badge-' + g.status;
+          return `<div class="history-item">
+        ${thumb ? `<${isVideo ? 'video' : 'img'} class="history-thumb" src="${thumb}" ${isVideo ? 'muted' : ''} />` : '<div class="history-thumb" style="background:#222;border-radius:6px"></div>'}
+        <div class="history-info">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="badge ${statusClass}">${g.status}</span>
+            <span style="font-size:0.8rem;color:#aaa">${g.type}</span>
+            <span style="font-size:0.75rem;color:#666;margin-left:auto">${g.credits_consumed} cred</span>
+          </div>
+          <div class="id">${g.id}</div>
+          ${g.prompt ? `<div style="font-size:0.8rem;color:#777;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:400px">${g.prompt}</div>` : ''}
+          ${g.output_url ? `<a href="${g.output_url}" target="_blank" style="font-size:0.75rem;color:#7c3aed;text-decoration:none">Ver resultado</a>` : ''}
+        </div>
+      </div>`;
+        }).join('');
+        addLog('histLog', 'ok', items.length + ' geracoes carregadas');
+      } catch (_) { }
+    }
+  </script>
+</body>
+
+</html>

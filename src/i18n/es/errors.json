@@ -1,0 +1,49 @@
+{
+  "auth": {
+    "EMAIL_ALREADY_EXISTS": "Correo electrónico ya registrado",
+    "INVALID_CREDENTIALS": "Correo o contraseña inválidos",
+    "INVALID_TOKEN": "Token inválido o expirado",
+    "EMAIL_NOT_VERIFIED": "Confirma tu correo antes de iniciar sesión",
+    "UNAUTHORIZED": "No autorizado",
+    "USER_NOT_FOUND": "Usuario no encontrado",
+    "GOOGLE_TOKEN_INVALID": "Token de Google inválido o expirado"
+  },
+  "credits": {
+    "INSUFFICIENT_CREDITS": "Créditos insuficientes. Necesarios: {required}, disponibles: {available}",
+    "PACKAGE_NOT_FOUND": "Paquete de créditos no encontrado",
+    "INVALID_GENERATION_TYPE": "Tipo de generación inválido"
+  },
+  "subscriptions": {
+    "ALREADY_SUBSCRIBED": "El usuario ya tiene una suscripción activa. Usa upgrade o downgrade.",
+    "FREE_NOT_ALLOWED": "No es posible crear una suscripción para el plan Free",
+    "SAME_PLAN": "Ya estás en este plan.",
+    "NOT_LOWER_PLAN": "El plan seleccionado no es inferior al actual. Usa upgrade.",
+    "NO_ACTIVE_SUBSCRIPTION": "No se encontró una suscripción activa",
+    "NO_STRIPE_LINK": "Suscripción sin vínculo con Stripe",
+    "NO_PRICE_ID": "Plan de destino sin precio configurado",
+    "ALREADY_CANCELED": "La suscripción ya está marcada para cancelación",
+    "CANNOT_PAUSE_FREE": "No es posible pausar el plan Free",
+    "NO_SCHEDULED_DOWNGRADE": "No se encontró un downgrade programado",
+    "NO_CANCEL_PENDING": "No se encontró una suscripción activa con cancelación pendiente",
+    "PLAN_NOT_FOUND": "Plan no encontrado"
+  },
+  "generations": {
+    "MAX_CONCURRENT_REACHED": "Límite de generaciones simultáneas alcanzado",
+    "NSFW_CONTENT_DETECTED": "Contenido NSFW detectado en el prompt",
+    "PROMPT_TOO_LONG": "El prompt excede el límite de caracteres",
+    "INVALID_FILE_TYPE": "Tipo de archivo no compatible",
+    "FILE_TOO_LARGE": "El archivo excede el tamaño máximo",
+    "GENERATION_NOT_FOUND": "Generación no encontrada",
+    "PLAN_UPGRADE_REQUIRED": "Esta funcionalidad no está disponible en tu plan"
+  },
+  "payments": {
+    "CURRENCY_NOT_SUPPORTED": "Moneda no soportada",
+    "STRIPE_ERROR": "Error al procesar el pago",
+    "WEBHOOK_INVALID": "Webhook inválido"
+  },
+  "common": {
+    "NOT_FOUND": "Recurso no encontrado",
+    "BAD_REQUEST": "Solicitud inválida",
+    "INTERNAL_ERROR": "Error interno del servidor"
+  }
+}

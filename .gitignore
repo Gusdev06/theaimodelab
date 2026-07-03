@@ -1,0 +1,14 @@
+node_modules
+# Keep environment variables out of version control
+.env
+
+/generated/prisma
+/dist
+/build
+theaimodelab-90549-firebase-adminsdk-fbsvc-8a5fa1eed4.json
+scripts/stripe-v5-production.env
+scripts/stripe-v5-output-live.json
+scripts/stripe-v5-output.json
+scripts/output/
+CLAUDE.md
+TODO.md

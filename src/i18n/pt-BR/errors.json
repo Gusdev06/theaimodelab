@@ -1,0 +1,49 @@
+{
+  "auth": {
+    "EMAIL_ALREADY_EXISTS": "Email já cadastrado",
+    "INVALID_CREDENTIALS": "Email ou senha inválidos",
+    "INVALID_TOKEN": "Token inválido ou expirado",
+    "EMAIL_NOT_VERIFIED": "Confirme seu email antes de fazer login",
+    "UNAUTHORIZED": "Não autorizado",
+    "USER_NOT_FOUND": "Usuário não encontrado",
+    "GOOGLE_TOKEN_INVALID": "Token Google inválido ou expirado"
+  },
+  "credits": {
+    "INSUFFICIENT_CREDITS": "Créditos insuficientes. Necessário: {required}, disponível: {available}",
+    "PACKAGE_NOT_FOUND": "Pacote de créditos não encontrado",
+    "INVALID_GENERATION_TYPE": "Tipo de geração inválido"
+  },
+  "subscriptions": {
+    "ALREADY_SUBSCRIBED": "Usuário já possui uma assinatura ativa. Use upgrade ou downgrade.",
+    "FREE_NOT_ALLOWED": "Não é possível criar assinatura para o plano Free",
+    "SAME_PLAN": "Você já está neste plano.",
+    "NOT_LOWER_PLAN": "O plano selecionado não é inferior ao atual. Use upgrade.",
+    "NO_ACTIVE_SUBSCRIPTION": "Nenhuma assinatura ativa encontrada",
+    "NO_STRIPE_LINK": "Assinatura sem vínculo com Stripe",
+    "NO_PRICE_ID": "Plano de destino sem preço configurado",
+    "ALREADY_CANCELED": "Assinatura já está marcada para cancelamento",
+    "CANNOT_PAUSE_FREE": "Não é possível pausar o plano Free",
+    "NO_SCHEDULED_DOWNGRADE": "Nenhum downgrade agendado encontrado",
+    "NO_CANCEL_PENDING": "Nenhuma assinatura ativa com cancelamento pendente encontrada",
+    "PLAN_NOT_FOUND": "Plano não encontrado"
+  },
+  "generations": {
+    "MAX_CONCURRENT_REACHED": "Limite de gerações simultâneas atingido",
+    "NSFW_CONTENT_DETECTED": "Conteúdo NSFW detectado no prompt",
+    "PROMPT_TOO_LONG": "Prompt excede o limite de caracteres",
+    "INVALID_FILE_TYPE": "Tipo de arquivo não suportado",
+    "FILE_TOO_LARGE": "Arquivo excede o tamanho máximo",
+    "GENERATION_NOT_FOUND": "Geração não encontrada",
+    "PLAN_UPGRADE_REQUIRED": "Esta funcionalidade não está disponível no seu plano"
+  },
+  "payments": {
+    "CURRENCY_NOT_SUPPORTED": "Moeda não suportada",
+    "STRIPE_ERROR": "Erro ao processar pagamento",
+    "WEBHOOK_INVALID": "Webhook inválido"
+  },
+  "common": {
+    "NOT_FOUND": "Recurso não encontrado",
+    "BAD_REQUEST": "Requisição inválida",
+    "INTERNAL_ERROR": "Erro interno do servidor"
+  }
+}

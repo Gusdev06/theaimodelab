@@ -1,0 +1,1174 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id                      String                    @id @default(cuid())
+  email                   String                    @unique
+  passwordHash            String?                   @map("password_hash")
+  name                    String
+  avatarUrl               String?                   @map("avatar_url")
+  role                    UserRole                  @default(USER)
+  oauthProvider           String?                   @map("oauth_provider")
+  oauthProviderId         String?                   @map("oauth_provider_id")
+  stripeCustomerId        String?                   @unique @map("stripe_customer_id")
+  emailVerified           Boolean                   @default(false) @map("email_verified")
+  isActive                Boolean                   @default(true) @map("is_active")
+  createdAt               DateTime                  @default(now()) @map("created_at")
+  updatedAt               DateTime                  @updatedAt @map("updated_at")
+  hasCompletedOnboarding  Boolean                   @default(false) @map("has_completed_onboarding")
+  phone                   String?
+  phoneVerified           Boolean?                  @map("phone_verified")
+  referredByCode          String?                   @map("referred_by_code")
+  country                 String?
+  currency                String                    @default("BRL")
+  locale                  String                    @default("pt-BR")
+  timezone                String?
+  unlimitedModeImage      Boolean                   @default(false) @map("unlimited_mode_image")
+  unlimitedModeVideo      Boolean                   @default(false) @map("unlimited_mode_video")
+  fbclid                  String?
+  gclid                   String?
+  landingPage             String?                   @map("landing_page")
+  referrer                String?
+  utmCampaign             String?                   @map("utm_campaign")
+  utmContent              String?                   @map("utm_content")
+  utmMedium               String?                   @map("utm_medium")
+  utmSource               String?                   @map("utm_source")
+  utmTerm                 String?                   @map("utm_term")
+  asaasCustomerId         String?                   @unique @map("asaas_customer_id")
+  taxId                   String?                   @map("tax_id")
+  affiliateEarnings       AffiliateEarning[]        @relation("referred_user_earnings")
+  affiliate               Affiliate?
+  communityLikes          CommunityPostLike[]
+  communityPosts          CommunityPost[]
+  creditBalance           CreditBalance?
+  creditTransactions      CreditTransaction[]
+  adminEmailBroadcasts    EmailBroadcast[]          @relation("admin_email_broadcasts")
+  emailVerificationTokens EmailVerificationToken[]
+  feedback                Feedback?
+  brands                  Brand[]
+  folders                 Folder[]
+  generations             Generation[]
+  influencers             influencers[]
+  notifications           Notification[]
+  passwordResetTokens     PasswordResetToken[]
+  recoveryCampaigns       PaymentRecoveryCampaign[]
+  payments                Payment[]
+  refreshTokens           RefreshToken[]
+  subscriptions           Subscription[]
+  unlimitedUsages         UnlimitedUsage[]
+  userAvatars             UserAvatar[]
+  following               UserFollow[]              @relation("follower")
+  followers               UserFollow[]              @relation("following")
+  freeGenerations         UserFreeGeneration[]
+  videoProjects           VideoProject[]
+  voiceProfiles           VoiceProfile[]
+  weeklyClaims            WeeklyClaim[]
+  workspaces              Workspace[]
+
+  @@index([email])
+  @@index([oauthProvider, oauthProviderId])
+  @@index([utmCampaign])
+  @@index([utmSource])
+  @@map("users")
+}
+
+model Plan {
+  id                       String         @id @default(cuid())
+  slug                     String         @unique
+  name                     String
+  description              String?
+  priceCents               Int            @default(0) @map("price_cents")
+  creditsPerMonth          Int            @map("credits_per_month")
+  maxConcurrentGenerations Int            @default(1) @map("max_concurrent_generations")
+  hasWatermark             Boolean        @default(true) @map("has_watermark")
+  galleryRetentionDays     Int?           @map("gallery_retention_days")
+  hasApiAccess             Boolean        @default(false) @map("has_api_access")
+  isActive                 Boolean        @default(true) @map("is_active")
+  sortOrder                Int            @default(0) @map("sort_order")
+  stripePriceId            String?        @map("stripe_price_id")
+  createdAt                DateTime       @default(now()) @map("created_at")
+  updatedAt                DateTime       @updatedAt @map("updated_at")
+  voice_clone_limit        Int?
+  voice_clone_professional Boolean        @default(false)
+  avatar_clone_enabled     Boolean        @default(false)
+  avatar_clone_limit       Int            @default(0)
+  unlimitedPriority        Int?           @map("unlimited_priority")
+  unlimitedModels          Json?          @map("unlimited_models")
+  prices                   PlanPrice[]
+  subscriptions            Subscription[] @relation("currentPlan")
+  scheduledSubscriptions   Subscription[] @relation("scheduledPlan")
+
+  @@map("plans")
+}
+
+model PlanPrice {
+  id            String   @id @default(cuid())
+  planId        String   @map("plan_id")
+  currency      String
+  priceCents    Int      @map("price_cents")
+  stripePriceId String   @map("stripe_price_id")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  plan          Plan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, currency])
+  @@index([currency])
+  @@map("plan_prices")
+}
+
+model CreditCost {
+  id             String         @id @default(cuid())
+  generationType GenerationType @map("generation_type")
+  resolution     Resolution
+  hasAudio       Boolean        @default(false) @map("has_audio")
+  creditsPerUnit Int            @map("credits_per_unit")
+  isPerSecond    Boolean        @default(false) @map("is_per_second")
+  isActive       Boolean        @default(true) @map("is_active")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+  modelVariant   String?        @map("model_variant")
+
+  @@unique([generationType, resolution, hasAudio, modelVariant])
+  @@map("credit_costs")
+}
+
+model CreditPackage {
+  id            String               @id @default(cuid())
+  name          String               @unique
+  credits       Int
+  priceCents    Int                  @map("price_cents")
+  isActive      Boolean              @default(true) @map("is_active")
+  sortOrder     Int                  @default(0) @map("sort_order")
+  stripePriceId String?              @map("stripe_price_id")
+  createdAt     DateTime             @default(now()) @map("created_at")
+  prices        CreditPackagePrice[]
+  payments      Payment[]
+
+  @@map("credit_packages")
+}
+
+model CreditPackagePrice {
+  id              String        @id @default(cuid())
+  creditPackageId String        @map("credit_package_id")
+  currency        String
+  priceCents      Int           @map("price_cents")
+  stripePriceId   String        @map("stripe_price_id")
+  isActive        Boolean       @default(true) @map("is_active")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+  creditPackage   CreditPackage @relation(fields: [creditPackageId], references: [id], onDelete: Cascade)
+
+  @@unique([creditPackageId, currency])
+  @@index([currency])
+  @@map("credit_package_prices")
+}
+
+model Subscription {
+  id                       String                   @id @default(cuid())
+  userId                   String                   @map("user_id")
+  planId                   String                   @map("plan_id")
+  status                   SubscriptionStatus       @default(ACTIVE)
+  currentPeriodStart       DateTime                 @map("current_period_start")
+  currentPeriodEnd         DateTime                 @map("current_period_end")
+  cancelAtPeriodEnd        Boolean                  @default(false) @map("cancel_at_period_end")
+  paymentProvider          String?                  @map("payment_provider")
+  externalSubscriptionId   String?                  @map("external_subscription_id")
+  paymentRetryCount        Int                      @default(0) @map("payment_retry_count")
+  createdAt                DateTime                 @default(now()) @map("created_at")
+  updatedAt                DateTime                 @updatedAt @map("updated_at")
+  scheduledPlanId          String?                  @map("scheduled_plan_id")
+  pausedUntil              DateTime?                @map("paused_until")
+  retentionOfferAcceptedAt DateTime?                @map("retention_offer_accepted_at")
+  paymentMethod            String?                  @map("payment_method")
+  asaasSubscriptionId      String?                  @map("asaas_subscription_id")
+  asaasAuthorizationId     String?                  @map("asaas_authorization_id")
+  asaasAuthorizationStatus String?                  @map("asaas_authorization_status")
+  recoveryCampaigns        PaymentRecoveryCampaign?
+  payments                 Payment[]
+  plan                     Plan                     @relation("currentPlan", fields: [planId], references: [id])
+  scheduledPlan            Plan?                    @relation("scheduledPlan", fields: [scheduledPlanId], references: [id])
+  user                     User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([currentPeriodEnd])
+  @@index([asaasAuthorizationId], map: "idx_subscriptions_asaas_auth")
+  @@map("subscriptions")
+}
+
+/// Registra cada execução de cron job no projeto. Usado pela tela admin
+/// `/admin/crons` para visibilidade de agendamentos, durações e erros.
+model CronExecution {
+  id         String    @id @default(cuid())
+  cronName   String    @map("cron_name")
+  schedule   String
+  status     String
+  startedAt  DateTime  @default(now()) @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  durationMs Int?      @map("duration_ms")
+  error      String?
+  metadata   Json?
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@index([cronName, startedAt(sort: Desc)])
+  @@index([status])
+  @@index([startedAt])
+  @@map("cron_executions")
+}
+
+/// Rastreia a campanha de recuperação de churn involuntário (falha de pagamento).
+/// Uma campanha é aberta quando uma subscription entra em PAST_DUE ou é cancelada
+/// por falha de cobrança. O cron envia 3 emails (D+0, D+3, D+7) e marca a campanha
+/// como recuperada se o pagamento for confirmado dentro da janela.
+model PaymentRecoveryCampaign {
+  id             String       @id @default(cuid())
+  userId         String       @map("user_id")
+  subscriptionId String       @unique @map("subscription_id")
+  enrolledAt     DateTime     @default(now()) @map("enrolled_at")
+  email1SentAt   DateTime?    @map("email_1_sent_at")
+  email2SentAt   DateTime?    @map("email_2_sent_at")
+  email3SentAt   DateTime?    @map("email_3_sent_at")
+  recoveredAt    DateTime?    @map("recovered_at")
+  abandonedAt    DateTime?    @map("abandoned_at")
+  bonusGrantedAt DateTime?    @map("bonus_granted_at")
+  bonusCredits   Int          @default(0) @map("bonus_credits")
+  declineCode    String?      @map("decline_code")
+  cardBrand      String?      @map("card_brand")
+  cardLast4      String?      @map("card_last4")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([recoveredAt])
+  @@index([abandonedAt])
+  @@index([enrolledAt])
+  @@map("payment_recovery_campaigns")
+}
+
+model CreditBalance {
+  id                          String    @id @default(cuid())
+  userId                      String    @unique @map("user_id")
+  planCreditsRemaining        Int       @default(0) @map("plan_credits_remaining")
+  bonusCreditsRemaining       Int       @default(0) @map("bonus_credits_remaining")
+  planCreditsUsed             Int       @default(0) @map("plan_credits_used")
+  periodStart                 DateTime? @map("period_start")
+  periodEnd                   DateTime? @map("period_end")
+  updatedAt                   DateTime  @updatedAt @map("updated_at")
+  /// DEPRECATED: migrado para user_free_generations (type=THEAIMODELAB_FAST). Mantido só pra não quebrar dados existentes.
+  freeVeoGenerationsRemaining Int       @default(0) @map("free_veo_generations_remaining")
+  user                        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("credit_balances")
+}
+
+model UserFreeGeneration {
+  id        String             @id @default(cuid())
+  userId    String             @map("user_id")
+  type      FreeGenerationType
+  remaining Int                @default(0)
+  createdAt DateTime           @default(now()) @map("created_at")
+  updatedAt DateTime           @updatedAt @map("updated_at")
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type])
+  @@index([userId])
+  @@map("user_free_generations")
+}
+
+model UnlimitedUsage {
+  id           String      @id @default(cuid())
+  userId       String      @map("user_id")
+  generationId String?     @unique @map("generation_id")
+  modelVariant String      @map("model_variant")
+  resolution   Resolution
+  createdAt    DateTime    @default(now()) @map("created_at")
+  generation   Generation? @relation(fields: [generationId], references: [id])
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("unlimited_usage")
+}
+
+model Announcement {
+  id           String   @id @default(cuid())
+  slug         String   @unique
+  variant      String?
+  badge        String?
+  title        String
+  description  String
+  imageUrl     String?  @map("image_url")
+  ctaLabel     String?  @map("cta_label")
+  ctaAction    Json?    @map("cta_action")
+  isActive     Boolean  @default(true) @map("is_active")
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  translations Json?    @map("translations")
+
+  @@index([isActive, sortOrder])
+  @@map("announcements")
+}
+
+model WeeklyClaim {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  weekKey   String   @map("week_key")
+  amount    Int      @default(4)
+  claimedAt DateTime @default(now()) @map("claimed_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, weekKey])
+  @@index([userId])
+  @@index([weekKey])
+  @@map("weekly_claims")
+}
+
+model PendingFreeGenerationGrant {
+  id               String    @id @default(cuid())
+  email            String
+  bundle           Json
+  source           String    @default("hubla")
+  externalEventId  String?   @unique @map("external_event_id")
+  consumedByUserId String?   @map("consumed_by_user_id")
+  consumedAt       DateTime? @map("consumed_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@index([email])
+  @@index([consumedByUserId])
+  @@map("pending_free_generation_grants")
+}
+
+model CreditTransaction {
+  id           String                @id @default(cuid())
+  userId       String                @map("user_id")
+  type         CreditTransactionType
+  amount       Int
+  source       String                @default("plan")
+  description  String?
+  generationId String?               @map("generation_id")
+  paymentId    String?               @map("payment_id")
+  metadata     Json?
+  createdAt    DateTime              @default(now()) @map("created_at")
+  userAvatarId String?               @map("user_avatar_id")
+  generation   Generation?           @relation(fields: [generationId], references: [id])
+  payment      Payment?              @relation(fields: [paymentId], references: [id])
+  userAvatar   UserAvatar?           @relation(fields: [userAvatarId], references: [id])
+  user         User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([generationId])
+  @@index([userAvatarId])
+  @@index([type])
+  @@index([createdAt])
+  @@map("credit_transactions")
+}
+
+model Generation {
+  id                     String                 @id @default(cuid())
+  userId                 String                 @map("user_id")
+  type                   GenerationType
+  status                 GenerationStatus       @default(PENDING)
+  aspectRatio            String?                @map("aspect_ratio")
+  prompt                 String?
+  negativePrompt         String?                @map("negative_prompt")
+  resolution             Resolution
+  durationSeconds        Int?                   @map("duration_seconds")
+  hasAudio               Boolean                @default(false) @map("has_audio")
+  modelUsed              String                 @map("model_used")
+  parameters             Json?
+  quantity               Int?                   @map("quantity")
+  hasWatermark           Boolean                @default(false) @map("has_watermark")
+  creditsConsumed        Int                    @default(0) @map("credits_consumed")
+  processingStartedAt    DateTime?              @map("processing_started_at")
+  processingTimeMs       Int?                   @map("processing_time_ms")
+  errorMessage           String?                @map("error_message")
+  errorCode              String?                @map("error_code")
+  isFavorited            Boolean                @default(false) @map("is_favorited")
+  isDeleted              Boolean                @default(false) @map("is_deleted")
+  expiresAt              DateTime?              @map("expires_at")
+  createdAt              DateTime               @default(now()) @map("created_at")
+  completedAt            DateTime?              @map("completed_at")
+  updatedAt              DateTime               @updatedAt @map("updated_at")
+  usedFreeGeneration     Boolean                @default(false) @map("used_free_generation")
+  usedFreeGenerationType FreeGenerationType?    @map("used_free_generation_type")
+  voiceProfileId         String?                @map("voice_profile_id")
+  influencer_id          String?
+  userAvatarId           String?                @map("user_avatar_id")
+  /// * HeyGen's video_id — set when an avatar video is submitted, used by the
+  /// *  webhook to correlate completion events back to this Generation.
+  heygenVideoId          String?                @unique @map("heygen_video_id")
+  creditTransactions     CreditTransaction[]
+  generationFolders      GenerationFolder[]
+  inputImages            GenerationInputImage[]
+  outputs                GenerationOutput[]
+  influencers            influencers?           @relation(fields: [influencer_id], references: [id])
+  userAvatar             UserAvatar?            @relation("avatar_generations", fields: [userAvatarId], references: [id])
+  user                   User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  voiceProfile           VoiceProfile?          @relation(fields: [voiceProfileId], references: [id])
+  unlimitedUsage         UnlimitedUsage?
+
+  @@index([userId])
+  @@index([status])
+  @@index([type])
+  @@index([createdAt(sort: Desc)])
+  @@index([userId, isDeleted, createdAt(sort: Desc)])
+  @@index([expiresAt])
+  @@index([influencer_id])
+  @@index([voiceProfileId])
+  @@index([userAvatarId])
+  @@map("generations")
+}
+
+model GenerationInputImage {
+  id            String              @id @default(cuid())
+  generationId  String              @map("generation_id")
+  role          GenerationImageRole
+  mimeType      String?             @map("mime_type")
+  order         Int                 @default(0)
+  referenceType String?             @map("reference_type")
+  url           String?
+  createdAt     DateTime            @default(now()) @map("created_at")
+  generation    Generation          @relation(fields: [generationId], references: [id], onDelete: Cascade)
+
+  @@index([generationId])
+  @@map("generation_input_images")
+}
+
+model GenerationOutput {
+  id           String     @id @default(cuid())
+  generationId String     @map("generation_id")
+  url          String
+  mimeType     String?    @map("mime_type")
+  order        Int        @default(0)
+  createdAt    DateTime   @default(now()) @map("created_at")
+  thumbnailUrl String?    @map("thumbnail_url")
+  blurDataUrl  String?    @map("blur_data_url")
+  generation   Generation @relation(fields: [generationId], references: [id], onDelete: Cascade)
+
+  @@index([generationId])
+  @@map("generation_outputs")
+}
+
+model Payment {
+  id                 String              @id @default(cuid())
+  userId             String              @map("user_id")
+  type               PaymentType
+  amountCents        Int                 @map("amount_cents")
+  currency           String              @default("BRL")
+  status             PaymentStatus       @default(PENDING)
+  provider           String
+  externalPaymentId  String?             @map("external_payment_id")
+  externalInvoiceId  String?             @map("external_invoice_id")
+  subscriptionId     String?             @map("subscription_id")
+  creditPackageId    String?             @map("credit_package_id")
+  metadata           Json?
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @updatedAt @map("updated_at")
+  affiliateEarnings  AffiliateEarning[]
+  creditTransactions CreditTransaction[]
+  creditPackage      CreditPackage?      @relation(fields: [creditPackageId], references: [id])
+  subscription       Subscription?       @relation(fields: [subscriptionId], references: [id])
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([externalPaymentId])
+  @@map("payments")
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
+  @@map("password_reset_tokens")
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
+  @@map("email_verification_tokens")
+}
+
+model Feedback {
+  id             String   @id @default(cuid())
+  userId         String   @unique @map("user_id")
+  nps            Int
+  rating         Int
+  goal           String
+  goalOther      String?  @map("goal_other")
+  features       String[]
+  highlight      String
+  improve        String
+  wishlist       String
+  creditsAwarded Int      @default(0) @map("credits_awarded")
+  createdAt      DateTime @default(now()) @map("created_at")
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@map("feedback")
+}
+
+model WebhookLog {
+  id         String   @id @default(cuid())
+  provider   String
+  eventType  String   @map("event_type")
+  externalId String?  @map("external_id")
+  payload    Json
+  processed  Boolean  @default(false)
+  error      String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([provider, eventType])
+  @@index([externalId])
+  @@map("webhook_logs")
+}
+
+model Folder {
+  id                String             @id @default(cuid())
+  userId            String             @map("user_id")
+  name              String
+  description       String?
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  generationFolders GenerationFolder[]
+
+  @@index([userId])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("folders")
+}
+
+model GenerationFolder {
+  id           String     @id @default(cuid())
+  generationId String     @map("generation_id")
+  folderId     String     @map("folder_id")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  folder       Folder     @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  generation   Generation @relation(fields: [generationId], references: [id], onDelete: Cascade)
+
+  @@unique([generationId, folderId])
+  @@index([folderId])
+  @@index([generationId])
+  @@map("generation_folders")
+}
+
+model Affiliate {
+  id                    String                 @id @default(cuid())
+  userId                String?                @unique @map("user_id")
+  code                  String                 @unique
+  name                  String
+  commissionPercent     Int                    @default(30) @map("commission_percent")
+  isActive              Boolean                @default(true) @map("is_active")
+  createdAt             DateTime               @default(now()) @map("created_at")
+  updatedAt             DateTime               @updatedAt @map("updated_at")
+  pixKey                String?                @map("pix_key")
+  pixKeyType            PixKeyType?            @map("pix_key_type")
+  discountAppliesTo     AffiliateDiscountScope @default(FIRST_PURCHASE) @map("discount_applies_to")
+  discountPercent       Int?                   @map("discount_percent")
+  stripeCouponId        String?                @map("stripe_coupon_id")
+  stripePromotionCodeId String?                @map("stripe_promotion_code_id")
+  earnings              AffiliateEarning[]
+  user                  User?                  @relation(fields: [userId], references: [id])
+
+  @@index([code])
+  @@map("affiliates")
+}
+
+model AffiliateEarning {
+  id              String                 @id @default(cuid())
+  affiliateId     String                 @map("affiliate_id")
+  paymentId       String                 @map("payment_id")
+  userId          String                 @map("user_id")
+  amountCents     Int                    @map("amount_cents")
+  commissionCents Int                    @map("commission_cents")
+  status          AffiliateEarningStatus @default(PENDING)
+  paidAt          DateTime?              @map("paid_at")
+  createdAt       DateTime               @default(now()) @map("created_at")
+  affiliate       Affiliate              @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
+  payment         Payment                @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  user            User                   @relation("referred_user_earnings", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([affiliateId])
+  @@index([paymentId])
+  @@index([status])
+  @@map("affiliate_earnings")
+}
+
+model VideoProject {
+  id                 String             @id @default(cuid())
+  userId             String             @map("user_id")
+  name               String             @default("Sem titulo")
+  status             VideoProjectStatus @default(DRAFT)
+  outputUrl          String?            @map("output_url")
+  outputThumbnailUrl String?            @map("output_thumbnail_url")
+  durationMs         Int?               @map("duration_ms")
+  errorMessage       String?            @map("error_message")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+  clips              VideoProjectClip[]
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("video_projects")
+}
+
+model VideoProjectClip {
+  id           String       @id @default(cuid())
+  projectId    String       @map("project_id")
+  sourceUrl    String       @map("source_url")
+  thumbnailUrl String?      @map("thumbnail_url")
+  order        Int
+  startMs      Int          @default(0) @map("start_ms")
+  endMs        Int?         @map("end_ms")
+  durationMs   Int          @map("duration_ms")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  project      VideoProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("video_project_clips")
+}
+
+model Workspace {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  name         String   @default("Sem título")
+  nodes        Json     @default("[]")
+  edges        Json     @default("[]")
+  viewport     Json?
+  thumbnailUrl String?  @map("thumbnail_url")
+  favorite     Boolean  @default(false)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("workspaces")
+}
+
+model CommunityPost {
+  id              String              @id @default(cuid())
+  userId          String              @map("user_id")
+  generationId    String?             @map("generation_id")
+  kind            String
+  mediaUrl        String              @map("media_url")
+  thumbnailUrl    String?             @map("thumbnail_url")
+  prompt          String
+  /// * tags exibidas no lightbox (aspecto, modelo, ferramenta)
+  settings        Json?
+  status          CommunityPostStatus @default(PENDING)
+  likesCount      Int                 @default(0) @map("likes_count")
+  rejectionReason String?             @map("rejection_reason")
+  approvedAt      DateTime?           @map("approved_at")
+  createdAt       DateTime            @default(now()) @map("created_at")
+  updatedAt       DateTime            @updatedAt @map("updated_at")
+  likes           CommunityPostLike[]
+  user            User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt(sort: Desc)])
+  @@index([userId])
+  @@map("community_posts")
+}
+
+model CommunityPostLike {
+  id        String        @id @default(cuid())
+  postId    String        @map("post_id")
+  userId    String        @map("user_id")
+  createdAt DateTime      @default(now()) @map("created_at")
+  post      CommunityPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId])
+  @@index([userId])
+  @@map("community_post_likes")
+}
+
+model UserFollow {
+  id          String   @id @default(cuid())
+  followerId  String   @map("follower_id")
+  followingId String   @map("following_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  follower    User     @relation("follower", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User     @relation("following", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followingId])
+  @@map("user_follows")
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  /// * ex.: community-submitted | community-approved | community-rejected
+  type      String
+  /// * payload livre (postId, motivo, etc.) — o front monta o texto pelo type
+  data      Json?
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("notifications")
+}
+
+model PromptSection {
+  id          String           @id @default(cuid())
+  slug        String           @unique
+  title       String
+  description String?
+  icon        String?
+  sortOrder   Int              @default(0) @map("sort_order")
+  isActive    Boolean          @default(true) @map("is_active")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+  categories  PromptCategory[]
+
+  @@map("prompt_sections")
+}
+
+model PromptCategory {
+  id        String           @id @default(cuid())
+  sectionId String           @map("section_id")
+  title     String
+  sortOrder Int              @default(0) @map("sort_order")
+  createdAt DateTime         @default(now()) @map("created_at")
+  section   PromptSection    @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  prompts   PromptTemplate[]
+
+  @@index([sectionId])
+  @@map("prompt_categories")
+}
+
+model PromptTemplate {
+  id           String         @id @default(cuid())
+  categoryId   String         @map("category_id")
+  title        String
+  type         String
+  prompt       String
+  imageUrl     String?        @map("image_url")
+  aiModel      String?        @map("ai_model")
+  sortOrder    Int            @default(0) @map("sort_order")
+  isActive     Boolean        @default(true) @map("is_active")
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+  thumbnailUrl String?        @map("thumbnail_url")
+  category     PromptCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@index([categoryId])
+  @@index([isActive])
+  @@map("prompt_templates")
+}
+
+model PromptPost {
+  id          String            @id @default(cuid())
+  slug        String            @unique
+  caption     String?
+  isPublished Boolean           @default(true) @map("is_published")
+  viewCount   Int               @default(0) @map("view_count")
+  copyCount   Int               @default(0) @map("copy_count")
+  useCount    Int               @default(0) @map("use_count")
+  createdById String?           @map("created_by_id")
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+  slides      PromptPostSlide[]
+
+  @@index([slug])
+  @@index([isPublished, createdAt(sort: Desc)])
+  @@map("prompt_posts")
+}
+
+model PromptPostSlide {
+  id             String         @id @default(cuid())
+  postId         String         @map("post_id")
+  order          Int            @default(0)
+  prompt         String
+  imageUrl       String         @map("image_url")
+  thumbnailUrl   String?        @map("thumbnail_url")
+  aspectRatio    String?        @map("aspect_ratio")
+  generationType GenerationType @default(TEXT_TO_IMAGE) @map("generation_type")
+  aiModel        String?        @map("ai_model")
+  copyCount      Int            @default(0) @map("copy_count")
+  useCount       Int            @default(0) @map("use_count")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+  post           PromptPost     @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId, order])
+  @@map("prompt_post_slides")
+}
+
+model AiModel {
+  id            String          @id @default(cuid())
+  slug          String          @unique
+  label         String
+  description   String?
+  provider      AiModelProvider
+  type          AiModelType
+  modelVariant  String          @map("model_variant")
+  isActive      Boolean         @default(true) @map("is_active")
+  sortOrder     Int             @default(0) @map("sort_order")
+  statusMessage String?         @map("status_message")
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
+
+  @@index([type, isActive, sortOrder])
+  @@map("ai_models")
+}
+
+model influencers {
+  id               String        @id
+  user_id          String
+  name             String
+  description      String?
+  avatar_url       String?
+  voice_profile_id String?
+  is_deleted       Boolean       @default(false)
+  created_at       DateTime      @default(now())
+  updated_at       DateTime
+  image_urls       String[]      @default([])
+  generations      Generation[]
+  users            User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  voiceProfile     VoiceProfile? @relation(fields: [voice_profile_id], references: [id])
+
+  @@index([user_id, is_deleted])
+  @@index([voice_profile_id])
+}
+
+model VoiceProfile {
+  id          String             @id @default(cuid())
+  userId      String             @map("user_id")
+  name        String
+  provider    AiModelProvider    @default(WAVESPEED)
+  sampleUrl   String             @map("sample_url")
+  sampleMime  String?            @map("sample_mime")
+  language    String             @default("pt-BR")
+  status      VoiceProfileStatus @default(READY)
+  isDeleted   Boolean            @default(false) @map("is_deleted")
+  deletedAt   DateTime?          @map("deleted_at") @db.Timestamptz(6)
+  createdAt   DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime           @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  previewUrl  String?            @map("preview_url")
+  previewText String?            @map("preview_text")
+  generations Generation[]
+  influencers influencers[]
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId, isDeleted])
+  @@index([deletedAt])
+  @@map("voice_profiles")
+}
+
+model UserAvatar {
+  id                  String              @id @default(cuid())
+  userId              String              @map("user_id")
+  name                String
+  provider            AiModelProvider     @default(HEYGEN)
+  status              AvatarStatus        @default(PENDING)
+  heygenLookId        String?             @unique @map("heygen_look_id")
+  heygenGroupId       String?             @unique @map("heygen_group_id")
+  consentStatus       AvatarConsentStatus @default(NOT_REQUIRED) @map("consent_status")
+  consentUrl          String?             @map("consent_url")
+  consentApprovedAt   DateTime?           @map("consent_approved_at") @db.Timestamptz(6)
+  sourceVideoKey      String              @map("source_video_key")
+  sourceVideoUrl      String              @map("source_video_url")
+  previewImageUrl     String?             @map("preview_image_url")
+  previewVideoUrl     String?             @map("preview_video_url")
+  defaultVoiceId      String?             @map("default_voice_id")
+  supportedEngines    String[]            @default([]) @map("supported_engines")
+  creditsConsumed     Int                 @default(0) @map("credits_consumed")
+  errorMessage        String?             @map("error_message")
+  errorCode           String?             @map("error_code")
+  trainingStartedAt   DateTime?           @map("training_started_at") @db.Timestamptz(6)
+  trainingCompletedAt DateTime?           @map("training_completed_at") @db.Timestamptz(6)
+  isDeleted           Boolean             @default(false) @map("is_deleted")
+  deletedAt           DateTime?           @map("deleted_at") @db.Timestamptz(6)
+  createdAt           DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime            @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  creditTransactions  CreditTransaction[]
+  generations         Generation[]        @relation("avatar_generations")
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId, isDeleted])
+  @@index([status])
+  @@index([deletedAt])
+  @@map("user_avatars")
+}
+
+model EmailBroadcast {
+  id              String                      @id @default(cuid())
+  subject         String
+  bodyMarkdown    String                      @map("body_markdown")
+  bodyHtml        String                      @map("body_html")
+  recipientType   EmailBroadcastRecipientType @map("recipient_type")
+  recipientFilter Json?                       @map("recipient_filter")
+  totalRecipients Int                         @default(0) @map("total_recipients")
+  sentCount       Int                         @default(0) @map("sent_count")
+  failedCount     Int                         @default(0) @map("failed_count")
+  status          EmailBroadcastStatus        @default(PENDING)
+  triggeredById   String                      @map("triggered_by_id")
+  startedAt       DateTime?                   @map("started_at")
+  completedAt     DateTime?                   @map("completed_at")
+  errorMessage    String?                     @map("error_message")
+  createdAt       DateTime                    @default(now()) @map("created_at")
+  updatedAt       DateTime                    @updatedAt @map("updated_at")
+  recipients      EmailBroadcastRecipient[]
+  triggeredBy     User                        @relation("admin_email_broadcasts", fields: [triggeredById], references: [id])
+
+  @@index([triggeredById])
+  @@index([status])
+  @@map("email_broadcasts")
+}
+
+model EmailBroadcastRecipient {
+  id            String                       @id @default(cuid())
+  broadcastId   String                       @map("broadcast_id")
+  email         String
+  userId        String?                      @map("user_id")
+  status        EmailBroadcastDeliveryStatus @default(PENDING)
+  resendEmailId String?                      @map("resend_email_id")
+  errorMessage  String?                      @map("error_message")
+  deliveredAt   DateTime?                    @map("delivered_at")
+  openedAt      DateTime?                    @map("opened_at")
+  clickedAt     DateTime?                    @map("clicked_at")
+  bouncedAt     DateTime?                    @map("bounced_at")
+  createdAt     DateTime                     @default(now()) @map("created_at")
+  updatedAt     DateTime                     @updatedAt @map("updated_at")
+  name          String?
+  plan          String?
+  broadcast     EmailBroadcast               @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+
+  @@index([broadcastId])
+  @@index([email])
+  @@index([resendEmailId])
+  @@map("email_broadcast_recipients")
+}
+
+enum CommunityPostStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELED
+  PAST_DUE
+  TRIALING
+}
+
+enum GenerationType {
+  TEXT_TO_IMAGE
+  IMAGE_TO_IMAGE
+  TEXT_TO_VIDEO
+  IMAGE_TO_VIDEO
+  MOTION_CONTROL
+  REFERENCE_VIDEO
+  FACE_SWAP
+  VIRTUAL_TRY_ON
+  SPOKEN_VIDEO
+  VOICE_CLONE
+  AVATAR_VIDEO
+}
+
+enum GenerationStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum CreditTransactionType {
+  SUBSCRIPTION_RENEWAL
+  PURCHASE
+  GENERATION_DEBIT
+  GENERATION_REFUND
+  REFERRAL_BONUS
+  ADMIN_ADJUSTMENT
+  ONBOARDING_BONUS
+  FEEDBACK_REWARD
+  AVATAR_TRAINING_DEBIT
+  AVATAR_TRAINING_REFUND
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum AffiliateEarningStatus {
+  PENDING
+  PAID
+}
+
+enum AffiliateDiscountScope {
+  FIRST_PURCHASE
+  ALL_PURCHASES
+}
+
+enum PaymentType {
+  SUBSCRIPTION
+  CREDIT_PURCHASE
+}
+
+enum Resolution {
+  RES_1K
+  RES_2K
+  RES_4K
+  RES_720P
+  RES_1080P
+  RES_480P
+  RES_3K
+}
+
+enum GenerationImageRole {
+  FIRST_FRAME
+  LAST_FRAME
+  REFERENCE
+}
+
+enum AiModelProvider {
+  THEAIMODELAB
+  KIE
+  ELEVENLABS
+  WAVESPEED
+  HEYGEN
+}
+
+enum AiModelType {
+  VIDEO
+  IMAGE
+  AUDIO
+}
+
+enum FreeGenerationType {
+  NB2
+  NB_PRO
+  FACE_SWAP
+  VIRTUAL_TRY_ON
+  THEAIMODELAB_FAST
+  UPSCALE
+}
+
+enum VideoProjectStatus {
+  DRAFT
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum PixKeyType {
+  CPF
+  CNPJ
+  EMAIL
+  PHONE
+  RANDOM
+}
+
+enum VoiceProfileStatus {
+  TRAINING
+  READY
+  FAILED
+}
+
+enum AvatarStatus {
+  PENDING
+  SUBMITTING
+  PENDING_CONSENT
+  TRAINING
+  READY
+  FAILED
+  DELETING
+}
+
+enum AvatarConsentStatus {
+  NOT_REQUIRED
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum EmailBroadcastRecipientType {
+  ALL
+  ALL_PAID
+  BY_PLAN
+  CUSTOM_LIST
+  SINGLE
+}
+
+enum EmailBroadcastStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  PARTIAL_FAILURE
+  FAILED
+}
+
+enum EmailBroadcastDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+  DELIVERED
+  OPENED
+  CLICKED
+  BOUNCED
+  COMPLAINED
+}
+
+model Brand {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  name            String
+  identityProfile Json?    @map("identity_profile")
+  referenceAssets Json     @default("[]") @map("reference_assets")
+  isDeleted       Boolean  @default(false) @map("is_deleted")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("brands")
+}
