@@ -90,10 +90,10 @@ const CHECKOUT = {
 // O produto é único (ex: PPPBEKMJ); cada pacote é um "plano" com preço próprio.
 // Preencher via env com o plan.code de cada plano criado na Perfect Pay.
 const PERFECTPAY = {
-  creator: process.env.PERFECTPAY_PLAN_CREATOR ?? 'PPU38CQDQHP',
-  pro: process.env.PERFECTPAY_PLAN_PRO ?? 'PPU38CQDQID',
-  advanced: process.env.PERFECTPAY_PLAN_ADVANCED ?? 'PPU38CQDQIE',
-  studio: process.env.PERFECTPAY_PLAN_STUDIO ?? 'PPU38CQDQIG',
+  creator: process.env.PERFECTPAY_PLAN_CREATOR ?? 'PPLQQPT4G',
+  pro: process.env.PERFECTPAY_PLAN_PRO ?? 'PPLQQPT4L',
+  advanced: process.env.PERFECTPAY_PLAN_ADVANCED ?? 'PPLQQPT4M',
+  studio: process.env.PERFECTPAY_PLAN_STUDIO ?? 'PPLQQPT4O',
 };
 
 async function main() {

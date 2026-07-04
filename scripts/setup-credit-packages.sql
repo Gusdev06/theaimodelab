@@ -54,13 +54,11 @@ ON CONFLICT ("credit_package_id", "currency") DO UPDATE SET
   "is_active"   = true,
   "updated_at"  = now();
 
--- 5. Códigos de PLANO da Perfect Pay (mapeiam o postback → pacote).
---    O produto é único (PPPBEKMJ); cada pacote é um "plano" cujo código aparece
---    no final do link de checkout (.../pay/<CODE>).
-UPDATE "theaimodelab"."credit_packages" SET "perfectpay_plan_code" = 'PPU38CQDQHP' WHERE "name" = 'Creator';
-UPDATE "theaimodelab"."credit_packages" SET "perfectpay_plan_code" = 'PPU38CQDQID' WHERE "name" = 'Pro';
-UPDATE "theaimodelab"."credit_packages" SET "perfectpay_plan_code" = 'PPU38CQDQIE' WHERE "name" = 'Advanced';
-UPDATE "theaimodelab"."credit_packages" SET "perfectpay_plan_code" = 'PPU38CQDQIG' WHERE "name" = 'Studio';
+-- 5. Códigos de PLANO da Perfect Pay (plan.code do postback → pacote).
+UPDATE "theaimodelab"."credit_packages" SET "perfectpay_plan_code" = 'PPLQQPT4G' WHERE "name" = 'Creator';
+UPDATE "theaimodelab"."credit_packages" SET "perfectpay_plan_code" = 'PPLQQPT4L' WHERE "name" = 'Pro';
+UPDATE "theaimodelab"."credit_packages" SET "perfectpay_plan_code" = 'PPLQQPT4M' WHERE "name" = 'Advanced';
+UPDATE "theaimodelab"."credit_packages" SET "perfectpay_plan_code" = 'PPLQQPT4O' WHERE "name" = 'Studio';
 
 -- Conferência (opcional)
 -- SELECT cp.name, cp.credits, cp.is_active, cp.checkout_url, cp.perfectpay_plan_code,

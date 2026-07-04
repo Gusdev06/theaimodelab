@@ -161,13 +161,14 @@ export class PerfectpayWebhookService {
     }
 
     const amountCents = this.extractAmountCents(payload);
+    const currency = this.extractCurrency(payload);
 
     await this.paymentsService.processCreditPurchase(
       user.id,
       creditPackage.id,
       amountCents,
       saleCode,
-      'BRL',
+      currency,
       user.referredByCode ?? undefined,
       'perfectpay',
     );
@@ -296,12 +297,21 @@ export class PerfectpayWebhookService {
     return s.length > 0 ? `perfectpay-${s}` : null;
   }
 
-  /** Valor pago em centavos (sale_amount vem em reais, ex: 89.90). */
+  /** Valor pago em centavos (sale_amount vem na unidade da moeda, ex: 89.90). */
   private extractAmountCents(payload: any): number {
     const raw = payload?.sale_amount ?? payload?.amount ?? 0;
     const num = typeof raw === 'number' ? raw : parseFloat(String(raw));
     if (!Number.isFinite(num) || num <= 0) return 0;
     return Math.round(num * 100);
+  }
+
+  /** Moeda da venda (currency_enum_key: 'BRL' | 'USD' | 'EUR'). Default BRL. */
+  private extractCurrency(payload: any): string {
+    const key = payload?.currency_enum_key;
+    if (typeof key === 'string' && key.trim().length === 3) {
+      return key.trim().toUpperCase();
+    }
+    return 'BRL';
   }
 
   private extractEmail(payload: any): string | null {

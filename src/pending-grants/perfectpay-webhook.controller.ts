@@ -29,7 +29,7 @@ export class PerfectpayWebhookController {
     @Query('token') queryToken?: string,
   ) {
     this.logger.log(
-      `Perfectpay webhook received: ${JSON.stringify(payload).slice(0, 500)}`,
+      `Perfectpay webhook received: ${JSON.stringify(payload).slice(0, 4000)}`,
     );
     const result = await this.perfectpayWebhookService.handle(
       payload,
