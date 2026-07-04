@@ -24,106 +24,13 @@ describe('PlansController', () => {
   });
 
   describe('findAll', () => {
-    const mockPlans = [
-      {
-        id: 'plan-1',
-        slug: 'free',
-        name: 'Free',
-        description: 'Free plan',
-        priceCents: 0,
-        creditsPerMonth: 300,
-        maxConcurrentGenerations: 1,
-        hasWatermark: true,
-        galleryRetentionDays: 30,
-        hasApiAccess: false,
-        isActive: true,
-        sortOrder: 0,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-      {
-        id: 'plan-2',
-        slug: 'pro',
-        name: 'Pro',
-        description: null,
-        priceCents: 8990,
-        creditsPerMonth: 35000,
-        maxConcurrentGenerations: 5,
-        hasWatermark: false,
-        galleryRetentionDays: null,
-        hasApiAccess: false,
-        isActive: true,
-        sortOrder: 2,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    ];
+    // Modelo de assinatura descontinuado: a listagem pública de planos sempre
+    // retorna vazio; a monetização passou a ser via pacotes de crédito avulsos.
+    it('should always return an empty array (plans hidden)', async () => {
+      const result = await controller.findAll();
 
-    it('should return mapped plans array', async () => {
-      mockPlansService.findAllPlans.mockResolvedValue(mockPlans);
-
-      const result = await controller.findAll({ headers: {} } as any, 'BRL');
-
-      expect(mockPlansService.findAllPlans).toHaveBeenCalledTimes(1);
-      expect(result).toHaveLength(2);
-      expect(result[0]).toEqual({
-        id: 'plan-1',
-        slug: 'free',
-        name: 'Free',
-        description: 'Free plan',
-        priceCents: 0,
-        creditsPerMonth: 300,
-        maxConcurrentGenerations: 1,
-        hasWatermark: true,
-        galleryRetentionDays: 30,
-        hasApiAccess: false,
-      });
-    });
-
-    it('should return empty array when no plans exist', async () => {
-      mockPlansService.findAllPlans.mockResolvedValue([]);
-
-      const result = await controller.findAll({ headers: {} } as any, 'BRL');
-
-      expect(mockPlansService.findAllPlans).toHaveBeenCalledTimes(1);
       expect(result).toEqual([]);
-    });
-
-    it('should correctly map all fields and exclude non-DTO fields', async () => {
-      mockPlansService.findAllPlans.mockResolvedValue(mockPlans);
-
-      const result = await controller.findAll({ headers: {} } as any, 'BRL');
-
-      const expectedKeys = [
-        'id',
-        'slug',
-        'name',
-        'description',
-        'priceCents',
-        'creditsPerMonth',
-        'maxConcurrentGenerations',
-        'hasWatermark',
-        'galleryRetentionDays',
-        'hasApiAccess',
-      ];
-
-      for (const plan of result) {
-        expect(Object.keys(plan).sort()).toEqual(expectedKeys.sort());
-      }
-
-      // Verify second plan with null values maps correctly
-      expect(result[1]).toEqual({
-        id: 'plan-2',
-        slug: 'pro',
-        name: 'Pro',
-        description: null,
-        priceCents: 8990,
-        creditsPerMonth: 35000,
-        maxConcurrentGenerations: 5,
-        hasWatermark: false,
-        galleryRetentionDays: null,
-        hasApiAccess: false,
-      });
+      expect(mockPlansService.findAllPlans).not.toHaveBeenCalled();
     });
   });
 });

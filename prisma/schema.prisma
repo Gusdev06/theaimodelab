@@ -148,6 +148,7 @@ model CreditPackage {
   isActive      Boolean              @default(true) @map("is_active")
   sortOrder     Int                  @default(0) @map("sort_order")
   stripePriceId String?              @map("stripe_price_id")
+  checkoutUrl   String?              @map("checkout_url")
   createdAt     DateTime             @default(now()) @map("created_at")
   prices        CreditPackagePrice[]
   payments      Payment[]

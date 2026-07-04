@@ -77,6 +77,15 @@ const STRIPE = {
   priceBoostXxgEur: process.env.STRIPE_PRICE_BOOST_XXG_EUR ?? '',
 };
 
+// ── Links de checkout externos (sem Stripe) — um por pacote de créditos ──
+// Preencher via env quando os links do novo provedor estiverem prontos.
+const CHECKOUT = {
+  creator: process.env.CHECKOUT_URL_CREATOR ?? 'https://checkout.centerpag.com/pay/PPU38CQDQHP?',
+  pro: process.env.CHECKOUT_URL_PRO ?? 'https://checkout.centerpag.com/pay/PPU38CQDQID?',
+  advanced: process.env.CHECKOUT_URL_ADVANCED ?? 'https://checkout.centerpag.com/pay/PPU38CQDQIE?',
+  studio: process.env.CHECKOUT_URL_STUDIO ?? 'https://checkout.centerpag.com/pay/PPU38CQDQIG?',
+};
+
 async function main() {
   console.log('🌱 Starting database seed...');
 
@@ -343,17 +352,22 @@ async function main() {
   console.log('📦 Creating credit packages...');
 
   const packageData = [
-    // ── v5 Boost packages (avulsos) ──
-    { name: 'Boost P', update: { credits: 550, priceCents: 1690, sortOrder: 0, isActive: true, stripePriceId: STRIPE.priceBoostP }, create: { name: 'Boost P', credits: 550, priceCents: 1690, sortOrder: 0, stripePriceId: STRIPE.priceBoostP } },
-    { name: 'Boost M', update: { credits: 1700, priceCents: 2690, sortOrder: 1, isActive: true, stripePriceId: STRIPE.priceBoostM }, create: { name: 'Boost M', credits: 1700, priceCents: 2690, sortOrder: 1, stripePriceId: STRIPE.priceBoostM } },
-    { name: 'Boost G', update: { credits: 3200, priceCents: 3690, sortOrder: 2, isActive: true, stripePriceId: STRIPE.priceBoostG }, create: { name: 'Boost G', credits: 3200, priceCents: 3690, sortOrder: 2, stripePriceId: STRIPE.priceBoostG } },
-    { name: 'Boost XG', update: { credits: 6500, priceCents: 6990, sortOrder: 3, isActive: true, stripePriceId: STRIPE.priceBoostXg }, create: { name: 'Boost XG', credits: 6500, priceCents: 6990, sortOrder: 3, stripePriceId: STRIPE.priceBoostXg } },
-    { name: 'Boost XXG', update: { credits: 14000, priceCents: 14990, sortOrder: 4, isActive: true, stripePriceId: STRIPE.priceBoostXxg }, create: { name: 'Boost XXG', credits: 14000, priceCents: 14990, sortOrder: 4, stripePriceId: STRIPE.priceBoostXxg } },
+    // ── Pacotes de crédito avulsos convertidos dos antigos planos (checkout externo, sem Stripe) ──
+    { name: 'Creator', update: { credits: 12000, priceCents: 8990, sortOrder: 0, isActive: true, checkoutUrl: CHECKOUT.creator || null }, create: { name: 'Creator', credits: 12000, priceCents: 8990, sortOrder: 0, checkoutUrl: CHECKOUT.creator || null } },
+    { name: 'Pro', update: { credits: 30000, priceCents: 17990, sortOrder: 1, isActive: true, checkoutUrl: CHECKOUT.pro || null }, create: { name: 'Pro', credits: 30000, priceCents: 17990, sortOrder: 1, checkoutUrl: CHECKOUT.pro || null } },
+    { name: 'Advanced', update: { credits: 50000, priceCents: 24990, sortOrder: 2, isActive: true, checkoutUrl: CHECKOUT.advanced || null }, create: { name: 'Advanced', credits: 50000, priceCents: 24990, sortOrder: 2, checkoutUrl: CHECKOUT.advanced || null } },
+    { name: 'Studio', update: { credits: 80000, priceCents: 36990, sortOrder: 3, isActive: true, checkoutUrl: CHECKOUT.studio || null }, create: { name: 'Studio', credits: 80000, priceCents: 36990, sortOrder: 3, checkoutUrl: CHECKOUT.studio || null } },
+    // ── Boost packages (desativados — substituídos pelos pacotes acima) ──
+    { name: 'Boost P', update: { isActive: false, sortOrder: 80 }, create: { name: 'Boost P', credits: 550, priceCents: 1690, sortOrder: 80, isActive: false, stripePriceId: STRIPE.priceBoostP } },
+    { name: 'Boost M', update: { isActive: false, sortOrder: 81 }, create: { name: 'Boost M', credits: 1700, priceCents: 2690, sortOrder: 81, isActive: false, stripePriceId: STRIPE.priceBoostM } },
+    { name: 'Boost G', update: { isActive: false, sortOrder: 82 }, create: { name: 'Boost G', credits: 3200, priceCents: 3690, sortOrder: 82, isActive: false, stripePriceId: STRIPE.priceBoostG } },
+    { name: 'Boost XG', update: { isActive: false, sortOrder: 83 }, create: { name: 'Boost XG', credits: 6500, priceCents: 6990, sortOrder: 83, isActive: false, stripePriceId: STRIPE.priceBoostXg } },
+    { name: 'Boost XXG', update: { isActive: false, sortOrder: 84 }, create: { name: 'Boost XXG', credits: 14000, priceCents: 14990, sortOrder: 84, isActive: false, stripePriceId: STRIPE.priceBoostXxg } },
+    // ── Pacotes convertidos dos planos v5 — desativados (fora da vitrine) ──
+    { name: 'Ultra Basic', update: { isActive: false, sortOrder: 85 }, create: { name: 'Ultra Basic', credits: 700, priceCents: 1290, sortOrder: 85, isActive: false } },
+    { name: 'Basic', update: { isActive: false, sortOrder: 86 }, create: { name: 'Basic', credits: 7000, priceCents: 5990, sortOrder: 86, isActive: false } },
     // Legacy packages (kept for backward compatibility, marked inactive)
     { name: 'Starter', update: { isActive: false, sortOrder: 90 }, create: { name: 'Starter', credits: 600, priceCents: 3900, sortOrder: 90, isActive: false } },
-    { name: 'Creator', update: { isActive: false, sortOrder: 91 }, create: { name: 'Creator', credits: 1600, priceCents: 8900, sortOrder: 91, isActive: false } },
-    { name: 'Pro', update: { isActive: false, sortOrder: 92 }, create: { name: 'Pro', credits: 3500, priceCents: 17900, sortOrder: 92, isActive: false } },
-    { name: 'Studio', update: { isActive: false, sortOrder: 93 }, create: { name: 'Studio', credits: 8000, priceCents: 36900, sortOrder: 93, isActive: false } },
     { name: 'Pacote 500', update: { isActive: false }, create: { name: 'Pacote 500', credits: 500, priceCents: 1790, sortOrder: 94, isActive: false, stripePriceId: STRIPE.priceCredits500 } },
     { name: 'Pacote 1.000', update: { isActive: false }, create: { name: 'Pacote 1.000', credits: 1000, priceCents: 2990, sortOrder: 95, isActive: false, stripePriceId: STRIPE.priceCredits1000 } },
     { name: 'Pacote 5.000', update: { isActive: false }, create: { name: 'Pacote 5.000', credits: 5000, priceCents: 12990, sortOrder: 96, isActive: false, stripePriceId: STRIPE.priceCredits5000 } },

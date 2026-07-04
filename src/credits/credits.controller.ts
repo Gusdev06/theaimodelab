@@ -15,6 +15,7 @@ import {
 } from '@nestjs/swagger';
 import { CreditsService } from './credits.service';
 import { CurrentUser } from '../common/decorators';
+import { Public } from '../common/decorators/public.decorator';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { CreditBalanceResponseDto } from './dto/credit-balance-response.dto';
 import { CreditTransactionResponseDto } from './dto/credit-transaction-response.dto';
@@ -96,6 +97,37 @@ export class CreditsController {
           isActive: pkg.isActive,
           sortOrder: pkg.sortOrder,
           stripePriceId: pkg.stripePriceId,
+          checkoutUrl: pkg.checkoutUrl,
+          createdAt: pkg.createdAt,
+        };
+      }),
+    );
+  }
+
+  @Public()
+  @Get('packages/public')
+  @ApiOperation({ summary: 'Lista pacotes de créditos (público, sem autenticação)' })
+  async getPackagesPublic(@Query('currency') currencyQuery?: string) {
+    const resolvedCurrency = (currencyQuery ?? 'BRL').toUpperCase();
+    const packages = await this.creditsService.getPackages();
+    return Promise.all(
+      packages.map(async (pkg) => {
+        let priceCents = pkg.priceCents;
+        let currency = 'BRL';
+        try {
+          const resolved = await this.plansService.resolvePackagePrice(pkg.id, resolvedCurrency);
+          priceCents = resolved.priceCents;
+          currency = resolved.currency;
+        } catch {}
+        return {
+          id: pkg.id,
+          name: pkg.name,
+          credits: pkg.credits,
+          priceCents,
+          currency,
+          isActive: pkg.isActive,
+          sortOrder: pkg.sortOrder,
+          checkoutUrl: pkg.checkoutUrl,
           createdAt: pkg.createdAt,
         };
       }),
@@ -114,6 +146,12 @@ export class CreditsController {
     @Body() dto: PurchaseCreditsDto,
   ): Promise<{ checkoutUrl: string }> {
     const pkg = await this.plansService.findPackageById(dto.packageId);
+
+    // Novo fluxo (sem Stripe): cada pacote tem um link de checkout externo próprio.
+    // Se o pacote tiver checkoutUrl configurado, apenas redirecionamos para ele.
+    if (pkg.checkoutUrl) {
+      return { checkoutUrl: pkg.checkoutUrl };
+    }
 
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
