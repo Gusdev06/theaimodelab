@@ -149,6 +149,7 @@ model CreditPackage {
   sortOrder     Int                  @default(0) @map("sort_order")
   stripePriceId String?              @map("stripe_price_id")
   checkoutUrl   String?              @map("checkout_url")
+  perfectpayPlanCode String?         @map("perfectpay_plan_code")
   createdAt     DateTime             @default(now()) @map("created_at")
   prices        CreditPackagePrice[]
   payments      Payment[]

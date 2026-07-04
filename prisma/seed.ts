@@ -86,6 +86,16 @@ const CHECKOUT = {
   studio: process.env.CHECKOUT_URL_STUDIO ?? 'https://checkout.centerpag.com/pay/PPU38CQDQIG?',
 };
 
+// ── Códigos de PLANO na Perfect Pay (mapeiam o postback → pacote de crédito) ──
+// O produto é único (ex: PPPBEKMJ); cada pacote é um "plano" com preço próprio.
+// Preencher via env com o plan.code de cada plano criado na Perfect Pay.
+const PERFECTPAY = {
+  creator: process.env.PERFECTPAY_PLAN_CREATOR ?? 'PPU38CQDQHP',
+  pro: process.env.PERFECTPAY_PLAN_PRO ?? 'PPU38CQDQID',
+  advanced: process.env.PERFECTPAY_PLAN_ADVANCED ?? 'PPU38CQDQIE',
+  studio: process.env.PERFECTPAY_PLAN_STUDIO ?? 'PPU38CQDQIG',
+};
+
 async function main() {
   console.log('🌱 Starting database seed...');
 
@@ -353,10 +363,10 @@ async function main() {
 
   const packageData = [
     // ── Pacotes de crédito avulsos convertidos dos antigos planos (checkout externo, sem Stripe) ──
-    { name: 'Creator', update: { credits: 12000, priceCents: 8990, sortOrder: 0, isActive: true, checkoutUrl: CHECKOUT.creator || null }, create: { name: 'Creator', credits: 12000, priceCents: 8990, sortOrder: 0, checkoutUrl: CHECKOUT.creator || null } },
-    { name: 'Pro', update: { credits: 30000, priceCents: 17990, sortOrder: 1, isActive: true, checkoutUrl: CHECKOUT.pro || null }, create: { name: 'Pro', credits: 30000, priceCents: 17990, sortOrder: 1, checkoutUrl: CHECKOUT.pro || null } },
-    { name: 'Advanced', update: { credits: 50000, priceCents: 24990, sortOrder: 2, isActive: true, checkoutUrl: CHECKOUT.advanced || null }, create: { name: 'Advanced', credits: 50000, priceCents: 24990, sortOrder: 2, checkoutUrl: CHECKOUT.advanced || null } },
-    { name: 'Studio', update: { credits: 80000, priceCents: 36990, sortOrder: 3, isActive: true, checkoutUrl: CHECKOUT.studio || null }, create: { name: 'Studio', credits: 80000, priceCents: 36990, sortOrder: 3, checkoutUrl: CHECKOUT.studio || null } },
+    { name: 'Creator', update: { credits: 12000, priceCents: 8990, sortOrder: 0, isActive: true, checkoutUrl: CHECKOUT.creator || null, perfectpayPlanCode: PERFECTPAY.creator || null }, create: { name: 'Creator', credits: 12000, priceCents: 8990, sortOrder: 0, checkoutUrl: CHECKOUT.creator || null, perfectpayPlanCode: PERFECTPAY.creator || null } },
+    { name: 'Pro', update: { credits: 30000, priceCents: 17990, sortOrder: 1, isActive: true, checkoutUrl: CHECKOUT.pro || null, perfectpayPlanCode: PERFECTPAY.pro || null }, create: { name: 'Pro', credits: 30000, priceCents: 17990, sortOrder: 1, checkoutUrl: CHECKOUT.pro || null, perfectpayPlanCode: PERFECTPAY.pro || null } },
+    { name: 'Advanced', update: { credits: 50000, priceCents: 24990, sortOrder: 2, isActive: true, checkoutUrl: CHECKOUT.advanced || null, perfectpayPlanCode: PERFECTPAY.advanced || null }, create: { name: 'Advanced', credits: 50000, priceCents: 24990, sortOrder: 2, checkoutUrl: CHECKOUT.advanced || null, perfectpayPlanCode: PERFECTPAY.advanced || null } },
+    { name: 'Studio', update: { credits: 80000, priceCents: 36990, sortOrder: 3, isActive: true, checkoutUrl: CHECKOUT.studio || null, perfectpayPlanCode: PERFECTPAY.studio || null }, create: { name: 'Studio', credits: 80000, priceCents: 36990, sortOrder: 3, checkoutUrl: CHECKOUT.studio || null, perfectpayPlanCode: PERFECTPAY.studio || null } },
     // ── Boost packages (desativados — substituídos pelos pacotes acima) ──
     { name: 'Boost P', update: { isActive: false, sortOrder: 80 }, create: { name: 'Boost P', credits: 550, priceCents: 1690, sortOrder: 80, isActive: false, stripePriceId: STRIPE.priceBoostP } },
     { name: 'Boost M', update: { isActive: false, sortOrder: 81 }, create: { name: 'Boost M', credits: 1700, priceCents: 2690, sortOrder: 81, isActive: false, stripePriceId: STRIPE.priceBoostM } },
@@ -410,13 +420,26 @@ async function main() {
     { name: 'Boost G', currency: 'EUR', priceCents: 890, stripePriceId: STRIPE.priceBoostGEur },
     { name: 'Boost XG', currency: 'EUR', priceCents: 1890, stripePriceId: STRIPE.priceBoostXgEur },
     { name: 'Boost XXG', currency: 'EUR', priceCents: 3990, stripePriceId: STRIPE.priceBoostXxgEur },
+    // ── Pacotes convertidos dos planos (checkout externo CenterPag, sem Stripe) ──
+    // BRL
+    { name: 'Creator', currency: 'BRL', priceCents: 8990, stripePriceId: '' },
+    { name: 'Pro', currency: 'BRL', priceCents: 17990, stripePriceId: '' },
+    { name: 'Advanced', currency: 'BRL', priceCents: 24990, stripePriceId: '' },
+    { name: 'Studio', currency: 'BRL', priceCents: 36990, stripePriceId: '' },
+    // USD
+    { name: 'Creator', currency: 'USD', priceCents: 1990, stripePriceId: '' },
+    { name: 'Pro', currency: 'USD', priceCents: 3990, stripePriceId: '' },
+    { name: 'Advanced', currency: 'USD', priceCents: 5490, stripePriceId: '' },
+    { name: 'Studio', currency: 'USD', priceCents: 7990, stripePriceId: '' },
   ];
 
   const packagesByName = new Map(packages.map((p) => [p.name, p]));
   let packagePriceCount = 0;
   for (const pp of packagePriceData) {
     const pkg = packagesByName.get(pp.name);
-    if (!pkg || !pp.stripePriceId) continue;
+    // Pacotes com checkout externo não têm stripePriceId — ainda assim precisam
+    // da linha de preço por moeda (BRL/USD) para o valor correto ser resolvido.
+    if (!pkg) continue;
     await prisma.creditPackagePrice.upsert({
       where: { creditPackageId_currency: { creditPackageId: pkg.id, currency: pp.currency } },
       update: { priceCents: pp.priceCents, stripePriceId: pp.stripePriceId, isActive: true },

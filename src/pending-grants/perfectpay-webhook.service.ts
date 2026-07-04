@@ -8,6 +8,8 @@ import { ConfigService } from '@nestjs/config';
 import { timingSafeEqual } from 'node:crypto';
 import { EmailService } from '../email/email.service';
 import { WebhookLogsService } from '../webhook-logs/webhook-logs.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { PaymentsService } from '../payments/payments.service';
 import {
   DEFAULT_HUBLA_BUNDLE,
   PendingGrantsService,
@@ -16,9 +18,14 @@ import {
 /**
  * Webhook do Perfect Pay (https://www.perfectpay.com.br).
  *
- * Mesmo modelo de Hotmart/Hubla/Greenn: a compra libera o bundle de gerações
- * grátis (DEFAULT_HUBLA_BUNDLE) por email. Quando o usuário se cadastra com
- * esse email, as gerações são consumidas no signup.
+ * Dois fluxos, separados pelo `product.code`:
+ *  1. Pacote de crédito: o produto é único; cada pacote é um "plano" cujo código
+ *     aparece no link de checkout. Se o plan.code casar com um credit_packages
+ *     (perfectpay_plan_code), credita o pacote na conta do email comprador via
+ *     PaymentsService.processCreditPurchase (saldo bônus). Exige conta.
+ *  2. Curso (demais produtos): mesmo modelo de Hotmart/Hubla/Greenn — libera o
+ *     bundle de gerações grátis (DEFAULT_HUBLA_BUNDLE) por email, consumido no
+ *     signup quando o usuário se cadastra com esse email.
  *
  * Payload típico (v2.1):
  *
@@ -55,6 +62,8 @@ export class PerfectpayWebhookService {
     private readonly pendingGrantsService: PendingGrantsService,
     private readonly webhookLogs: WebhookLogsService,
     private readonly emailService: EmailService,
+    private readonly prisma: PrismaService,
+    private readonly paymentsService: PaymentsService,
   ) {}
 
   async handle(
@@ -86,6 +95,22 @@ export class PerfectpayWebhookService {
       throw new BadRequestException('Email do comprador não encontrado no payload');
     }
 
+    // Compra de pacote de crédito? Na Perfect Pay o produto é único; o que
+    // distingue o pacote é o "plano", cujo código aparece no link de checkout
+    // (ex: .../pay/PPU38CQDQHP). Coletamos candidatos de vários campos e casamos
+    // com credit_packages.perfectpay_plan_code.
+    const planCandidates = this.extractPlanCandidates(payload);
+    const creditPackage = planCandidates.length
+      ? await this.prisma.creditPackage.findFirst({
+          where: { perfectpayPlanCode: { in: planCandidates } },
+        })
+      : null;
+
+    if (creditPackage) {
+      return this.handleCreditPurchase(payload, email, creditPackage);
+    }
+
+    // Caso contrário: produto de curso → libera gerações grátis por email (fluxo atual).
     const { created } = await this.pendingGrantsService.createPending({
       email,
       bundle: DEFAULT_HUBLA_BUNDLE,
@@ -101,6 +126,55 @@ export class PerfectpayWebhookService {
       const buyerName = this.extractName(payload);
       await this.emailService.sendPendingGrantsEmailEs(email, buyerName);
     }
+
+    return { processed: true };
+  }
+
+  /**
+   * Credita um pacote de crédito comprado via Perfect Pay.
+   *
+   * Regra do negócio: o comprador precisa ter conta antes de comprar. Casamos a
+   * venda com a conta pelo email. Se não houver conta com esse email, NÃO
+   * creditamos (apenas logamos), pois não temos como saber a quem pertence.
+   * Idempotência: o `code` da venda vira o externalPaymentId no processCreditPurchase.
+   */
+  private async handleCreditPurchase(
+    payload: any,
+    email: string,
+    creditPackage: { id: string; name: string; credits: number },
+  ): Promise<{ processed: boolean; reason?: string }> {
+    const saleCode = this.extractSaleCode(payload);
+    if (!saleCode) {
+      throw new BadRequestException('Código da venda (code) não encontrado no payload');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: { id: true, referredByCode: true },
+    });
+
+    if (!user) {
+      this.logger.warn(
+        `Perfectpay: compra do pacote "${creditPackage.name}" (venda ${saleCode}) mas nenhuma conta tem o email ${email}. Não creditado.`,
+      );
+      return { processed: false, reason: `no account for email ${email}` };
+    }
+
+    const amountCents = this.extractAmountCents(payload);
+
+    await this.paymentsService.processCreditPurchase(
+      user.id,
+      creditPackage.id,
+      amountCents,
+      saleCode,
+      'BRL',
+      user.referredByCode ?? undefined,
+      'perfectpay',
+    );
+
+    this.logger.log(
+      `Perfectpay credit purchase: +${creditPackage.credits} créditos (${creditPackage.name}) → user ${user.id} (${email})`,
+    );
 
     return { processed: true };
   }
@@ -169,6 +243,65 @@ export class PerfectpayWebhookService {
     const status = payload?.sale_status_enum ?? 'na';
     if (code) return `perfectpay-sale-${code}-${status}`;
     return null;
+  }
+
+  /**
+   * Candidatos ao código do "plano" na Perfect Pay. O produto é único p/ todos
+   * os pacotes; cada pacote é um plano cujo código aparece no link de checkout
+   * (ex: .../pay/PPU38CQDQHP). Como o campo exato do postback pode variar,
+   * coletamos de vários lugares: plan.code/name, campos *_code, e o último
+   * segmento de qualquer URL de checkout presente. Casa com
+   * credit_packages.perfectpay_plan_code via `IN`.
+   */
+  private extractPlanCandidates(payload: any): string[] {
+    const raw: unknown[] = [
+      payload?.plan?.code,
+      payload?.plan_code,
+      payload?.plan?.name,
+      payload?.plan?.external_reference,
+      payload?.checkout_code,
+      payload?.product?.plan?.code,
+    ];
+
+    // Extrai o código do final de qualquer URL de checkout no payload.
+    const urlFields: unknown[] = [
+      payload?.checkout_url,
+      payload?.url,
+      payload?.plan?.checkout_url,
+      payload?.plan?.url,
+      payload?.product?.checkout_url,
+      payload?.sale_url,
+    ];
+    for (const u of urlFields) {
+      if (typeof u === 'string' && u.length > 0) {
+        const seg = u.split(/[?#]/)[0].replace(/\/+$/, '').split('/').pop();
+        if (seg) raw.push(seg);
+      }
+    }
+
+    const seen = new Set<string>();
+    for (const v of raw) {
+      if (v == null) continue;
+      const s = String(v).trim();
+      if (s.length > 0) seen.add(s);
+    }
+    return [...seen];
+  }
+
+  /** Identificador estável da venda (idempotência do crédito, por venda). */
+  private extractSaleCode(payload: any): string | null {
+    const code = payload?.code ?? payload?.sale_code ?? null;
+    if (!code) return null;
+    const s = String(code).trim();
+    return s.length > 0 ? `perfectpay-${s}` : null;
+  }
+
+  /** Valor pago em centavos (sale_amount vem em reais, ex: 89.90). */
+  private extractAmountCents(payload: any): number {
+    const raw = payload?.sale_amount ?? payload?.amount ?? 0;
+    const num = typeof raw === 'number' ? raw : parseFloat(String(raw));
+    if (!Number.isFinite(num) || num <= 0) return 0;
+    return Math.round(num * 100);
   }
 
   private extractEmail(payload: any): string | null {

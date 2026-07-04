@@ -13,9 +13,10 @@ import { PerfectpayWebhookController } from './perfectpay-webhook.controller';
 import { PerfectpayWebhookService } from './perfectpay-webhook.service';
 import { WebhookLogsModule } from '../webhook-logs/webhook-logs.module';
 import { EmailModule } from '../email/email.module';
+import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
-  imports: [PrismaModule, WebhookLogsModule, EmailModule],
+  imports: [PrismaModule, WebhookLogsModule, EmailModule, PaymentsModule],
   controllers: [
     HublaWebhookController,
     HotmartWebhookController,
