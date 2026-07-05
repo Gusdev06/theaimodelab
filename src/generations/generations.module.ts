@@ -24,6 +24,7 @@ import { BytedanceSeedanceProvider } from './providers/bytedance-seedance.provid
 import { SeedreamLiteProvider } from './providers/seedream-lite.provider';
 import { SeedreamProvider } from './providers/seedream.provider';
 import { GptImageProvider } from './providers/gpt-image.provider';
+import { DeepDeepProvider } from './providers/deepdeep.provider';
 import { WavespeedAudioProvider } from './providers/wavespeed-audio.provider';
 import { PromptEnhancerModule } from '../prompt-enhancer/prompt-enhancer.module';
 import { ModelsModule } from '../models/models.module';
@@ -74,6 +75,7 @@ import { VoicesModule } from '../voices/voices.module';
     SeedreamLiteProvider,
     SeedreamProvider,
     GptImageProvider,
+    DeepDeepProvider,
     WavespeedAudioProvider,
   ],
   exports: [GenerationsService],

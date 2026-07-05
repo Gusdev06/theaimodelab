@@ -42,6 +42,7 @@ export class GenerateImageDto {
       'sem-censura',
       'gpt-image-2',
       'seedream-5-lite',
+      'deepdeep',
     ],
   })
   @IsString()
@@ -51,6 +52,7 @@ export class GenerateImageDto {
     'sem-censura',
     'gpt-image-2',
     'seedream-5-lite',
+    'deepdeep',
   ])
   model: string;
 

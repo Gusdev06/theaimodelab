@@ -91,6 +91,8 @@ function getModelVariant(model: string | undefined | null): string | null {
     'bytedance-seedance-2': 'SEEDANCE_2',
     // KIE API (Seedream Lite) — unificado: T2I se sem images, I2I se com images
     'seedream-5-lite': 'SEEDREAM_LITE',
+    // Deepdeep API (n88ed) — image-to-image, requer imagem de input
+    deepdeep: 'DEEPDEEP',
   };
   return MODEL_TO_VARIANT[model] ?? null;
 }
@@ -418,6 +420,15 @@ export class GenerationsService {
       }
     }
 
+    if (dto.model === 'deepdeep') {
+      if (!dto.images?.length) {
+        throw new BadRequestException(
+          'O modelo Deepdeep requer uma imagem de input.',
+        );
+      }
+      await this.modelsService.assertActiveBySlug(dto.model, AiModelType.IMAGE);
+    }
+
     const type = dto.images?.length
       ? GenerationType.IMAGE_TO_IMAGE
       : GenerationType.TEXT_TO_IMAGE;
@@ -588,6 +599,15 @@ export class GenerationsService {
     dto: GenerateImageDto,
     freeGenerationTypeOverride?: FreeGenerationType,
   ): Promise<CreateGenerationResponseDto> {
+    if (dto.model === 'deepdeep') {
+      if (!dto.images?.length) {
+        throw new BadRequestException(
+          'O modelo Deepdeep requer uma imagem de input.',
+        );
+      }
+      await this.modelsService.assertActiveBySlug(dto.model, AiModelType.IMAGE);
+    }
+
     const type = dto.images?.length
       ? GenerationType.IMAGE_TO_IMAGE
       : GenerationType.TEXT_TO_IMAGE;

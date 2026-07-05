@@ -308,6 +308,12 @@ async function main() {
     { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 60, isPerSecond: false },
     { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_3K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 80, isPerSecond: false },
 
+    // Deepdeep (DEEPDEEP) — n88ed API — image-to-image, resolução fixa (front manda RES_2K).
+    // 250 créditos. Custo real US$0,10 (~R$0,567), margem ≥51% em todos os planos.
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'DEEPDEEP', creditsPerUnit: 250, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'DEEPDEEP', creditsPerUnit: 250, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'DEEPDEEP', creditsPerUnit: 250, isPerSecond: false },
+
     // Virtual Try-On — NB2 (mirrors IMAGE_TO_IMAGE NB2 pricing)
     { generationType: 'VIRTUAL_TRY_ON', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 90, isPerSecond: false },
     { generationType: 'VIRTUAL_TRY_ON', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 130, isPerSecond: false },
@@ -504,6 +510,7 @@ async function main() {
   const imageModels = [
     { slug: 'seedream-5-lite', label: 'Seedream Lite', provider: 'KIE' as const, modelVariant: 'SEEDREAM_LITE', sortOrder: 0 },
     { slug: 'sem-censura', label: 'The AI Model Lab Unlocked', provider: 'THEAIMODELAB' as const, modelVariant: 'SEM_CENSURA', sortOrder: 1 },
+    { slug: 'deepdeep', label: 'DeepDeep', provider: 'KIE' as const, modelVariant: 'DEEPDEEP', sortOrder: 2 },
   ];
 
   for (const model of imageModels) {

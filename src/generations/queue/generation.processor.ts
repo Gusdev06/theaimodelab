@@ -18,6 +18,7 @@ import { BytedanceSeedanceProvider } from '../providers/bytedance-seedance.provi
 import { SeedreamLiteProvider } from '../providers/seedream-lite.provider';
 import { SeedreamProvider } from '../providers/seedream.provider';
 import { GptImageProvider } from '../providers/gpt-image.provider';
+import { DeepDeepProvider } from '../providers/deepdeep.provider';
 import { WavespeedAudioProvider } from '../providers/wavespeed-audio.provider';
 import { GenerationEventsService } from '../generation-events.service';
 import { PromptEnhancerService } from '../../prompt-enhancer/prompt-enhancer.service';
@@ -73,6 +74,7 @@ export class GenerationProcessor extends WorkerHost {
     private readonly seedreamLiteProvider: SeedreamLiteProvider,
     private readonly seedreamProvider: SeedreamProvider,
     private readonly gptImageProvider: GptImageProvider,
+    private readonly deepDeepProvider: DeepDeepProvider,
     private readonly wavespeedAudioProvider: WavespeedAudioProvider,
     private readonly generationEvents: GenerationEventsService,
     private readonly promptEnhancer: PromptEnhancerService,
@@ -289,6 +291,26 @@ export class GenerationProcessor extends WorkerHost {
       return;
     }
 
+    if (data.model === 'deepdeep') {
+      // Deepdeep é image-to-image puro: sempre precisa de imagem de input.
+      const inputImages = await this.prisma.generationInputImage.findMany({
+        where: { generationId: data.generationId },
+        orderBy: { order: 'asc' },
+      });
+      const imageUrls = inputImages
+        .map((img) => img.url)
+        .filter((url): url is string => !!url);
+
+      const result = await this.deepDeepProvider.generateImage({
+        id: data.generationId,
+        prompt: data.prompt,
+        imageUrls,
+      });
+
+      await this.completeGeneration(data.generationId, result, startTime);
+      return;
+    }
+
     const images = data.hasInputImages
       ? await this.loadInputImagesAsBase64(data.generationId)
       : undefined;
@@ -388,6 +410,26 @@ export class GenerationProcessor extends WorkerHost {
         }
         throw error;
       }
+      return;
+    }
+
+    if (data.model === 'deepdeep') {
+      // Deepdeep é image-to-image puro com provider próprio — não tem fallback.
+      const inputImages = await this.prisma.generationInputImage.findMany({
+        where: { generationId: data.generationId },
+        orderBy: { order: 'asc' },
+      });
+      const imageUrls = inputImages
+        .map((img) => img.url)
+        .filter((url): url is string => !!url);
+
+      const result = await this.deepDeepProvider.generateImage({
+        id: data.generationId,
+        prompt: data.prompt,
+        imageUrls,
+      });
+
+      await this.completeGeneration(data.generationId, result, startTime);
       return;
     }
 
