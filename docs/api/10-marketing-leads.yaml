@@ -26,7 +26,51 @@ paths:
           description: Invalid lead payload.
         '429':
           description: Rate limit exceeded.
+  /api/v1/admin/marketing-leads:
+    get:
+      summary: List captured marketing leads for admins.
+      operationId: listMarketingLeads
+      tags:
+        - Admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: search
+          in: query
+          schema:
+            type: string
+            maxLength: 120
+        - name: source
+          in: query
+          schema:
+            type: string
+            maxLength: 64
+      responses:
+        '200':
+          description: Paginated marketing leads.
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: User is not an admin.
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
   schemas:
     CaptureMarketingLeadRequest:
       type: object
