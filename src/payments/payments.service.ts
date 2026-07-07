@@ -239,6 +239,224 @@ export class PaymentsService {
   }
 
   /**
+   * Ativa ou renova uma assinatura mensal paga via Perfect Pay.
+   *
+   * A recorrência é gerida pela Perfect Pay: cada cobrança mensal dispara um
+   * webhook de venda aprovada, que cai aqui. Comportamento:
+   *  - Assinatura perfectpay ativa do MESMO plano → renova (estende período +1 mês
+   *    a partir do fim do período vigente, reseta créditos do plano).
+   *  - Assinatura ativa de OUTRO plano → troca (cancela a antiga, cria a nova).
+   *  - Sem assinatura ativa → cria nova (cancela quaisquer outras ativas).
+   *
+   * Idempotente pelo código da venda (Payment.externalPaymentId). Comissão de
+   * afiliado só é registrada na primeira ativação, nunca em renovações.
+   */
+  async activateOrRenewPerfectpaySubscription(params: {
+    userId: string;
+    planId: string;
+    saleCode: string;
+    amountCents: number;
+    currency: string;
+    referredByCode?: string;
+  }): Promise<{ processed: boolean; reason?: string }> {
+    const { userId, planId, saleCode, amountCents, currency, referredByCode } = params;
+
+    const plan = await this.prisma.plan.findUnique({ where: { id: planId } });
+    if (!plan) {
+      throw new NotFoundException(`Plano "${planId}" não encontrado`);
+    }
+
+    let created = false;
+    let skipped = false;
+
+    await this.prisma.$transaction(async (tx) => {
+      // Idempotência dentro da transaction (evita crédito duplicado em retries do webhook)
+      const existingPayment = await tx.payment.findFirst({
+        where: { externalPaymentId: saleCode },
+      });
+      if (existingPayment) {
+        skipped = true;
+        return;
+      }
+
+      const now = new Date();
+
+      const activeSub = await tx.subscription.findFirst({
+        where: {
+          userId,
+          paymentProvider: 'perfectpay',
+          status: { in: ['ACTIVE', 'PAST_DUE'] },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      let subscription;
+      if (activeSub && activeSub.planId === plan.id) {
+        // Renovação do mesmo plano: estende a partir do fim do período vigente
+        const base =
+          activeSub.currentPeriodEnd > now ? activeSub.currentPeriodEnd : now;
+        const periodEnd = new Date(base);
+        periodEnd.setMonth(periodEnd.getMonth() + 1);
+        subscription = await tx.subscription.update({
+          where: { id: activeSub.id },
+          data: {
+            status: 'ACTIVE',
+            currentPeriodStart: now,
+            currentPeriodEnd: periodEnd,
+            cancelAtPeriodEnd: false,
+            paymentRetryCount: 0,
+          },
+        });
+      } else {
+        // Primeira compra ou troca de plano: cancela ativas e cria nova
+        await tx.subscription.updateMany({
+          where: { userId, status: { in: ['ACTIVE', 'TRIALING', 'PAST_DUE'] } },
+          data: { status: 'CANCELED', cancelAtPeriodEnd: false },
+        });
+        const periodEnd = new Date(now);
+        periodEnd.setMonth(periodEnd.getMonth() + 1);
+        subscription = await tx.subscription.create({
+          data: {
+            userId,
+            planId: plan.id,
+            status: 'ACTIVE',
+            currentPeriodStart: now,
+            currentPeriodEnd: periodEnd,
+            paymentProvider: 'perfectpay',
+            externalSubscriptionId: saleCode,
+          },
+        });
+        created = true;
+      }
+
+      // Reset dos créditos do plano (não acumulam). bonusCreditsRemaining é preservado no update.
+      await tx.creditBalance.upsert({
+        where: { userId },
+        create: {
+          userId,
+          planCreditsRemaining: plan.creditsPerMonth,
+          bonusCreditsRemaining: 0,
+          planCreditsUsed: 0,
+          periodStart: now,
+          periodEnd: subscription.currentPeriodEnd,
+        },
+        update: {
+          planCreditsRemaining: plan.creditsPerMonth,
+          planCreditsUsed: 0,
+          periodStart: now,
+          periodEnd: subscription.currentPeriodEnd,
+        },
+      });
+
+      const payment = await tx.payment.create({
+        data: {
+          userId,
+          type: 'SUBSCRIPTION',
+          amountCents,
+          currency: currency.toUpperCase(),
+          status: 'COMPLETED',
+          provider: 'perfectpay',
+          externalPaymentId: saleCode,
+          subscriptionId: subscription.id,
+        },
+      });
+
+      await tx.creditTransaction.create({
+        data: {
+          userId,
+          type: 'SUBSCRIPTION_RENEWAL',
+          amount: plan.creditsPerMonth,
+          source: 'plan',
+          description: created
+            ? `Assinatura criada — plano ${plan.name}`
+            : `Renovação do plano ${plan.name} — ${plan.creditsPerMonth} créditos`,
+          paymentId: payment.id,
+        },
+      });
+
+      if (created) {
+        await this.recordAffiliateEarning(tx, userId, payment.id, amountCents, referredByCode);
+      }
+    });
+
+    if (skipped) {
+      this.logger.log(`Perfectpay sale ${saleCode} já processado — skip`);
+      return { processed: false, reason: 'duplicate sale' };
+    }
+
+    this.logger.log(
+      `Perfectpay subscription ${created ? 'ATIVADA' : 'RENOVADA'} — user ${userId}, plano ${plan.slug} (${plan.creditsPerMonth} créditos)`,
+    );
+
+    if (created) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true, name: true },
+      });
+      if (user?.email) {
+        await this.emailService.sendSubscriptionEmail(
+          user.email,
+          user.name,
+          plan.name,
+          plan.creditsPerMonth,
+        );
+      }
+    }
+
+    return { processed: true };
+  }
+
+  /**
+   * Revoga a assinatura Perfect Pay ativa do usuário.
+   *  - immediate=false (cancelamento normal): mantém acesso até o fim do período pago
+   *    (cancelAtPeriodEnd=true). Um cron expira ao fim do período.
+   *  - immediate=true (reembolso/chargeback): cancela e zera os créditos do plano na hora.
+   */
+  async revokePerfectpaySubscription(
+    userId: string,
+    opts: { immediate: boolean; reason: string },
+  ): Promise<{ processed: boolean; reason?: string }> {
+    const sub = await this.prisma.subscription.findFirst({
+      where: {
+        userId,
+        paymentProvider: 'perfectpay',
+        status: { in: ['ACTIVE', 'PAST_DUE'] },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!sub) {
+      return { processed: false, reason: 'no active perfectpay subscription' };
+    }
+
+    if (opts.immediate) {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.subscription.update({
+          where: { id: sub.id },
+          data: { status: 'CANCELED', cancelAtPeriodEnd: false },
+        });
+        await tx.creditBalance.updateMany({
+          where: { userId },
+          data: { planCreditsRemaining: 0, planCreditsUsed: 0 },
+        });
+      });
+      this.logger.log(
+        `Perfectpay subscription ${sub.id} REVOGADA imediatamente (${opts.reason}) — user ${userId}`,
+      );
+    } else {
+      await this.prisma.subscription.update({
+        where: { id: sub.id },
+        data: { cancelAtPeriodEnd: true },
+      });
+      this.logger.log(
+        `Perfectpay subscription ${sub.id} marcada p/ cancelar no fim do período (${opts.reason}) — user ${userId}`,
+      );
+    }
+
+    return { processed: true };
+  }
+
+  /**
    * Processa compra avulsa de créditos (checkout.session.completed).
    * Adiciona bonus credits e registra payment.
    */

@@ -96,6 +96,8 @@ model Plan {
   isActive                 Boolean        @default(true) @map("is_active")
   sortOrder                Int            @default(0) @map("sort_order")
   stripePriceId            String?        @map("stripe_price_id")
+  perfectpayPlanCode       String?        @map("perfectpay_plan_code")
+  checkoutUrl              String?        @map("checkout_url")
   createdAt                DateTime       @default(now()) @map("created_at")
   updatedAt                DateTime       @updatedAt @map("updated_at")
   voice_clone_limit        Int?

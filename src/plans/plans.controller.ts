@@ -11,13 +11,25 @@ export class PlansController {
 
   @Public()
   @Get()
-  @ApiOperation({ summary: 'Lista todos os planos disponíveis' })
+  @ApiOperation({ summary: 'Lista os planos mensais disponíveis' })
   @ApiResponse({ status: 200, type: [PlanResponseDto] })
   async findAll(): Promise<PlanResponseDto[]> {
-    // Modelo de assinatura descontinuado: a monetização passou a ser 100% via
-    // pacotes de crédito avulsos (ver GET /api/v1/credits/packages).
-    // Ocultamos todos os planos da listagem pública, mantendo a infra de
-    // subscriptions intacta no backend para assinantes legados.
-    return [];
+    // Monetização é 100% assinatura mensal via Perfect Pay. Retorna os planos
+    // ativos com o link de checkout recorrente (o front redireciona pra ele).
+    const plans = await this.plansService.findAllPlans();
+    return plans.map((p) => ({
+      id: p.id,
+      slug: p.slug,
+      name: p.name,
+      description: p.description,
+      priceCents: p.priceCents,
+      currency: 'BRL',
+      creditsPerMonth: p.creditsPerMonth,
+      maxConcurrentGenerations: p.maxConcurrentGenerations,
+      hasWatermark: p.hasWatermark,
+      galleryRetentionDays: p.galleryRetentionDays,
+      hasApiAccess: p.hasApiAccess,
+      checkoutUrl: p.checkoutUrl ?? null,
+    }));
   }
 }

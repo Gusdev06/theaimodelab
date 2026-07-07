@@ -6,7 +6,7 @@ import {
   Query,
   UsePipes,
   ValidationPipe,
-  Req,
+  GoneException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -139,71 +139,17 @@ export class CreditsController {
 
   @Post('purchase')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
-  @ApiOperation({ summary: 'Compra pacote de créditos (redireciona para Stripe Checkout)' })
-  @ApiResponse({
-    status: 200,
-    description: 'URL do checkout retornada com sucesso',
-  })
+  @ApiOperation({ summary: '[DESCONTINUADO] Compra de créditos avulsos — assine um plano mensal' })
+  @ApiResponse({ status: 410, description: 'Compra de créditos avulsos descontinuada' })
   async purchaseCredits(
-    @CurrentUser('sub') userId: string,
-    @Body() dto: PurchaseCreditsDto,
-    @Req() req: any,
+    @CurrentUser('sub') _userId: string,
+    @Body() _dto: PurchaseCreditsDto,
   ): Promise<{ checkoutUrl: string }> {
-    const pkg = await this.plansService.findPackageById(dto.packageId);
-
-    // Novo fluxo (sem Stripe): cada pacote tem um link de checkout externo próprio.
-    // Se o pacote tiver checkoutUrl configurado, apenas redirecionamos para ele.
-    const user = await this.prisma.user.findUniqueOrThrow({
-      where: { id: userId },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        phone: true,
-        country: true,
-        referredByCode: true,
-        currency: true,
-        fbp: true,
-        fbc: true,
-      },
-    });
-
-    const currency = dto.currency ?? user.currency;
-    const resolved = await this.plansService.resolvePackagePrice(pkg.id, currency);
-
-    await this.metaConversionsService.trackInitiateCheckout({
-      user,
-      context: dto.meta,
-      requestContext: this.metaConversionsService.buildRequestContext(req),
-      contentId: pkg.id,
-      contentName: pkg.name,
-      valueCents: resolved.priceCents,
-      currency: resolved.currency,
-      checkoutType: 'credit_package',
-    });
-
-    if (pkg.checkoutUrl) {
-      return { checkoutUrl: pkg.checkoutUrl };
-    }
-
-    const customerId = await this.stripeService.getOrCreateCustomer(
-      userId,
-      user.email,
-      user.name,
+    // Compra de créditos avulsos descontinuada: monetização é 100% assinatura
+    // mensal (ver GET /api/v1/plans). Retorna erro claro para clients legados.
+    throw new GoneException(
+      'A compra de créditos avulsos foi descontinuada. Assine um plano mensal.',
     );
-
-    const checkoutUrl = await this.stripeService.createCreditPurchaseCheckout(
-      customerId,
-      pkg.id,
-      pkg.name,
-      pkg.credits,
-      resolved.priceCents,
-      userId,
-      resolved.stripePriceId,
-      user.referredByCode ?? undefined,
-    );
-
-    return { checkoutUrl };
   }
 
   @Post('estimate')

@@ -84,7 +84,29 @@ export class PerfectpayWebhookService {
       payload,
     );
 
-    if (!this.isPaidEvent(payload)) {
+    const kind = this.classifyEvent(payload);
+
+    // Cancelamento / reembolso / chargeback de assinatura recorrente.
+    // refund/chargeback → revoga na hora; cancelamento normal → acesso até fim do período.
+    if (kind === 'canceled' || kind === 'refund' || kind === 'chargeback') {
+      if (!email) {
+        return { processed: false, reason: `${kind} event sem email` };
+      }
+      const user = await this.prisma.user.findUnique({
+        where: { email },
+        select: { id: true },
+      });
+      if (!user) {
+        return { processed: false, reason: `no account for email ${email}` };
+      }
+      const immediate = kind === 'refund' || kind === 'chargeback';
+      return this.paymentsService.revokePerfectpaySubscription(user.id, {
+        immediate,
+        reason: kind,
+      });
+    }
+
+    if (kind !== 'paid') {
       return {
         processed: false,
         reason: `ignored event: status=${payload?.sale_status_enum ?? 'n/a'} (${payload?.sale_status_detail ?? 'n/a'})`,
@@ -95,11 +117,23 @@ export class PerfectpayWebhookService {
       throw new BadRequestException('Email do comprador não encontrado no payload');
     }
 
-    // Compra de pacote de crédito? Na Perfect Pay o produto é único; o que
-    // distingue o pacote é o "plano", cujo código aparece no link de checkout
-    // (ex: .../pay/PPU38CQDQHP). Coletamos candidatos de vários campos e casamos
-    // com credit_packages.perfectpay_plan_code.
+    // Na Perfect Pay o produto é único; o que distingue plano/pacote é o "plano",
+    // cujo código aparece no link de checkout (ex: .../pay/PPU38CQDTOF). Coletamos
+    // candidatos de vários campos do postback.
     const planCandidates = this.extractPlanCandidates(payload);
+
+    // 1) Assinatura mensal? casa com plans.perfectpay_plan_code (planos ativos).
+    const plan = planCandidates.length
+      ? await this.prisma.plan.findFirst({
+          where: { perfectpayPlanCode: { in: planCandidates }, isActive: true },
+        })
+      : null;
+
+    if (plan) {
+      return this.handlePlanSubscription(payload, email, plan);
+    }
+
+    // 2) (Legado) Pacote de crédito avulso — mantido para compras antigas.
     const creditPackage = planCandidates.length
       ? await this.prisma.creditPackage.findFirst({
           where: { perfectpayPlanCode: { in: planCandidates } },
@@ -110,7 +144,7 @@ export class PerfectpayWebhookService {
       return this.handleCreditPurchase(payload, email, creditPackage);
     }
 
-    // Caso contrário: produto de curso → libera gerações grátis por email (fluxo atual).
+    // 3) Caso contrário: produto de curso → libera gerações grátis por email.
     const { created } = await this.pendingGrantsService.createPending({
       email,
       bundle: DEFAULT_HUBLA_BUNDLE,
@@ -128,6 +162,42 @@ export class PerfectpayWebhookService {
     }
 
     return { processed: true };
+  }
+
+  /**
+   * Ativa/renova a assinatura mensal do plano comprado via Perfect Pay.
+   * Exige conta com o email da compra (idempotente pelo código da venda).
+   */
+  private async handlePlanSubscription(
+    payload: any,
+    email: string,
+    plan: { id: string; slug: string; name: string },
+  ): Promise<{ processed: boolean; reason?: string }> {
+    const saleCode = this.extractSaleCode(payload);
+    if (!saleCode) {
+      throw new BadRequestException('Código da venda (code) não encontrado no payload');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: { id: true, referredByCode: true },
+    });
+
+    if (!user) {
+      this.logger.warn(
+        `Perfectpay: assinatura do plano "${plan.name}" (venda ${saleCode}) mas nenhuma conta tem o email ${email}. Não ativado.`,
+      );
+      return { processed: false, reason: `no account for email ${email}` };
+    }
+
+    return this.paymentsService.activateOrRenewPerfectpaySubscription({
+      userId: user.id,
+      planId: plan.id,
+      saleCode,
+      amountCents: this.extractAmountCents(payload),
+      currency: this.extractCurrency(payload),
+      referredByCode: user.referredByCode ?? undefined,
+    });
   }
 
   /**
@@ -216,18 +286,41 @@ export class PerfectpayWebhookService {
   }
 
   /**
-   * 2 = approved, 4 = completed (renovação ou pagamento concluído).
-   * Outros status (pending/refund/chargeback/expired) são ignorados.
+   * Classifica o evento do postback em uma ação:
+   *  - 'paid'       → 2 (approved) ou 4 (completed): cria/renova assinatura.
+   *  - 'refund'     → 6 (estornado) ou detalhe de reembolso: revoga imediatamente.
+   *  - 'chargeback' → 7 (disputa/chargeback): revoga imediatamente.
+   *  - 'canceled'   → assinatura cancelada (recorrência interrompida): acesso até fim do período.
+   *  - 'ignore'     → pending e demais status.
    */
-  private isPaidEvent(payload: any): boolean {
+  private classifyEvent(
+    payload: any,
+  ): 'paid' | 'refund' | 'chargeback' | 'canceled' | 'ignore' {
     const status = payload?.sale_status_enum;
-    if (status === 2 || status === 4) return true;
-
     const detail =
       typeof payload?.sale_status_detail === 'string'
         ? payload.sale_status_detail.toLowerCase()
-        : null;
-    return detail === 'approved' || detail === 'completed';
+        : '';
+    const subStatus =
+      typeof payload?.subscription?.status === 'string'
+        ? payload.subscription.status.toLowerCase()
+        : typeof payload?.subscription_status === 'string'
+          ? payload.subscription_status.toLowerCase()
+          : '';
+
+    if (status === 7 || /charge.?back|dispute|reclam/.test(detail)) {
+      return 'chargeback';
+    }
+    if (status === 6 || /refund|estorn|reembol|devolv/.test(detail)) {
+      return 'refund';
+    }
+    if (/cancel/.test(detail) || /cancel|inactive|expired/.test(subStatus)) {
+      return 'canceled';
+    }
+    if (status === 2 || status === 4 || detail === 'approved' || detail === 'completed') {
+      return 'paid';
+    }
+    return 'ignore';
   }
 
   private extractEventType(payload: any): string | null {

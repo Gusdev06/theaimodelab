@@ -13,6 +13,8 @@ export class PlanResponseDto {
   @ApiProperty() hasWatermark: boolean;
   @ApiPropertyOptional() galleryRetentionDays: number | null;
   @ApiProperty() hasApiAccess: boolean;
+  @ApiPropertyOptional({ description: 'Link de checkout da assinatura mensal (Perfect Pay)' })
+  checkoutUrl?: string | null;
 }
 
 export class CreditPackageResponseDto {
