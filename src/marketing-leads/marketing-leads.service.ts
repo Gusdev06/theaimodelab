@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CaptureMarketingLeadDto } from './dto/capture-marketing-lead.dto';
+import { ListMarketingLeadsQueryDto } from './dto/list-marketing-leads-query.dto';
 
 type StoredMarketingLead = {
   id: string;
@@ -30,6 +31,81 @@ export class MarketingLeadsService {
     });
 
     return { id: lead.id, captured: true };
+  }
+
+  async listForAdmin(query: ListMarketingLeadsQueryDto) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const search = query.search?.trim();
+    const source = query.source ? this.normalizeSource(query.source) : undefined;
+    const where: Prisma.MarketingLeadWhereInput = {
+      ...(source ? { source } : {}),
+      ...(search
+        ? {
+            OR: [
+              { email: { contains: search, mode: 'insensitive' } },
+              { name: { contains: search, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+
+    const [data, total, sources] = await this.prisma.$transaction([
+      this.prisma.marketingLead.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          phone: true,
+          source: true,
+          quizResult: true,
+          quizAnswers: true,
+          utmSource: true,
+          utmMedium: true,
+          utmCampaign: true,
+          utmContent: true,
+          utmTerm: true,
+          fbclid: true,
+          fbp: true,
+          fbc: true,
+          gclid: true,
+          landingPage: true,
+          referrer: true,
+          eventId: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      this.prisma.marketingLead.count({ where }),
+      this.prisma.marketingLead.groupBy({
+        by: ['source'],
+        _count: { source: true },
+        orderBy: { _count: { source: 'desc' } },
+      }),
+    ]);
+
+    const sourceCounts = sources as Array<{ source: string; _count: { source: number } }>;
+
+    return {
+      data,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+      stats: {
+        total,
+        sources: sourceCounts.map((item) => ({
+          source: item.source,
+          count: item._count.source,
+        })),
+      },
+    };
   }
 
   private normalizeSource(source?: string): string {
