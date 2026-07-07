@@ -9,6 +9,7 @@ import { GoogleStrategy } from './strategies/google.strategy';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { EmailModule } from '../email/email.module';
 import { PendingGrantsModule } from '../pending-grants/pending-grants.module';
+import { MetaModule } from '../meta/meta.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { PendingGrantsModule } from '../pending-grants/pending-grants.module';
     ConfigModule,
     EmailModule,
     PendingGrantsModule,
+    MetaModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({

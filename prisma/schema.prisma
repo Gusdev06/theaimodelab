@@ -33,6 +33,8 @@ model User {
   unlimitedModeImage      Boolean                   @default(false) @map("unlimited_mode_image")
   unlimitedModeVideo      Boolean                   @default(false) @map("unlimited_mode_video")
   fbclid                  String?
+  fbp                     String?
+  fbc                     String?
   gclid                   String?
   landingPage             String?                   @map("landing_page")
   referrer                String?
@@ -76,6 +78,7 @@ model User {
   @@index([oauthProvider, oauthProviderId])
   @@index([utmCampaign])
   @@index([utmSource])
+  @@index([fbc])
   @@map("users")
 }
 

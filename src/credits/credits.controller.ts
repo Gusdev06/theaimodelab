@@ -6,6 +6,7 @@ import {
   Query,
   UsePipes,
   ValidationPipe,
+  Req,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -25,6 +26,7 @@ import { PaginatedResponseDto } from '../common/dto/paginated-response.dto';
 import { PlansService } from '../plans/plans.service';
 import { StripeService } from '../payments/stripe.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { MetaConversionsService } from '../meta/meta-conversions.service';
 
 @ApiTags('credits')
 @ApiBearerAuth()
@@ -35,6 +37,7 @@ export class CreditsController {
     private readonly plansService: PlansService,
     private readonly stripeService: StripeService,
     private readonly prisma: PrismaService,
+    private readonly metaConversionsService: MetaConversionsService,
   ) {}
 
   @Get('balance')
@@ -144,22 +147,44 @@ export class CreditsController {
   async purchaseCredits(
     @CurrentUser('sub') userId: string,
     @Body() dto: PurchaseCreditsDto,
+    @Req() req: any,
   ): Promise<{ checkoutUrl: string }> {
     const pkg = await this.plansService.findPackageById(dto.packageId);
 
     // Novo fluxo (sem Stripe): cada pacote tem um link de checkout externo próprio.
     // Se o pacote tiver checkoutUrl configurado, apenas redirecionamos para ele.
-    if (pkg.checkoutUrl) {
-      return { checkoutUrl: pkg.checkoutUrl };
-    }
-
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
-      select: { email: true, name: true, referredByCode: true, currency: true },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        phone: true,
+        country: true,
+        referredByCode: true,
+        currency: true,
+        fbp: true,
+        fbc: true,
+      },
     });
 
     const currency = dto.currency ?? user.currency;
     const resolved = await this.plansService.resolvePackagePrice(pkg.id, currency);
+
+    await this.metaConversionsService.trackInitiateCheckout({
+      user,
+      context: dto.meta,
+      requestContext: this.metaConversionsService.buildRequestContext(req),
+      contentId: pkg.id,
+      contentName: pkg.name,
+      valueCents: resolved.priceCents,
+      currency: resolved.currency,
+      checkoutType: 'credit_package',
+    });
+
+    if (pkg.checkoutUrl) {
+      return { checkoutUrl: pkg.checkoutUrl };
+    }
 
     const customerId = await this.stripeService.getOrCreateCustomer(
       userId,

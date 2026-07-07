@@ -5,6 +5,7 @@ import {
   Patch,
   Param,
   Body,
+  Req,
   HttpCode,
   HttpStatus,
   UsePipes,
@@ -22,6 +23,7 @@ import { CreatePixAutoSubscriptionDto } from './dto/create-pix-auto-subscription
 import { AcceptOfferDto } from './dto/accept-offer.dto';
 import { SubscriptionResponseDto } from './dto/subscription-response.dto';
 import { CurrentUser } from '../common/decorators';
+import { MetaConversionsService } from '../meta/meta-conversions.service';
 
 @ApiTags('subscriptions')
 @ApiBearerAuth()
@@ -29,6 +31,7 @@ import { CurrentUser } from '../common/decorators';
 export class SubscriptionsController {
   constructor(
     private readonly subscriptionsService: SubscriptionsService,
+    private readonly metaConversionsService: MetaConversionsService,
   ) {}
 
   @Get('current')
@@ -59,12 +62,15 @@ export class SubscriptionsController {
   async create(
     @CurrentUser('sub') userId: string,
     @Body() dto: CreateSubscriptionDto,
+    @Req() req: any,
   ): Promise<{ checkoutUrl: string }> {
     return this.subscriptionsService.createSubscription(
       userId,
       dto.planSlug,
       dto.currency,
       dto.recoveryPromoCode,
+      dto.meta,
+      this.metaConversionsService.buildRequestContext(req),
     );
   }
 
@@ -137,8 +143,15 @@ export class SubscriptionsController {
   async upgrade(
     @CurrentUser('sub') userId: string,
     @Body() dto: CreateSubscriptionDto,
+    @Req() req: any,
   ): Promise<{ checkoutUrl: string }> {
-    return this.subscriptionsService.upgrade(userId, dto.planSlug, dto.currency);
+    return this.subscriptionsService.upgrade(
+      userId,
+      dto.planSlug,
+      dto.currency,
+      dto.meta,
+      this.metaConversionsService.buildRequestContext(req),
+    );
   }
 
   @Patch('downgrade')

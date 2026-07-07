@@ -18,6 +18,8 @@ import { PaymentsService } from '../payments/payments.service';
 import { CreditsService } from '../credits/credits.service';
 import { SubscriptionResponseDto } from './dto/subscription-response.dto';
 import { t } from '../common/i18n/t';
+import { MetaConversionsService, MetaRequestContext } from '../meta/meta-conversions.service';
+import { MetaEventContextDto } from '../meta/meta-event-context.dto';
 
 const PLAN_ORDER = ['free', 'ultra-basic', 'starter', 'basic', 'creator', 'pro', 'advanced', 'studio'];
 
@@ -34,6 +36,7 @@ export class SubscriptionsService {
     private readonly paymentsService: PaymentsService,
     private readonly creditsService: CreditsService,
     private readonly configService: ConfigService,
+    private readonly metaConversionsService: MetaConversionsService,
   ) {}
 
   async getCurrentSubscription(
@@ -104,6 +107,8 @@ export class SubscriptionsService {
     planSlug: string,
     currencyOverride?: string,
     recoveryPromoCode?: string,
+    metaContext?: MetaEventContextDto,
+    requestContext?: MetaRequestContext,
   ): Promise<{ checkoutUrl: string }> {
     const plan = await this.plansService.findPlanBySlug(planSlug);
 
@@ -135,6 +140,8 @@ export class SubscriptionsService {
       undefined,
       currencyOverride,
       recoveryPromoCode,
+      metaContext,
+      requestContext,
     );
     return { checkoutUrl };
   }
@@ -143,6 +150,8 @@ export class SubscriptionsService {
     userId: string,
     planSlug: string,
     currencyOverride?: string,
+    metaContext?: MetaEventContextDto,
+    requestContext?: MetaRequestContext,
   ): Promise<{ checkoutUrl: string }> {
     const current = await this.prisma.subscription.findFirst({
       where: {
@@ -200,7 +209,16 @@ export class SubscriptionsService {
     // A sub antiga NÃO é cancelada aqui — só será cancelada no webhook
     // checkout.session.completed, evitando que o usuário fique sem plano se desistir.
     const oldExternalSubscriptionId = current?.externalSubscriptionId ?? undefined;
-    const checkoutUrl = await this.buildCheckoutForPlan(userId, planSlug, discountAmountCents, oldExternalSubscriptionId, currencyOverride);
+    const checkoutUrl = await this.buildCheckoutForPlan(
+      userId,
+      planSlug,
+      discountAmountCents,
+      oldExternalSubscriptionId,
+      currencyOverride,
+      undefined,
+      metaContext,
+      requestContext,
+    );
     return { checkoutUrl };
   }
 
@@ -879,11 +897,23 @@ export class SubscriptionsService {
     oldExternalSubscriptionId?: string,
     currencyOverride?: string,
     recoveryPromoCode?: string,
+    metaContext?: MetaEventContextDto,
+    requestContext?: MetaRequestContext,
   ): Promise<string> {
     const plan = await this.plansService.findPlanBySlug(planSlug);
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
-      select: { email: true, name: true, referredByCode: true, currency: true },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        phone: true,
+        country: true,
+        referredByCode: true,
+        currency: true,
+        fbp: true,
+        fbc: true,
+      },
     });
     const targetCurrency = currencyOverride ?? user.currency;
     const resolved = await this.plansService.resolvePlanPrice(plan.id, targetCurrency);
@@ -892,7 +922,7 @@ export class SubscriptionsService {
       user.email,
       user.name,
     );
-    return this.stripeService.createSubscriptionCheckout(
+    const checkoutUrl = await this.stripeService.createSubscriptionCheckout(
       customerId,
       plan.slug,
       plan.name,
@@ -905,6 +935,19 @@ export class SubscriptionsService {
       user.referredByCode ?? undefined,
       recoveryPromoCode,
     );
+
+    await this.metaConversionsService.trackInitiateCheckout({
+      user,
+      context: metaContext,
+      requestContext,
+      contentId: plan.slug,
+      contentName: plan.name,
+      valueCents: resolved.priceCents,
+      currency: resolved.currency,
+      checkoutType: 'subscription',
+    });
+
+    return checkoutUrl;
   }
 
   private toResponseDto(

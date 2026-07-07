@@ -49,6 +49,7 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
 import { CommunityModule } from './community/community.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { parseRedisConfig } from './common/redis-config';
+import { MetaModule } from './meta/meta.module';
 
 
 @Module({
@@ -129,6 +130,7 @@ import { parseRedisConfig } from './common/redis-config';
     ResendWebhooksModule,
     AvatarsModule,
     UnlimitedModule,
+    MetaModule,
   ],
   controllers: [AppController],
   providers: [

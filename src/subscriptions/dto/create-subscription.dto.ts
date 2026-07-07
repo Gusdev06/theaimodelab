@@ -1,5 +1,7 @@
-import { IsString, IsNotEmpty, IsOptional, IsIn } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsString, IsNotEmpty, IsOptional, IsIn, ValidateNested } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { MetaEventContextDto } from '../../meta/meta-event-context.dto';
 
 export class CreateSubscriptionDto {
   @ApiProperty({ example: 'starter' })
@@ -23,4 +25,10 @@ export class CreateSubscriptionDto {
   @IsString()
   @IsIn(['RECOVERY20'])
   recoveryPromoCode?: string;
+
+  @ApiPropertyOptional({ description: 'Meta browser event context for InitiateCheckout deduplication' })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => MetaEventContextDto)
+  meta?: MetaEventContextDto;
 }

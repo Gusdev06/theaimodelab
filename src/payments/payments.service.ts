@@ -4,6 +4,7 @@ import { FreeGenerationType, PaymentStatus, PaymentType, Prisma } from '@prisma/
 import { EmailService } from '../email/email.service';
 import { AsaasSubscriptionsService } from './asaas-subscriptions.service';
 import { StripeService } from './stripe.service';
+import { MetaConversionsService } from '../meta/meta-conversions.service';
 
 const ULTRA_BASIC_WELCOME_FREE_GENERATIONS = 2;
 
@@ -16,6 +17,7 @@ export class PaymentsService {
     private readonly emailService: EmailService,
     private readonly asaasSubscriptionsService: AsaasSubscriptionsService,
     private readonly stripeService: StripeService,
+    private readonly metaConversionsService: MetaConversionsService,
   ) {}
 
   async createPayment(
@@ -81,7 +83,7 @@ export class PaymentsService {
     const periodEnd = new Date(now);
     periodEnd.setMonth(periodEnd.getMonth() + 1);
 
-    await this.prisma.$transaction(async (tx) => {
+    const transactionResult = await this.prisma.$transaction(async (tx) => {
       // Idempotência: check DENTRO da transaction para evitar race condition
       const existingPayment = await tx.payment.findFirst({
         where: { externalPaymentId },
@@ -90,7 +92,7 @@ export class PaymentsService {
         this.logger.log(
           `Payment ${externalPaymentId} already exists, skipping subscription creation`,
         );
-        return;
+        return { processed: false };
       }
 
       // Cancelar subscriptions anteriores do usuário
@@ -187,7 +189,13 @@ export class PaymentsService {
           );
         }
       }
+
+      return { processed: true, paymentId: payment.id };
     });
+
+    if (!transactionResult.processed) {
+      return;
+    }
 
     this.logger.log(
       `Processed subscription payment for user ${userId}, plan ${planSlug}`,
@@ -195,7 +203,15 @@ export class PaymentsService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { email: true, name: true },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        phone: true,
+        country: true,
+        fbp: true,
+        fbc: true,
+      },
     });
 
     if (user?.email) {
@@ -205,6 +221,20 @@ export class PaymentsService {
         plan.name,
         plan.creditsPerMonth,
       );
+    }
+
+    if (user?.email) {
+      await this.metaConversionsService.trackPurchase({
+        user,
+        eventId: externalPaymentId,
+        contentId: plan.slug,
+        contentName: plan.name,
+        valueCents: amountCents,
+        currency,
+        orderId: externalPaymentId,
+        provider: 'stripe',
+        purchaseType: 'subscription',
+      });
     }
   }
 
@@ -229,7 +259,7 @@ export class PaymentsService {
       throw new NotFoundException(`Pacote "${packageId}" não encontrado`);
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    const transactionResult = await this.prisma.$transaction(async (tx) => {
       // Idempotência: check DENTRO da transaction para evitar race condition
       const existingPayment = await tx.payment.findFirst({
         where: { externalPaymentId },
@@ -238,7 +268,7 @@ export class PaymentsService {
         this.logger.log(
           `Payment ${externalPaymentId} already exists, skipping credit purchase`,
         );
-        return;
+        return { processed: false };
       }
 
       // Adicionar créditos bônus
@@ -283,7 +313,13 @@ export class PaymentsService {
 
       // Registrar comissão do afiliado se o usuário foi indicado
       await this.recordAffiliateEarning(tx, userId, payment.id, amountCents, referredByCode);
+
+      return { processed: true, paymentId: payment.id };
     });
+
+    if (!transactionResult.processed) {
+      return;
+    }
 
     this.logger.log(
       `Processed credit purchase for user ${userId}, package ${creditPackage.name}`,
@@ -291,7 +327,15 @@ export class PaymentsService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { email: true, name: true },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        phone: true,
+        country: true,
+        fbp: true,
+        fbc: true,
+      },
     });
 
     if (user?.email) {
@@ -301,6 +345,20 @@ export class PaymentsService {
         creditPackage.credits,
         creditPackage.name,
       );
+    }
+
+    if (user?.email) {
+      await this.metaConversionsService.trackPurchase({
+        user,
+        eventId: externalPaymentId,
+        contentId: creditPackage.id,
+        contentName: creditPackage.name,
+        valueCents: amountCents,
+        currency,
+        orderId: externalPaymentId,
+        provider,
+        purchaseType: 'credit_package',
+      });
     }
   }
 

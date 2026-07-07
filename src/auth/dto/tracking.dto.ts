@@ -38,6 +38,18 @@ export class TrackingDto {
   @MaxLength(512)
   fbclid?: string;
 
+  @ApiPropertyOptional({ description: 'Meta _fbp first-party browser id' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  fbp?: string;
+
+  @ApiPropertyOptional({ description: 'Meta _fbc click id cookie value' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  fbc?: string;
+
   @ApiPropertyOptional({ description: 'Google click id' })
   @IsOptional()
   @IsString()
@@ -55,4 +67,16 @@ export class TrackingDto {
   @IsString()
   @MaxLength(1024)
   landing_page?: string;
+
+  @ApiPropertyOptional({ description: 'Shared browser/server event id for Meta deduplication' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(256)
+  event_id?: string;
+
+  @ApiPropertyOptional({ description: 'Full URL where the conversion happened' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2048)
+  event_source_url?: string;
 }

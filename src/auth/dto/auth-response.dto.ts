@@ -35,4 +35,7 @@ export class AuthResponseDto {
 
   @ApiProperty()
   user: UserResponseDto;
+
+  @ApiProperty({ required: false, description: 'True when this auth flow created a new user' })
+  isNewUser?: boolean;
 }

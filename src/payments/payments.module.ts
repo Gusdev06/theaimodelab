@@ -12,9 +12,10 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { WebhookLogsModule } from '../webhook-logs/webhook-logs.module';
 import { EmailModule } from '../email/email.module';
 import { PlansModule } from '../plans/plans.module';
+import { MetaModule } from '../meta/meta.module';
 
 @Module({
-  imports: [PrismaModule, WebhookLogsModule, EmailModule, PlansModule],
+  imports: [PrismaModule, WebhookLogsModule, EmailModule, PlansModule, MetaModule],
   controllers: [PaymentsController, AsaasController],
   providers: [
     PaymentsService,

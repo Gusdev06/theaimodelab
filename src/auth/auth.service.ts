@@ -12,6 +12,7 @@ import { LocaleContext } from '../common/utils/locale.util';
 import { t } from '../common/i18n/t';
 import { PendingGrantsService } from '../pending-grants/pending-grants.service';
 import { TrackingDto } from './dto/tracking.dto';
+import { MetaConversionsService, MetaRequestContext } from '../meta/meta-conversions.service';
 
 const SIGNUP_BONUS_CREDITS = 50;
 
@@ -24,6 +25,8 @@ function mapTrackingToUserFields(tracking?: TrackingDto) {
     utmContent: tracking.utm_content,
     utmTerm: tracking.utm_term,
     fbclid: tracking.fbclid,
+    fbp: tracking.fbp,
+    fbc: tracking.fbc,
     gclid: tracking.gclid,
     referrer: tracking.referrer,
     landingPage: tracking.landing_page,
@@ -31,6 +34,16 @@ function mapTrackingToUserFields(tracking?: TrackingDto) {
   return Object.fromEntries(
     Object.entries(fields).filter(([, v]) => v != null && v !== ''),
   );
+}
+
+function mapTrackingToMetaContext(tracking?: TrackingDto) {
+  if (!tracking) return undefined;
+  return {
+    eventId: tracking.event_id,
+    eventSourceUrl: tracking.event_source_url,
+    fbp: tracking.fbp,
+    fbc: tracking.fbc,
+  };
 }
 
 @Injectable()
@@ -43,6 +56,7 @@ export class AuthService {
     private readonly configService: ConfigService,
     private readonly emailService: EmailService,
     private readonly pendingGrantsService: PendingGrantsService,
+    private readonly metaConversionsService: MetaConversionsService,
   ) { }
 
   /**
@@ -62,7 +76,11 @@ export class AuthService {
   /**
    * Registra um novo usuário
    */
-  async register(registerDto: RegisterDto, locale?: LocaleContext): Promise<AuthResponseDto> {
+  async register(
+    registerDto: RegisterDto,
+    locale?: LocaleContext,
+    requestContext?: MetaRequestContext,
+  ): Promise<AuthResponseDto> {
     const { email, password, name, referralCode, tracking } = registerDto;
 
     // Verifica se o email já está em uso
@@ -175,6 +193,22 @@ export class AuthService {
       this.logger.error(`Failed to send verification email: ${err.message}`);
     });
 
+    this.metaConversionsService.trackLead(
+      {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        phone: user.phone,
+        country: user.country,
+        fbp: user.fbp,
+        fbc: user.fbc,
+      },
+      mapTrackingToMetaContext(tracking),
+      requestContext,
+    ).catch((err) => {
+      this.logger.error(`Failed to send Meta Lead event: ${err.message}`);
+    });
+
     // Gera os tokens
     const tokens = await this.generateTokens(user);
 
@@ -183,6 +217,7 @@ export class AuthService {
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
       user: this.formatUserResponse(user),
+      isNewUser: true,
     };
   }
 
@@ -287,7 +322,13 @@ export class AuthService {
   /**
    * Login/Cadastro via Google OAuth (verifica ID token ou access token)
    */
-  async googleAuthWithToken(googleToken: string, referralCode?: string, locale?: LocaleContext, tracking?: TrackingDto): Promise<AuthResponseDto> {
+  async googleAuthWithToken(
+    googleToken: string,
+    referralCode?: string,
+    locale?: LocaleContext,
+    tracking?: TrackingDto,
+    requestContext?: MetaRequestContext,
+  ): Promise<AuthResponseDto> {
     try {
       const { OAuth2Client } = await import('google-auth-library');
       const client = new OAuth2Client(this.configService.get('GOOGLE_CLIENT_ID'));
@@ -313,7 +354,7 @@ export class AuthService {
           provider: 'google',
           referralCode,
           tracking,
-        }, locale);
+        }, locale, requestContext);
       } catch {
         // Se falhar como ID token, tenta como access token
         const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
@@ -338,7 +379,7 @@ export class AuthService {
           provider: 'google',
           referralCode,
           tracking,
-        }, locale);
+        }, locale, requestContext);
       }
     } catch (error) {
       if (error instanceof UnauthorizedException) throw error;
@@ -357,7 +398,7 @@ export class AuthService {
     provider: string;
     referralCode?: string;
     tracking?: TrackingDto;
-  }, locale?: LocaleContext): Promise<AuthResponseDto> {
+  }, locale?: LocaleContext, requestContext?: MetaRequestContext): Promise<AuthResponseDto> {
     // Busca usuário existente por email ou Google ID
     let user = await this.prisma.user.findFirst({
       where: {
@@ -480,6 +521,22 @@ export class AuthService {
       this.emailService.sendWelcomeEmail(user.email, user.name).catch((err) => {
         this.logger.error(`Failed to send welcome email: ${err.message}`);
       });
+
+      this.metaConversionsService.trackLead(
+        {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          phone: user.phone,
+          country: user.country,
+          fbp: user.fbp,
+          fbc: user.fbc,
+        },
+        mapTrackingToMetaContext(googleUser.tracking),
+        requestContext,
+      ).catch((err) => {
+        this.logger.error(`Failed to send Meta Google Lead event: ${err.message}`);
+      });
     }
 
     // Gera os tokens
@@ -489,6 +546,7 @@ export class AuthService {
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
       user: this.formatUserResponse(user),
+      isNewUser,
     };
   }
 

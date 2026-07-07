@@ -26,11 +26,15 @@ import { VerifyEmailDto } from './dto/verify-email.dto';
 import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { Public } from '../common/decorators/public.decorator';
 import { detectLocaleFromHeaders } from '../common/utils/locale.util';
+import { MetaConversionsService } from '../meta/meta-conversions.service';
 
 @ApiTags('auth')
 @Controller('api/v1/auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly metaConversionsService: MetaConversionsService,
+  ) {}
 
   @Public()
   @Post('check-availability')
@@ -65,7 +69,11 @@ export class AuthController {
     @Body() registerDto: RegisterDto,
     @Req() req: any,
   ): Promise<AuthResponseDto> {
-    return this.authService.register(registerDto, detectLocaleFromHeaders(req.headers));
+    return this.authService.register(
+      registerDto,
+      detectLocaleFromHeaders(req.headers),
+      this.metaConversionsService.buildRequestContext(req),
+    );
   }
 
   @Public()
@@ -139,6 +147,7 @@ export class AuthController {
       googleAuthDto.referralCode,
       detectLocaleFromHeaders(req.headers),
       googleAuthDto.tracking,
+      this.metaConversionsService.buildRequestContext(req),
     );
   }
 

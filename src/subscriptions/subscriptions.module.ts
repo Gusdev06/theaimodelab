@@ -5,9 +5,10 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { PlansModule } from '../plans/plans.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { CreditsModule } from '../credits/credits.module';
+import { MetaModule } from '../meta/meta.module';
 
 @Module({
-  imports: [PrismaModule, PlansModule, PaymentsModule, CreditsModule],
+  imports: [PrismaModule, PlansModule, PaymentsModule, CreditsModule, MetaModule],
   controllers: [SubscriptionsController],
   providers: [SubscriptionsService],
   exports: [SubscriptionsService],
