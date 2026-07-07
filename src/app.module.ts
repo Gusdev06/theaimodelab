@@ -50,6 +50,7 @@ import { CommunityModule } from './community/community.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { parseRedisConfig } from './common/redis-config';
 import { MetaModule } from './meta/meta.module';
+import { MarketingLeadsModule } from './marketing-leads/marketing-leads.module';
 
 
 @Module({
@@ -131,6 +132,7 @@ import { MetaModule } from './meta/meta.module';
     AvatarsModule,
     UnlimitedModule,
     MetaModule,
+    MarketingLeadsModule,
   ],
   controllers: [AppController],
   providers: [

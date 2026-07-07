@@ -144,18 +144,18 @@ model CreditCost {
 }
 
 model CreditPackage {
-  id            String               @id @default(cuid())
-  name          String               @unique
-  credits       Int
-  priceCents    Int                  @map("price_cents")
-  isActive      Boolean              @default(true) @map("is_active")
-  sortOrder     Int                  @default(0) @map("sort_order")
-  stripePriceId String?              @map("stripe_price_id")
-  checkoutUrl   String?              @map("checkout_url")
-  perfectpayPlanCode String?         @map("perfectpay_plan_code")
-  createdAt     DateTime             @default(now()) @map("created_at")
-  prices        CreditPackagePrice[]
-  payments      Payment[]
+  id                 String               @id @default(cuid())
+  name               String               @unique
+  credits            Int
+  priceCents         Int                  @map("price_cents")
+  isActive           Boolean              @default(true) @map("is_active")
+  sortOrder          Int                  @default(0) @map("sort_order")
+  stripePriceId      String?              @map("stripe_price_id")
+  checkoutUrl        String?              @map("checkout_url")
+  perfectpayPlanCode String?              @map("perfectpay_plan_code")
+  createdAt          DateTime             @default(now()) @map("created_at")
+  prices             CreditPackagePrice[]
+  payments           Payment[]
 
   @@map("credit_packages")
 }
@@ -174,6 +174,38 @@ model CreditPackagePrice {
   @@unique([creditPackageId, currency])
   @@index([currency])
   @@map("credit_package_prices")
+}
+
+model MarketingLead {
+  id          String   @id @default(cuid())
+  email       String
+  name        String?
+  phone       String?
+  source      String   @default("sales_quiz")
+  quizResult  String?  @map("quiz_result")
+  quizAnswers Json?    @map("quiz_answers")
+  attribution Json?
+  fbclid      String?
+  fbp         String?
+  fbc         String?
+  gclid       String?
+  utmSource   String?  @map("utm_source")
+  utmMedium   String?  @map("utm_medium")
+  utmCampaign String?  @map("utm_campaign")
+  utmContent  String?  @map("utm_content")
+  utmTerm     String?  @map("utm_term")
+  landingPage String?  @map("landing_page")
+  referrer    String?
+  eventId     String?  @map("event_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([email, source])
+  @@index([source])
+  @@index([quizResult])
+  @@index([utmCampaign])
+  @@index([createdAt])
+  @@map("marketing_leads")
 }
 
 model Subscription {

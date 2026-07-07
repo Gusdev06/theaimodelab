@@ -1,0 +1,104 @@
+openapi: 3.1.0
+info:
+  title: The AI Model Lab Marketing Leads API
+  version: 1.0.0
+paths:
+  /api/v1/marketing-leads:
+    post:
+      summary: Capture a public marketing lead from sales funnels.
+      operationId: captureMarketingLead
+      tags:
+        - Marketing Leads
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaptureMarketingLeadRequest'
+      responses:
+        '201':
+          description: Lead captured or updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaptureMarketingLeadResponse'
+        '400':
+          description: Invalid lead payload.
+        '429':
+          description: Rate limit exceeded.
+components:
+  schemas:
+    CaptureMarketingLeadRequest:
+      type: object
+      required:
+        - email
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        name:
+          type: string
+          maxLength: 160
+        phone:
+          type: string
+          maxLength: 32
+        source:
+          type: string
+          maxLength: 64
+          default: sales_quiz
+        quizResult:
+          type: string
+          maxLength: 64
+        quizAnswers:
+          type: object
+        utmSource:
+          type: string
+          maxLength: 512
+        utmMedium:
+          type: string
+          maxLength: 512
+        utmCampaign:
+          type: string
+          maxLength: 512
+        utmContent:
+          type: string
+          maxLength: 512
+        utmTerm:
+          type: string
+          maxLength: 512
+        fbclid:
+          type: string
+          maxLength: 512
+        fbp:
+          type: string
+          maxLength: 512
+        fbc:
+          type: string
+          maxLength: 512
+        gclid:
+          type: string
+          maxLength: 512
+        landingPage:
+          type: string
+          maxLength: 2048
+        referrer:
+          type: string
+          maxLength: 1024
+        eventId:
+          type: string
+          maxLength: 256
+        eventSourceUrl:
+          type: string
+          maxLength: 2048
+    CaptureMarketingLeadResponse:
+      type: object
+      required:
+        - id
+        - captured
+      properties:
+        id:
+          type: string
+        captured:
+          type: boolean
