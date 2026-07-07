@@ -1,10 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsIn, IsObject, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsEmail, IsIn, IsObject, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class BrowserMetaEventDto {
-  @ApiProperty({ enum: ['PageView', 'ViewContent'] })
-  @IsIn(['PageView', 'ViewContent'])
-  eventName: 'PageView' | 'ViewContent';
+  @ApiProperty({ enum: ['PageView', 'ViewContent', 'Lead'] })
+  @IsIn(['PageView', 'ViewContent', 'Lead'])
+  eventName: 'PageView' | 'ViewContent' | 'Lead';
 
   @ApiPropertyOptional({ description: 'Shared browser/server event id for Meta deduplication' })
   @IsOptional()
@@ -34,4 +34,28 @@ export class BrowserMetaEventDto {
   @IsOptional()
   @IsObject()
   customData?: Record<string, unknown>;
+
+  @ApiPropertyOptional({ description: 'Lead name for Meta advanced matching' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(160)
+  name?: string;
+
+  @ApiPropertyOptional({ description: 'Lead email for Meta advanced matching' })
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(254)
+  email?: string;
+
+  @ApiPropertyOptional({ description: 'Lead phone for Meta advanced matching' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  phone?: string;
+
+  @ApiPropertyOptional({ description: 'Two-letter country code for Meta advanced matching' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2)
+  country?: string;
 }

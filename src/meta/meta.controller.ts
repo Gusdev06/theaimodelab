@@ -30,6 +30,12 @@ export class MetaController {
       },
       this.metaConversionsService.buildRequestContext(req),
       dto.customData,
+      {
+        email: dto.email,
+        name: dto.name,
+        phone: dto.phone,
+        country: dto.country,
+      },
     );
 
     return { received: true };

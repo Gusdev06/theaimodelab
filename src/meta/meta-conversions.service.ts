@@ -56,16 +56,18 @@ export class MetaConversionsService {
   }
 
   async trackBrowserEvent(
-    eventName: 'PageView' | 'ViewContent',
+    eventName: 'PageView' | 'ViewContent' | 'Lead',
     context: MetaEventContextDto,
     requestContext: MetaRequestContext,
     customData?: Record<string, unknown>,
+    user?: MetaUser | null,
   ): Promise<void> {
     await this.trackEvent({
       eventName,
       eventId: context.eventId,
       eventSourceUrl: context.eventSourceUrl,
       requestContext,
+      user,
       fbp: context.fbp,
       fbc: context.fbc,
       customData,
