@@ -47,6 +47,8 @@ import { GenerateGrokImagineImageToVideoDto } from './dto/videos/generate-grok-i
 import { GenerateGrokImagineTextToVideoDto } from './dto/videos/generate-grok-imagine-text-to-video.dto';
 import { GenerateGeminiOmniVideoDto } from './dto/videos/generate-gemini-omni-video.dto';
 import { GenerateSeedanceVideoDto } from './dto/videos/generate-seedance-video.dto';
+import { GenerateKlingImageToVideoDto } from './dto/videos/generate-kling-image-to-video.dto';
+import { GenerateComfyDeployImageToVideoDto } from './dto/videos/generate-comfydeploy-image-to-video.dto';
 import { GenerateTextToSpeechDto } from './dto/generate-text-to-speech.dto';
 import { GenerateVoiceCloneDto } from './dto/generate-voice-clone.dto';
 import { UnlimitedStatusResponseDto } from './dto/unlimited-status.dto';
@@ -291,6 +293,34 @@ export class GenerationsController {
     @Body() dto: GenerateSeedanceVideoDto,
   ): Promise<CreateGenerationResponseDto> {
     return this.generationsService.generateSeedanceVideo(userId, dto);
+  }
+
+  @Post('image-to-video-kling')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({
+    summary:
+      'Gera vídeo a partir de imagem via Kling V3 Turbo (Kie) — 720p/1080p, duração 3-15s',
+  })
+  @ApiResponse({ status: 201, type: CreateGenerationResponseDto })
+  async imageToVideoKling(
+    @CurrentUser('sub') userId: string,
+    @Body() dto: GenerateKlingImageToVideoDto,
+  ): Promise<CreateGenerationResponseDto> {
+    return this.generationsService.generateImageToVideoKling(userId, dto);
+  }
+
+  @Post('image-to-video-comfydeploy')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({
+    summary:
+      'Gera vídeo a partir de imagem via ComfyDeploy WanImageToVideo (NSFW/legacy) — duração 2-8s',
+  })
+  @ApiResponse({ status: 201, type: CreateGenerationResponseDto })
+  async imageToVideoComfyDeploy(
+    @CurrentUser('sub') userId: string,
+    @Body() dto: GenerateComfyDeployImageToVideoDto,
+  ): Promise<CreateGenerationResponseDto> {
+    return this.generationsService.generateImageToVideoComfyDeploy(userId, dto);
   }
 
   @Post('text-to-speech')

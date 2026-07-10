@@ -21,6 +21,8 @@ import { VeoProvider } from './providers/veo.provider';
 import { GrokImagineProvider } from './providers/grok-imagine.provider';
 import { GeminiOmniVideoProvider } from './providers/gemini-omni-video.provider';
 import { BytedanceSeedanceProvider } from './providers/bytedance-seedance.provider';
+import { KlingProvider } from './providers/kling.provider';
+import { ComfyDeployProvider } from './providers/comfydeploy.provider';
 import { SeedreamLiteProvider } from './providers/seedream-lite.provider';
 import { SeedreamProvider } from './providers/seedream.provider';
 import { GptImageProvider } from './providers/gpt-image.provider';
@@ -72,6 +74,8 @@ import { VoicesModule } from '../voices/voices.module';
     GrokImagineProvider,
     GeminiOmniVideoProvider,
     BytedanceSeedanceProvider,
+    KlingProvider,
+    ComfyDeployProvider,
     SeedreamLiteProvider,
     SeedreamProvider,
     GptImageProvider,

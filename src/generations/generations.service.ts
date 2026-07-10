@@ -50,6 +50,8 @@ import { GenerateGrokImagineImageToVideoDto } from './dto/videos/generate-grok-i
 import { GenerateGrokImagineTextToVideoDto } from './dto/videos/generate-grok-imagine-text-to-video.dto';
 import { GenerateGeminiOmniVideoDto } from './dto/videos/generate-gemini-omni-video.dto';
 import { GenerateSeedanceVideoDto } from './dto/videos/generate-seedance-video.dto';
+import { GenerateKlingImageToVideoDto } from './dto/videos/generate-kling-image-to-video.dto';
+import { GenerateComfyDeployImageToVideoDto } from './dto/videos/generate-comfydeploy-image-to-video.dto';
 import { GenerateTextToSpeechDto } from './dto/generate-text-to-speech.dto';
 import { GenerateVoiceCloneDto } from './dto/generate-voice-clone.dto';
 import { containsNsfwContent } from './utils/nsfw-blocklist';
@@ -89,6 +91,10 @@ function getModelVariant(model: string | undefined | null): string | null {
     'gemini-omni-video': 'GEMINI_OMNI',
     // KIE API (Bytedance Seedance 2.0)
     'bytedance-seedance-2': 'SEEDANCE_2',
+    // KIE API (Kling V3 Turbo — image-to-video)
+    'kling-v3-turbo': 'KLING_V3_TURBO',
+    // ComfyDeploy (WanImageToVideo — NSFW/legacy)
+    'comfydeploy-wan': 'COMFYDEPLOY_WAN',
     // KIE API (Seedream Lite) — unificado: T2I se sem images, I2I se com images
     'seedream-5-lite': 'SEEDREAM_LITE',
     // Deepdeep API (n88ed) — image-to-image, requer imagem de input
@@ -142,6 +148,8 @@ import {
   ImageToVideoKieJobData,
   ReferenceToVideoKieJobData,
   ImageToVideoGrokJobData,
+  KlingImageToVideoJobData,
+  ComfyDeployImageToVideoJobData,
   TextToVideoGrokJobData,
   OmniVideoJobData,
   OmniVideoClipData,
@@ -2463,6 +2471,171 @@ CRITICAL REQUIREMENTS:
       generateAudio: dto.generate_audio ?? false,
       hasVideoInput,
     } satisfies SeedanceVideoJobData);
+
+    return {
+      id: generation.id,
+      status: GenerationStatus.PROCESSING,
+      creditsConsumed: creditsRequired,
+    };
+  }
+
+  // ─── Kling V3 Turbo — Image to Video (KIE) ─────────────────
+
+  async generateImageToVideoKling(
+    userId: string,
+    dto: GenerateKlingImageToVideoDto,
+  ): Promise<CreateGenerationResponseDto> {
+    const type = GenerationType.IMAGE_TO_VIDEO;
+    const model = 'kling-v3-turbo';
+    const modelVariant = dto.model_variant ?? getModelVariant(model);
+
+    await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
+
+    const creditsRequired = await this.plansService.calculateGenerationCost(
+      type,
+      dto.resolution,
+      dto.duration_seconds,
+      false,
+      1,
+      modelVariant,
+    );
+
+    await this.checkConcurrentLimit(userId);
+    await this.ensureSufficientBalance(userId, creditsRequired);
+
+    const generation = await this.prisma.generation.create({
+      data: {
+        userId,
+        type,
+        status: GenerationStatus.PROCESSING,
+        prompt: dto.prompt,
+        modelUsed: model,
+        resolution: dto.resolution,
+        durationSeconds: dto.duration_seconds,
+        hasAudio: false,
+        creditsConsumed: creditsRequired,
+        parameters: { provider: 'kie' },
+      },
+    });
+
+    const firstFrameUrl = await this.uploadBase64ImagePublic(
+      dto.first_frame,
+      dto.first_frame_mime_type ?? 'image/jpeg',
+      generation.id,
+    );
+
+    await this.prisma.generationInputImage.createMany({
+      data: [
+        {
+          generationId: generation.id,
+          role: GenerationImageRole.FIRST_FRAME,
+          mimeType: dto.first_frame_mime_type ?? 'image/jpeg',
+          order: 0,
+          url: firstFrameUrl,
+        },
+      ],
+    });
+
+    await this.debitCredits(
+      userId,
+      creditsRequired,
+      generation.id,
+      type,
+      dto.resolution,
+    );
+
+    await this.generationQueue.add(GenerationJobName.KLING_IMAGE_TO_VIDEO, {
+      generationId: generation.id,
+      userId,
+      creditsConsumed: creditsRequired,
+      prompt: dto.prompt,
+      resolution: dto.resolution,
+      durationSeconds: dto.duration_seconds,
+      imageUrls: [firstFrameUrl],
+    } satisfies KlingImageToVideoJobData);
+
+    return {
+      id: generation.id,
+      status: GenerationStatus.PROCESSING,
+      creditsConsumed: creditsRequired,
+    };
+  }
+
+  // ─── ComfyDeploy — WanImageToVideo (NSFW/legacy) ───────────
+
+  async generateImageToVideoComfyDeploy(
+    userId: string,
+    dto: GenerateComfyDeployImageToVideoDto,
+  ): Promise<CreateGenerationResponseDto> {
+    const type = GenerationType.IMAGE_TO_VIDEO;
+    const model = 'comfydeploy-wan';
+    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const resolution = dto.resolution ?? Resolution.RES_720P;
+
+    await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
+
+    const creditsRequired = await this.plansService.calculateGenerationCost(
+      type,
+      resolution,
+      dto.duration_seconds,
+      false,
+      1,
+      modelVariant,
+    );
+
+    await this.checkConcurrentLimit(userId);
+    await this.ensureSufficientBalance(userId, creditsRequired);
+
+    const generation = await this.prisma.generation.create({
+      data: {
+        userId,
+        type,
+        status: GenerationStatus.PROCESSING,
+        prompt: dto.prompt,
+        modelUsed: model,
+        resolution,
+        durationSeconds: dto.duration_seconds,
+        hasAudio: false,
+        creditsConsumed: creditsRequired,
+        parameters: { provider: 'comfydeploy' },
+      },
+    });
+
+    const firstFrameUrl = await this.uploadBase64ImagePublic(
+      dto.first_frame,
+      dto.first_frame_mime_type ?? 'image/jpeg',
+      generation.id,
+    );
+
+    await this.prisma.generationInputImage.createMany({
+      data: [
+        {
+          generationId: generation.id,
+          role: GenerationImageRole.FIRST_FRAME,
+          mimeType: dto.first_frame_mime_type ?? 'image/jpeg',
+          order: 0,
+          url: firstFrameUrl,
+        },
+      ],
+    });
+
+    await this.debitCredits(
+      userId,
+      creditsRequired,
+      generation.id,
+      type,
+      resolution,
+    );
+
+    await this.generationQueue.add(GenerationJobName.COMFYDEPLOY_IMAGE_TO_VIDEO, {
+      generationId: generation.id,
+      userId,
+      creditsConsumed: creditsRequired,
+      prompt: dto.prompt,
+      resolution,
+      durationSeconds: dto.duration_seconds,
+      imageUrl: firstFrameUrl,
+    } satisfies ComfyDeployImageToVideoJobData);
 
     return {
       id: generation.id,

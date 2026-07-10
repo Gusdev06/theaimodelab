@@ -1115,6 +1115,7 @@ enum AiModelProvider {
   ELEVENLABS
   WAVESPEED
   HEYGEN
+  COMFYDEPLOY
 }
 
 enum AiModelType {

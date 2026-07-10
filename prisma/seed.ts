@@ -299,6 +299,16 @@ async function main() {
     { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'GROK_IMAGINE', creditsPerUnit: 40, isPerSecond: true },
     { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'GROK_IMAGINE', creditsPerUnit: 80, isPerSecond: true },
 
+    // Kling V3 Turbo (KLING_V3_TURBO) — KIE API — image-to-video, sem áudio, 3-15s, cobrado por segundo.
+    // TODO: valores placeholder — ajustar conforme o custo real da API kie.ai (US$/vídeo).
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 90, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 150, isPerSecond: true },
+
+    // ComfyDeploy WanImageToVideo (COMFYDEPLOY_WAN) — NSFW/legacy — image-to-video, sem áudio, apenas 2s/5s, cobrado por segundo.
+    // Custo real US$0,06/s → 125 cr/s garante margem ~52% no pior plano (Studio). 2s = 250 cr, 5s = 625 cr.
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'COMFYDEPLOY_WAN', creditsPerUnit: 125, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'COMFYDEPLOY_WAN', creditsPerUnit: 125, isPerSecond: true },
+
     // Seedream Lite (SEEDREAM_LITE) — KIE API — 60cr basic (2K) / 80cr high (3K), T2I e I2I
     { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 60, isPerSecond: false },
     { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_3K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 80, isPerSecond: false },
@@ -467,6 +477,8 @@ async function main() {
     { slug: 'theaimodelab-fast', label: 'Veo 3.1 Fast', provider: 'THEAIMODELAB' as const, modelVariant: 'THEAIMODELAB_FAST', sortOrder: 4 },
     { slug: 'veo3', label: 'The AI Model Lab Quality', provider: 'KIE' as const, modelVariant: 'VEO_MAX', sortOrder: 5 },
     { slug: 'veo3_fast', label: 'The AI Model Lab Fast', provider: 'KIE' as const, modelVariant: 'VEO_FAST', sortOrder: 6 },
+    { slug: 'kling-v3-turbo', label: 'Kling V3 Turbo', provider: 'KIE' as const, modelVariant: 'KLING_V3_TURBO', sortOrder: 7 },
+    { slug: 'comfydeploy-wan', label: 'Wan (ComfyDeploy)', provider: 'COMFYDEPLOY' as const, modelVariant: 'COMFYDEPLOY_WAN', sortOrder: 8 },
     {
       slug: 'avatar-video',
       label: 'Vídeo com avatar (HeyGen)',

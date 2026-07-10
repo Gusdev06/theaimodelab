@@ -18,6 +18,8 @@ export enum GenerationJobName {
   TEXT_TO_VIDEO_GROK = 'text-to-video-grok',
   OMNI_VIDEO = 'omni-video',
   SEEDANCE_VIDEO = 'seedance-video',
+  KLING_IMAGE_TO_VIDEO = 'kling-image-to-video',
+  COMFYDEPLOY_IMAGE_TO_VIDEO = 'comfydeploy-image-to-video',
 }
 
 interface BaseJobData {
@@ -147,6 +149,20 @@ export interface SeedanceVideoJobData extends BaseJobData {
   hasVideoInput: boolean;
 }
 
+export interface KlingImageToVideoJobData extends BaseJobData {
+  prompt?: string;
+  resolution: string;
+  durationSeconds: number;
+  imageUrls: string[];
+}
+
+export interface ComfyDeployImageToVideoJobData extends BaseJobData {
+  prompt: string;
+  resolution: string;
+  durationSeconds: number;
+  imageUrl: string;
+}
+
 
 // Audio job shapes — no longer queued via BullMQ. Kept here as parameter
 // types for the GenerationProcessor's runTextToSpeechDirectly /
@@ -180,7 +196,9 @@ export type GenerationJobData =
   | ImageToVideoGrokJobData
   | TextToVideoGrokJobData
   | OmniVideoJobData
-  | SeedanceVideoJobData;
+  | SeedanceVideoJobData
+  | KlingImageToVideoJobData
+  | ComfyDeployImageToVideoJobData;
 
 export const IMAGE_JOB_TIMEOUT = 5 * 60 * 1000; // 5 min
 export const VIDEO_JOB_TIMEOUT = 12 * 60 * 1000; // 12 min

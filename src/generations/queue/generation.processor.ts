@@ -15,6 +15,8 @@ import { VeoProvider } from '../providers/veo.provider';
 import { GrokImagineProvider } from '../providers/grok-imagine.provider';
 import { GeminiOmniVideoProvider } from '../providers/gemini-omni-video.provider';
 import { BytedanceSeedanceProvider } from '../providers/bytedance-seedance.provider';
+import { KlingProvider } from '../providers/kling.provider';
+import { ComfyDeployProvider } from '../providers/comfydeploy.provider';
 import { SeedreamLiteProvider } from '../providers/seedream-lite.provider';
 import { SeedreamProvider } from '../providers/seedream.provider';
 import { GptImageProvider } from '../providers/gpt-image.provider';
@@ -48,6 +50,8 @@ import {
   TextToVideoGrokJobData,
   OmniVideoJobData,
   SeedanceVideoJobData,
+  KlingImageToVideoJobData,
+  ComfyDeployImageToVideoJobData,
   TextToSpeechJobData,
   VoiceCloneJobData,
 } from './generation-queue.constants';
@@ -71,6 +75,8 @@ export class GenerationProcessor extends WorkerHost {
     private readonly grokImagineProvider: GrokImagineProvider,
     private readonly geminiOmniVideoProvider: GeminiOmniVideoProvider,
     private readonly bytedanceSeedanceProvider: BytedanceSeedanceProvider,
+    private readonly klingProvider: KlingProvider,
+    private readonly comfyDeployProvider: ComfyDeployProvider,
     private readonly seedreamLiteProvider: SeedreamLiteProvider,
     private readonly seedreamProvider: SeedreamProvider,
     private readonly gptImageProvider: GptImageProvider,
@@ -128,6 +134,12 @@ export class GenerationProcessor extends WorkerHost {
         return this.processOmniVideo(data as OmniVideoJobData);
       case GenerationJobName.SEEDANCE_VIDEO:
         return this.processSeedanceVideo(data as SeedanceVideoJobData);
+      case GenerationJobName.KLING_IMAGE_TO_VIDEO:
+        return this.processKlingImageToVideo(data as KlingImageToVideoJobData);
+      case GenerationJobName.COMFYDEPLOY_IMAGE_TO_VIDEO:
+        return this.processComfyDeployImageToVideo(
+          data as ComfyDeployImageToVideoJobData,
+        );
       default:
         throw new Error(`Unknown job name: ${jobName}`);
     }
@@ -1123,6 +1135,68 @@ export class GenerationProcessor extends WorkerHost {
   }
 
   // ─── Audio process methods ──────────────────────────────────
+
+  // ─── Kling V3 Turbo — Image to Video ───────────────────────
+
+  private async processKlingImageToVideo(
+    data: KlingImageToVideoJobData,
+  ): Promise<void> {
+    const startTime = Date.now();
+    await this.markProcessingStarted(data.generationId);
+
+    this.logger.log(
+      `[KLING_IMAGE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s imageUrls=${data.imageUrls.length} prompt="${data.prompt ?? ''}"`,
+    );
+
+    const buildInput = (prompt: string | undefined) => ({
+      id: data.generationId,
+      prompt,
+      imageUrls: data.imageUrls,
+      resolution: data.resolution,
+      durationSeconds: data.durationSeconds,
+    });
+
+    try {
+      const result = await this.klingProvider.generateImageToVideo(
+        buildInput(data.prompt),
+      );
+      await this.completeGeneration(data.generationId, result, startTime);
+    } catch (error) {
+      if (this.isSafetyRelatedError(error) && data.prompt) {
+        const retryResult = await this.retryWithRefinedPrompt(
+          data.generationId,
+          data.prompt,
+          (refined) => this.klingProvider.generateImageToVideo(buildInput(refined)),
+        );
+        if (retryResult) {
+          await this.completeGeneration(data.generationId, retryResult, startTime);
+          return;
+        }
+      }
+      throw error;
+    }
+  }
+
+  // ─── ComfyDeploy — WanImageToVideo (NSFW/legacy) ───────────
+
+  private async processComfyDeployImageToVideo(
+    data: ComfyDeployImageToVideoJobData,
+  ): Promise<void> {
+    const startTime = Date.now();
+    await this.markProcessingStarted(data.generationId);
+
+    this.logger.log(
+      `[COMFYDEPLOY_IMAGE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s prompt="${data.prompt}"`,
+    );
+
+    const result = await this.comfyDeployProvider.generateImageToVideo({
+      id: data.generationId,
+      prompt: data.prompt,
+      imageUrl: data.imageUrl,
+      durationSeconds: data.durationSeconds,
+    });
+    await this.completeGeneration(data.generationId, result, startTime);
+  }
 
   private async processTextToSpeech(data: TextToSpeechJobData): Promise<void> {
     const startTime = Date.now();
