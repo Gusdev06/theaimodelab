@@ -54,7 +54,7 @@ import { GenerateKlingImageToVideoDto } from './dto/videos/generate-kling-image-
 import { GenerateComfyDeployImageToVideoDto } from './dto/videos/generate-comfydeploy-image-to-video.dto';
 import { GenerateTextToSpeechDto } from './dto/generate-text-to-speech.dto';
 import { GenerateVoiceCloneDto } from './dto/generate-voice-clone.dto';
-import { containsNsfwContent } from './utils/nsfw-blocklist';
+
 
 /**
  * Mapeia o nome do modelo da API para o modelVariant usado na tabela credit_costs.
@@ -410,11 +410,7 @@ export class GenerationsService {
       );
     }
 
-    if (dto.model === 'sem-censura' && containsNsfwContent(dto.prompt)) {
-      throw new BadRequestException(
-        'Seu prompt contém termos não permitidos neste modelo. Remova-os e tente novamente.',
-      );
-    }
+
 
     if (dto.model === 'sem-censura') {
       await this.modelsService.assertActiveBySlug(dto.model, AiModelType.IMAGE);
