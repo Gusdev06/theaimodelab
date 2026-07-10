@@ -40,6 +40,7 @@ type TrackEventInput = {
 export class MetaConversionsService {
   private readonly logger = new Logger(MetaConversionsService.name);
   private warnedMissingConfig = false;
+  private warnedNormalizedToken = false;
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -156,7 +157,7 @@ export class MetaConversionsService {
     const pixelId = this.configService.get<string>('META_PIXEL_ID') ||
       this.configService.get<string>('NEXT_PUBLIC_META_PIXEL_ID') ||
       '1327084455720433';
-    const accessToken = this.configService.get<string>('META_ACCESS_TOKEN');
+    const accessToken = this.getMetaAccessToken();
 
     if (!pixelId || !accessToken) {
       if (!this.warnedMissingConfig) {
@@ -201,7 +202,7 @@ export class MetaConversionsService {
 
       if (!response.ok) {
         this.logger.error(
-          `Meta CAPI ${input.eventName} failed (${response.status}): ${responseBody.slice(0, 500)}`,
+          `Meta CAPI ${input.eventName} failed (${response.status}): ${this.redactMetaResponse(responseBody, accessToken).slice(0, 500)}`,
         );
         return;
       }
@@ -274,5 +275,36 @@ export class MetaConversionsService {
 
   private firstHeaderValue(value: string | string[] | undefined): string | undefined {
     return Array.isArray(value) ? value[0] : value;
+  }
+
+  private getMetaAccessToken(): string | undefined {
+    const rawToken = this.configService.get<string>('META_ACCESS_TOKEN')?.trim();
+    if (!rawToken) return undefined;
+
+    const token = rawToken.replace(/^["']|["']$/g, '').trim();
+    const compactToken = token.replace(/\s+/g, '');
+    const halfLength = compactToken.length / 2;
+
+    if (
+      compactToken.length > 0 &&
+      compactToken.length % 2 === 0 &&
+      compactToken.slice(0, halfLength) === compactToken.slice(halfLength)
+    ) {
+      if (!this.warnedNormalizedToken) {
+        this.warnedNormalizedToken = true;
+        this.logger.warn(
+          'META_ACCESS_TOKEN appears to be duplicated. Using the first half for Meta CAPI; fix the environment variable to contain only one token.',
+        );
+      }
+      return compactToken.slice(0, halfLength);
+    }
+
+    return compactToken;
+  }
+
+  private redactMetaResponse(responseBody: string, accessToken: string): string {
+    return responseBody
+      .replaceAll(accessToken, '[redacted]')
+      .replace(/(Malformed access token )[^"]+/g, '$1[redacted]');
   }
 }
