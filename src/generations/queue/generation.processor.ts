@@ -227,6 +227,9 @@ export class GenerationProcessor extends WorkerHost {
         resolution: data.resolution,
         aspectRatio: data.aspectRatio,
         imageUrls,
+        // "Unlocked" (sem-censura) é o modelo sem censura: não aplica o wrapper
+        // de segurança que força roupa no personagem.
+        skipSafetyWrapper: true,
       });
 
       await this.completeGeneration(data.generationId, result, startTime);
@@ -326,7 +329,9 @@ export class GenerationProcessor extends WorkerHost {
         id: data.generationId,
         prompt: UNDRESS_PROMPT,
         resolution: data.resolution,
-        aspectRatio: data.aspectRatio,
+        // Undress: saída sempre casa com a foto de entrada (match_input_image).
+        // Ignora o aspect_ratio do request (o front manda 1:1 por default).
+        aspectRatio: undefined,
         imageUrls,
         skipSafetyWrapper: true,
         modelUsedTag: 'deepdeep',
@@ -394,6 +399,9 @@ export class GenerationProcessor extends WorkerHost {
         resolution: data.resolution,
         aspectRatio: data.aspectRatio,
         imageUrls,
+        // "Unlocked" (sem-censura) é o modelo sem censura: não aplica o wrapper
+        // de segurança que força roupa no personagem.
+        skipSafetyWrapper: true,
       });
 
       await this.completeGeneration(data.generationId, result, startTime);
@@ -453,7 +461,9 @@ export class GenerationProcessor extends WorkerHost {
         id: data.generationId,
         prompt: UNDRESS_PROMPT,
         resolution: data.resolution,
-        aspectRatio: data.aspectRatio,
+        // Undress: saída sempre casa com a foto de entrada (match_input_image).
+        // Ignora o aspect_ratio do request (o front manda 1:1 por default).
+        aspectRatio: undefined,
         imageUrls,
         skipSafetyWrapper: true,
         modelUsedTag: 'deepdeep',
@@ -1320,6 +1330,8 @@ export class GenerationProcessor extends WorkerHost {
       resolution: Resolution.RES_2K,
       aspectRatio,
       imageUrls: imageUrls.length ? imageUrls : undefined,
+      // Fallback também sem censura — não aplica o wrapper que força roupa.
+      skipSafetyWrapper: true,
     });
 
     // Tag as safety fallback so we can differentiate from direct Seedream runs
