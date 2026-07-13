@@ -154,8 +154,10 @@ export interface KlingImageToVideoJobData extends BaseJobData {
   resolution: string;
   durationSeconds: number;
   imageUrls: string[];
-  /** Proporção detectada a partir da imagem de entrada: '16:9' | '9:16' | '1:1'. */
+  /** Proporção do vídeo: '16:9' | '9:16' | '1:1' (UI ou detectada da imagem). */
   aspectRatio: string;
+  /** Gerar com áudio nativo (Kling V3 Turbo inclui áudio sem custo extra). */
+  generateAudio: boolean;
 }
 
 export interface ComfyDeployImageToVideoJobData extends BaseJobData {

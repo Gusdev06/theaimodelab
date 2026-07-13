@@ -2,6 +2,7 @@ import {
   IsString,
   IsOptional,
   IsNumber,
+  IsBoolean,
   IsIn,
   Min,
   Max,
@@ -29,6 +30,25 @@ export class GenerateKlingImageToVideoDto {
   })
   @IsIn(['RES_720P', 'RES_1080P'])
   resolution: Resolution;
+
+  @ApiPropertyOptional({
+    description:
+      'Proporção do vídeo. Se omitido, é detectado a partir da imagem de entrada.',
+    enum: ['9:16', '16:9', '1:1'],
+    example: '9:16',
+  })
+  @IsOptional()
+  @IsIn(['9:16', '16:9', '1:1'])
+  aspect_ratio?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Gerar com áudio nativo (Kling V3 Turbo inclui áudio sem custo extra).',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  generate_audio?: boolean;
 
   @ApiProperty({
     description: 'Duração do vídeo em segundos (3-15)',

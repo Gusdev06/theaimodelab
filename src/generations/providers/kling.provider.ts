@@ -42,6 +42,8 @@ export interface KlingVideoInput {
   durationSeconds: number;
   /** Proporção do vídeo: '16:9' | '9:16' | '1:1'. Default '9:16' se ausente. */
   aspectRatio?: string;
+  /** Gerar com áudio nativo. Default false. */
+  generateAudio?: boolean;
 }
 
 const KLING_ASPECT_RATIOS = new Set(['16:9', '9:16', '1:1']);
@@ -97,9 +99,10 @@ export class KlingProvider {
       input.aspectRatio && KLING_ASPECT_RATIOS.has(input.aspectRatio)
         ? input.aspectRatio
         : '9:16';
+    const sound = input.generateAudio ?? false;
 
     this.logger.log(
-      `[KLING] mode=${mode} duration=${duration}s aspect=${aspectRatio} imageUrls=${input.imageUrls.length} prompt="${input.prompt ?? ''}"`,
+      `[KLING] mode=${mode} duration=${duration}s aspect=${aspectRatio} sound=${sound} imageUrls=${input.imageUrls.length} prompt="${input.prompt ?? ''}"`,
     );
 
     // Formato atual do createTask da kie.ai para kling-3.0/video.
@@ -110,7 +113,7 @@ export class KlingProvider {
       input: {
         prompt: input.prompt ?? '',
         image_urls: input.imageUrls,
-        sound: false,
+        sound,
         duration: String(duration),
         aspect_ratio: aspectRatio,
         mode,

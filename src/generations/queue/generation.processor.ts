@@ -1155,6 +1155,7 @@ export class GenerationProcessor extends WorkerHost {
       resolution: data.resolution,
       durationSeconds: data.durationSeconds,
       aspectRatio: data.aspectRatio,
+      generateAudio: data.generateAudio,
     });
 
     try {

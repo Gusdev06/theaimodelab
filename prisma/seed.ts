@@ -307,10 +307,13 @@ async function main() {
     { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'GROK_IMAGINE', creditsPerUnit: 40, isPerSecond: true },
     { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'GROK_IMAGINE', creditsPerUnit: 80, isPerSecond: true },
 
-    // Kling V3 Turbo (KLING_V3_TURBO) — KIE API — image-to-video, sem áudio, 3-15s, cobrado por segundo.
-    // TODO: valores placeholder — ajustar conforme o custo real da API kie.ai (US$/vídeo).
+    // Kling V3 Turbo (KLING_V3_TURBO) — KIE API — image-to-video, 3-15s, cobrado por segundo.
+    // Áudio nativo incluso na kie SEM custo extra (~$0,11/s 720p, ~$0,14/s 1080p com ou
+    // sem som) → linhas hasAudio true/false com o MESMO preço.
     { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 90, isPerSecond: true },
     { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 150, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 90, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 150, isPerSecond: true },
 
     // ComfyDeploy WanImageToVideo (COMFYDEPLOY_WAN) — NSFW/legacy — image-to-video, sem áudio, apenas 2s/5s, cobrado por segundo.
     // Custo real US$0,06/s → 125 cr/s garante margem ~52% no pior plano (Studio). 2s = 250 cr, 5s = 625 cr.

@@ -2488,11 +2488,15 @@ CRITICAL REQUIREMENTS:
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
 
+    // Kling V3 Turbo inclui áudio nativo sem custo extra na kie — o preço em
+    // créditos é o mesmo com ou sem som (linhas hasAudio true/false idênticas).
+    const generateAudio = dto.generate_audio ?? false;
+
     const creditsRequired = await this.plansService.calculateGenerationCost(
       type,
       dto.resolution,
       dto.duration_seconds,
-      false,
+      generateAudio,
       1,
       modelVariant,
     );
@@ -2509,7 +2513,7 @@ CRITICAL REQUIREMENTS:
         modelUsed: model,
         resolution: dto.resolution,
         durationSeconds: dto.duration_seconds,
-        hasAudio: false,
+        hasAudio: generateAudio,
         creditsConsumed: creditsRequired,
         parameters: { provider: 'kie' },
       },
@@ -2541,9 +2545,10 @@ CRITICAL REQUIREMENTS:
       dto.resolution,
     );
 
-    // Kling 3.0 exige aspect_ratio ('16:9' | '9:16' | '1:1'). Detecta a partir
-    // das dimensões da imagem de entrada pra não distorcer/cortar o vídeo.
-    const aspectRatio = await this.detectKlingAspectRatio(dto.first_frame);
+    // Kling 3.0 exige aspect_ratio ('16:9' | '9:16' | '1:1'). Usa o valor
+    // escolhido na UI; se ausente, detecta a partir da imagem de entrada.
+    const aspectRatio =
+      dto.aspect_ratio ?? (await this.detectKlingAspectRatio(dto.first_frame));
 
     await this.generationQueue.add(GenerationJobName.KLING_IMAGE_TO_VIDEO, {
       generationId: generation.id,
@@ -2554,6 +2559,7 @@ CRITICAL REQUIREMENTS:
       durationSeconds: dto.duration_seconds,
       imageUrls: [firstFrameUrl],
       aspectRatio,
+      generateAudio,
     } satisfies KlingImageToVideoJobData);
 
     return {
