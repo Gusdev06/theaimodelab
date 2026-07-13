@@ -4,13 +4,21 @@ import { UploadsService } from '../../uploads/uploads.service';
 import { GenerationResult } from './theaimodelab.provider';
 import { ContentSafetyError } from '../errors/content-safety.error';
 
-const RESOLUTION_MAP: Record<string, string> = {
-  RES_2K: '2K',
-  RES_4K: '4K',
+// Seedream V5.0 Pro na WaveSpeed. Sem imagem de referência usamos o endpoint
+// text-to-image; com imagem(ns), o endpoint de edição (image-to-image).
+const WS_MODEL_T2I = 'bytedance/seedream-v5.0-pro';
+const WS_MODEL_EDIT = 'bytedance/seedream-v5.0-pro/edit';
+
+// WaveSpeed só cobra por dois tiers: 1k (barato) e 2k (caro). Não há mais 4K.
+const RESOLUTION_MAP: Record<string, '1k' | '2k'> = {
+  RES_1K: '1k',
+  RES_2K: '2k',
+  RES_4K: '2k', // legado -> tier máximo disponível
 };
 
-const SEEDREAM_MODEL_SLUG = 'bytedance/seedream-4.5';
-const REPLICATE_BASE_URL = 'https://api.replicate.com/v1';
+function mapResolution(resolution?: string): '1k' | '2k' {
+  return (resolution && RESOLUTION_MAP[resolution]) || '2k';
+}
 
 const SAFETY_INSTRUCTION =
   'The subject is fully clothed in complete, opaque everyday attire that covers the chest, torso, ' +
@@ -18,7 +26,7 @@ const SAFETY_INSTRUCTION =
   'fashion-forward outfits are allowed when the prompt asks for them, as long as the chest, nipples, ' +
   'groin, and buttocks remain fully covered by opaque fabric.';
 
-// Replicate (bytedance/seedream-4.5) rejeita input.prompt > 4000 chars (422).
+// Limite defensivo de tamanho do prompt.
 const MAX_PROMPT_LENGTH = 4000;
 
 function applySafetyWrapper(prompt: string): string {
@@ -35,7 +43,6 @@ function applySafetyWrapper(prompt: string): string {
 // User-facing error messages (never expose provider name or technical detail)
 const USER_ERRORS = {
   configMissing: 'Serviço de geração indisponível no momento. Tente novamente em instantes.',
-  resolutionUnsupported: 'Resolução não suportada por esse modelo.',
   startFailed: 'Não foi possível iniciar a geração. Tente novamente em instantes.',
   generationFailed: 'Não foi possível gerar a imagem. Tente novamente.',
   statusCheckFailed: 'Falha ao verificar o status da geração. Tente novamente.',
@@ -51,90 +58,97 @@ export interface SeedreamImageInput {
   resolution: string;
   aspectRatio?: string;
   imageUrls?: string[];
+  /**
+   * Pula o wrapper de segurança (que força roupa no personagem). Usado no fluxo
+   * de undress, onde o prompt explícito precisa passar intacto.
+   */
+  skipSafetyWrapper?: boolean;
+  /** Tag salva em `modelUsed` (default `sem-censura`; undress usa `deepdeep`). */
+  modelUsedTag?: string;
 }
 
-interface Prediction {
-  id: string;
-  status: 'starting' | 'processing' | 'succeeded' | 'failed' | 'canceled';
-  output?: string[] | string | null;
-  error?: string | null;
-  urls?: { get?: string; cancel?: string };
+interface CreatePredictionResponse {
+  data?: { id?: string };
+  id?: string;
+  code?: number;
+  message?: string;
+}
+
+interface PredictionResultResponse {
+  code?: number;
+  message?: string;
+  data?: {
+    id: string;
+    status: 'created' | 'processing' | 'completed' | 'failed';
+    outputs?: string[];
+    error?: string;
+  };
 }
 
 @Injectable()
 export class SeedreamProvider {
   private readonly logger = new Logger(SeedreamProvider.name);
-  private readonly apiToken: string;
+  private readonly baseUrl: string;
+  private readonly apiKey: string;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly uploadsService: UploadsService,
   ) {
-    this.apiToken = this.configService.get<string>('REPLICATE_API_TOKEN', '');
+    this.baseUrl = this.configService.get<string>(
+      'WAVESPEED_BASE_URL',
+      'https://api.wavespeed.ai',
+    );
+    this.apiKey = (this.configService.get<string>('WAVESPEED_API_KEY', '') ?? '').trim();
+    if (!this.apiKey) {
+      this.logger.warn(
+        'WAVESPEED_API_KEY is not set. Image generation will fail with a 401 from the provider.',
+      );
+    }
   }
 
   async generateImage(input: SeedreamImageInput): Promise<GenerationResult> {
-    if (!this.apiToken) {
-      this.logger.error('REPLICATE_API_TOKEN is not configured.');
+    if (!this.apiKey) {
+      this.logger.error('WAVESPEED_API_KEY is not configured.');
       throw new Error(USER_ERRORS.configMissing);
     }
 
-    const size = RESOLUTION_MAP[input.resolution];
-    if (!size) {
-      throw new Error(USER_ERRORS.resolutionUnsupported);
-    }
+    const resolution = mapResolution(input.resolution);
+    const hasImages = !!input.imageUrls?.length;
+    const model = hasImages ? WS_MODEL_EDIT : WS_MODEL_T2I;
 
-    const aspectRatio = input.imageUrls?.length
+    // Prompt: undress (skipSafetyWrapper) passa cru; o resto ganha o wrapper que
+    // mantém o personagem vestido.
+    const finalPrompt = input.skipSafetyWrapper
+      ? input.prompt.trim().slice(0, MAX_PROMPT_LENGTH)
+      : applySafetyWrapper(input.prompt);
+
+    // `match_input_image` não existe na WaveSpeed: omitimos o campo e a API casa
+    // com a 1ª imagem. Sem imagem, default 1:1.
+    const requestedAspect = hasImages
       ? (input.aspectRatio ?? 'match_input_image')
       : (input.aspectRatio ?? '1:1');
 
-    const wrappedPrompt = applySafetyWrapper(input.prompt);
-    if (wrappedPrompt.length < input.prompt.trim().length + 2 + SAFETY_INSTRUCTION.length) {
-      this.logger.warn(
-        `Prompt truncado para caber no limite de ${MAX_PROMPT_LENGTH} chars da API (original: ${input.prompt.trim().length} chars).`,
-      );
-    }
-
-    const body = {
-      input: {
-        prompt: wrappedPrompt,
-        size,
-        aspect_ratio: aspectRatio,
-        sequential_image_generation: 'disabled',
-        max_images: 1,
-        disable_safety_checker: true,
-        ...(input.imageUrls?.length && { image_input: input.imageUrls }),
-      },
+    const body: Record<string, unknown> = {
+      prompt: finalPrompt,
+      resolution,
+      output_format: 'jpeg',
+      enable_base64_output: false,
+      enable_sync_mode: false,
     };
+    if (hasImages) body.images = input.imageUrls;
+    if (requestedAspect && requestedAspect !== 'match_input_image') {
+      body.aspect_ratio = requestedAspect;
+    }
 
     this.logger.log(
-      `Creating prediction: size=${size} aspectRatio=${aspectRatio} imageUrls=${input.imageUrls?.length ?? 0} prompt="${input.prompt}" (safety wrapper applied)`,
+      `Creating prediction: model=${model} resolution=${resolution} aspectRatio=${requestedAspect} imageUrls=${input.imageUrls?.length ?? 0} skipSafety=${!!input.skipSafetyWrapper} prompt="${input.prompt.slice(0, 120)}"`,
     );
 
-    const createResponse = await this.fetchWithTimeout(
-      `${REPLICATE_BASE_URL}/models/${SEEDREAM_MODEL_SLUG}/predictions`,
-      {
-        method: 'POST',
-        headers: this.headers(),
-        body: JSON.stringify(body),
-      },
-      60_000,
-    );
+    const predictionId = await this.createPrediction(model, body);
+    this.logger.log(`Seedream prediction created: ${predictionId}`);
 
-    if (!createResponse.ok) {
-      const errorText = await createResponse.text();
-      const safetyError = ContentSafetyError.fromErrorMessage(errorText);
-      if (safetyError) throw safetyError;
-      this.logger.error(
-        `Create prediction error (${createResponse.status}): ${errorText}`,
-      );
-      throw new Error(USER_ERRORS.startFailed);
-    }
-
-    const prediction = (await createResponse.json()) as Prediction;
-    this.logger.log(`Seedream prediction created: ${prediction.id}`);
-
-    const resultUrls = await this.pollPrediction(prediction);
+    const resultUrls = await this.pollPrediction(predictionId);
 
     const outputUrls: string[] = [];
     for (let i = 0; i < resultUrls.length; i++) {
@@ -147,45 +161,79 @@ export class SeedreamProvider {
     }
 
     this.logger.log(`${outputUrls.length} image(s) uploaded to S3`);
-    return { outputUrls, modelUsed: 'sem-censura' };
+    return { outputUrls, modelUsed: input.modelUsedTag ?? 'sem-censura' };
+  }
+
+  private async createPrediction(
+    model: string,
+    body: Record<string, unknown>,
+  ): Promise<string> {
+    // Retry once em erros transientes (WaveSpeed às vezes devolve 401/429/5xx em
+    // chamadas concorrentes; um pequeno delay recupera).
+    const maxAttempts = 2;
+    const transientStatuses = new Set([401, 408, 429, 500, 502, 503, 504]);
+    let lastErrorText = '';
+    let lastStatus = 0;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const response = await this.fetchWithTimeout(
+        `${this.baseUrl}/api/v3/${model}`,
+        {
+          method: 'POST',
+          headers: this.headers(),
+          body: JSON.stringify(body),
+        },
+        60_000,
+      );
+
+      if (response.ok) {
+        const data = (await response.json()) as CreatePredictionResponse;
+        const predictionId = data.data?.id ?? data.id;
+        if (!predictionId) {
+          this.logger.error(
+            `WaveSpeed createPrediction missing id in response: ${JSON.stringify(data)}`,
+          );
+          throw new Error(USER_ERRORS.startFailed);
+        }
+        return predictionId;
+      }
+
+      lastStatus = response.status;
+      lastErrorText = await response.text();
+
+      // Moderação de conteúdo -> ContentSafetyError (aciona o fallback do processor).
+      const safetyError = ContentSafetyError.fromErrorMessage(lastErrorText);
+      if (safetyError) throw safetyError;
+
+      if (attempt < maxAttempts && transientStatuses.has(response.status)) {
+        this.logger.warn(
+          `[WAVESPEED_RETRY] createPrediction attempt=${attempt}/${maxAttempts} status=${response.status} body=${lastErrorText.slice(0, 200)}`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        continue;
+      }
+      break;
+    }
+
+    this.logger.error(
+      `WaveSpeed createPrediction failed status=${lastStatus} body=${lastErrorText}`,
+    );
+    throw new Error(USER_ERRORS.startFailed);
   }
 
   private async pollPrediction(
-    initial: Prediction,
+    predictionId: string,
     maxAttempts = 120,
     intervalMs = 3_000,
   ): Promise<string[]> {
-    const getUrl =
-      initial.urls?.get ?? `${REPLICATE_BASE_URL}/predictions/${initial.id}`;
-
-    let current = initial;
+    const getUrl = `${this.baseUrl}/api/v3/predictions/${predictionId}/result`;
     const maxNetworkRetries = 5;
     let networkFailures = 0;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (current.status === 'succeeded') {
-        const output = Array.isArray(current.output)
-          ? current.output
-          : current.output
-            ? [current.output]
-            : [];
-        if (!output.length) {
-          throw new Error(USER_ERRORS.noOutput);
-        }
-        return output;
+      if (attempt > 0) {
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
       }
-
-      if (current.status === 'failed' || current.status === 'canceled') {
-        const errorStr = current.error ?? 'unknown error';
-        const safetyError = ContentSafetyError.fromErrorMessage(errorStr);
-        if (safetyError) throw safetyError;
-        this.logger.error(
-          `Prediction ${current.status}: ${errorStr}`,
-        );
-        throw new Error(USER_ERRORS.generationFailed);
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
 
       let response: Response;
       try {
@@ -220,7 +268,34 @@ export class SeedreamProvider {
       }
 
       networkFailures = 0;
-      current = (await response.json()) as Prediction;
+      const payload = (await response.json()) as PredictionResultResponse;
+      const data = payload.data;
+      if (!data) {
+        this.logger.error(
+          `WaveSpeed result empty payload for predictionId=${predictionId}`,
+        );
+        throw new Error(USER_ERRORS.statusCheckFailed);
+      }
+
+      if (data.status === 'completed') {
+        const output = data.outputs ?? [];
+        if (!output.length) {
+          throw new Error(USER_ERRORS.noOutput);
+        }
+        return output;
+      }
+
+      if (data.status === 'failed') {
+        const errorStr = data.error ?? 'unknown error';
+        const safetyError = ContentSafetyError.fromErrorMessage(errorStr);
+        if (safetyError) throw safetyError;
+        this.logger.error(`Prediction failed: ${errorStr}`);
+        throw new Error(USER_ERRORS.generationFailed);
+      }
+
+      this.logger.debug(
+        `WaveSpeed prediction ${predictionId} ${data.status} (attempt ${attempt + 1}/${maxAttempts})`,
+      );
     }
 
     throw new Error(USER_ERRORS.timeout);
@@ -286,7 +361,7 @@ export class SeedreamProvider {
   private headers(): Record<string, string> {
     return {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${this.apiToken}`,
+      Authorization: `Bearer ${this.apiKey}`,
     };
   }
 }

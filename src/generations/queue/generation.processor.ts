@@ -56,6 +56,14 @@ import {
   VoiceCloneJobData,
 } from './generation-queue.constants';
 
+/**
+ * Prompt de undress usado pelo modelo `deepdeep`, que agora roda no Seedream
+ * (WaveSpeed, image-to-image) em vez da API n8ked/deepnude. Passa cru pro
+ * provider com `skipSafetyWrapper` — sem o wrapper que força roupa no personagem.
+ */
+const UNDRESS_PROMPT =
+  'remove all visible clothing from the subject in the image, keeping natural body proportions and anatomy, tits, vagina, ass, etc.';
+
 @Processor(GENERATION_QUEUE, {
   concurrency: 5,
   lockDuration: 15 * 60 * 1000, // 15 min — vídeos podem demorar até 12 min
@@ -304,7 +312,8 @@ export class GenerationProcessor extends WorkerHost {
     }
 
     if (data.model === 'deepdeep') {
-      // Deepdeep é image-to-image puro: sempre precisa de imagem de input.
+      // Undress agora roda no Seedream (WaveSpeed, image-to-image) com prompt
+      // explícito e sem o wrapper de roupa. Sempre precisa de imagem de input.
       const inputImages = await this.prisma.generationInputImage.findMany({
         where: { generationId: data.generationId },
         orderBy: { order: 'asc' },
@@ -313,10 +322,14 @@ export class GenerationProcessor extends WorkerHost {
         .map((img) => img.url)
         .filter((url): url is string => !!url);
 
-      const result = await this.deepDeepProvider.generateImage({
+      const result = await this.seedreamProvider.generateImage({
         id: data.generationId,
-        prompt: data.prompt,
+        prompt: UNDRESS_PROMPT,
+        resolution: data.resolution,
+        aspectRatio: data.aspectRatio,
         imageUrls,
+        skipSafetyWrapper: true,
+        modelUsedTag: 'deepdeep',
       });
 
       await this.completeGeneration(data.generationId, result, startTime);
@@ -426,7 +439,8 @@ export class GenerationProcessor extends WorkerHost {
     }
 
     if (data.model === 'deepdeep') {
-      // Deepdeep é image-to-image puro com provider próprio — não tem fallback.
+      // Undress agora roda no Seedream (WaveSpeed, image-to-image) com prompt
+      // explícito e sem o wrapper de roupa. Sempre precisa de imagem de input.
       const inputImages = await this.prisma.generationInputImage.findMany({
         where: { generationId: data.generationId },
         orderBy: { order: 'asc' },
@@ -435,10 +449,14 @@ export class GenerationProcessor extends WorkerHost {
         .map((img) => img.url)
         .filter((url): url is string => !!url);
 
-      const result = await this.deepDeepProvider.generateImage({
+      const result = await this.seedreamProvider.generateImage({
         id: data.generationId,
-        prompt: data.prompt,
+        prompt: UNDRESS_PROMPT,
+        resolution: data.resolution,
+        aspectRatio: data.aspectRatio,
         imageUrls,
+        skipSafetyWrapper: true,
+        modelUsedTag: 'deepdeep',
       });
 
       await this.completeGeneration(data.generationId, result, startTime);
