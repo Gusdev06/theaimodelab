@@ -16,13 +16,21 @@ import { ContentSafetyError } from '../errors/content-safety.error';
  * BullMQ worker) e devolve as URLs já persistidas no nosso storage.
  */
 
-const KLING_MODEL = 'kling/v3-turbo-image-to-video';
+// Model identifier da kie.ai para a família Kling 3.0 (inclui o Turbo).
+// Na kie o createTask usa uma única string; a variante/resolução é escolhida
+// pelo campo `input.mode` (std/pro/4K), não por um model id separado.
+const KLING_MODEL = 'kling-3.0/video';
+
+// Slug estável salvo em generation.modelUsed (mantém o rótulo do produto).
+const KLING_MODEL_SLUG = 'kling-v3-turbo';
 
 const KLING_SAFETY_FAIL_CODES = new Set(['430']);
 
-const RESOLUTION_MAP: Record<string, '720p' | '1080p'> = {
-  RES_720P: '720p',
-  RES_1080P: '1080p',
+// Kling 3.0 na kie.ai seleciona a resolução pelo "mode":
+//   std = 720p, pro = 1080p, 4K = 2160p
+const MODE_MAP: Record<string, 'std' | 'pro' | '4K'> = {
+  RES_720P: 'std',
+  RES_1080P: 'pro',
 };
 
 export interface KlingVideoInput {
@@ -32,7 +40,11 @@ export interface KlingVideoInput {
   imageUrls: string[];
   resolution: string;
   durationSeconds: number;
+  /** Proporção do vídeo: '16:9' | '9:16' | '1:1'. Default '9:16' se ausente. */
+  aspectRatio?: string;
 }
+
+const KLING_ASPECT_RATIOS = new Set(['16:9', '9:16', '1:1']);
 
 interface CreateTaskResponse {
   code: number;
@@ -78,21 +90,33 @@ export class KlingProvider {
       throw new Error('Kling: imagem de entrada (primeiro frame) ausente.');
     }
 
-    const resolution = RESOLUTION_MAP[input.resolution] ?? '720p';
+    const mode = MODE_MAP[input.resolution] ?? 'std';
     // Kling V3 Turbo aceita duração de 3 a 15s (passo 1). Clampa pra faixa válida.
     const duration = Math.min(15, Math.max(3, Math.round(input.durationSeconds)));
+    const aspectRatio =
+      input.aspectRatio && KLING_ASPECT_RATIOS.has(input.aspectRatio)
+        ? input.aspectRatio
+        : '9:16';
 
     this.logger.log(
-      `[KLING] resolution=${resolution} duration=${duration}s imageUrls=${input.imageUrls.length} prompt="${input.prompt ?? ''}"`,
+      `[KLING] mode=${mode} duration=${duration}s aspect=${aspectRatio} imageUrls=${input.imageUrls.length} prompt="${input.prompt ?? ''}"`,
     );
 
+    // Formato atual do createTask da kie.ai para kling-3.0/video.
+    // `duration` é string, resolução vai em `mode`, e os campos de multi-shot
+    // são obrigatórios (mandamos vazios pra geração single-shot).
     const body = {
       model: KLING_MODEL,
       input: {
         prompt: input.prompt ?? '',
         image_urls: input.imageUrls,
-        duration,
-        resolution,
+        sound: false,
+        duration: String(duration),
+        aspect_ratio: aspectRatio,
+        mode,
+        multi_shots: false,
+        multi_prompt: [],
+        kling_elements: [],
       },
     };
 
@@ -114,7 +138,7 @@ export class KlingProvider {
       throw new Error('Kling returned no video results.');
     }
 
-    return { outputUrls, modelUsed: KLING_MODEL };
+    return { outputUrls, modelUsed: KLING_MODEL_SLUG };
   }
 
   private async submitTask(body: Record<string, unknown>): Promise<string> {

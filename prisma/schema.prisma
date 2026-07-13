@@ -1131,6 +1131,20 @@ enum FreeGenerationType {
   VIRTUAL_TRY_ON
   THEAIMODELAB_FAST
   UPSCALE
+  // Cobertura de todos os modelos existentes (grátis via admin / concessões)
+  SEM_CENSURA
+  DEEPDEEP
+  GPT_IMAGE_2
+  SEEDREAM_LITE
+  THEAIMODELAB_QUALITY
+  VEO_FAST
+  VEO_MAX
+  GROK_IMAGINE
+  GEMINI_OMNI
+  SEEDANCE_2
+  KLING_V3_TURBO
+  COMFYDEPLOY_WAN
+  MOTION_CONTROL
 }
 
 enum VideoProjectStatus {

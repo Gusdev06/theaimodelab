@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import * as sharp from 'sharp';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreditsService,
@@ -978,7 +979,7 @@ export class GenerationsService {
         await this.creditsService.consumeFreeGeneration(
           userId,
           generation.id,
-          FreeGenerationType.THEAIMODELAB_FAST,
+          resolveFreeGenerationType(type, modelVariant)!,
         );
       } else {
         await this.debitCredits(
@@ -1142,7 +1143,7 @@ export class GenerationsService {
         await this.creditsService.consumeFreeGeneration(
           userId,
           generation.id,
-          FreeGenerationType.THEAIMODELAB_FAST,
+          resolveFreeGenerationType(type, modelVariant)!,
         );
       } else {
         await this.debitCredits(
@@ -1293,7 +1294,7 @@ export class GenerationsService {
         await this.creditsService.consumeFreeGeneration(
           userId,
           generation.id,
-          FreeGenerationType.THEAIMODELAB_FAST,
+          resolveFreeGenerationType(type, modelVariant)!,
         );
       } else {
         await this.debitCredits(
@@ -1784,7 +1785,7 @@ CRITICAL REQUIREMENTS:
       await this.creditsService.consumeFreeGeneration(
         userId,
         generation.id,
-        FreeGenerationType.THEAIMODELAB_FAST,
+        resolveFreeGenerationType(type, modelVariant)!,
       );
     } else {
       await this.debitCredits(
@@ -1913,7 +1914,7 @@ CRITICAL REQUIREMENTS:
       await this.creditsService.consumeFreeGeneration(
         userId,
         generation.id,
-        FreeGenerationType.THEAIMODELAB_FAST,
+        resolveFreeGenerationType(type, modelVariant)!,
       );
     } else {
       await this.debitCredits(
@@ -2028,7 +2029,7 @@ CRITICAL REQUIREMENTS:
       await this.creditsService.consumeFreeGeneration(
         userId,
         generation.id,
-        FreeGenerationType.THEAIMODELAB_FAST,
+        resolveFreeGenerationType(type, modelVariant)!,
       );
     } else {
       await this.debitCredits(
@@ -2540,6 +2541,10 @@ CRITICAL REQUIREMENTS:
       dto.resolution,
     );
 
+    // Kling 3.0 exige aspect_ratio ('16:9' | '9:16' | '1:1'). Detecta a partir
+    // das dimensões da imagem de entrada pra não distorcer/cortar o vídeo.
+    const aspectRatio = await this.detectKlingAspectRatio(dto.first_frame);
+
     await this.generationQueue.add(GenerationJobName.KLING_IMAGE_TO_VIDEO, {
       generationId: generation.id,
       userId,
@@ -2548,6 +2553,7 @@ CRITICAL REQUIREMENTS:
       resolution: dto.resolution,
       durationSeconds: dto.duration_seconds,
       imageUrls: [firstFrameUrl],
+      aspectRatio,
     } satisfies KlingImageToVideoJobData);
 
     return {
@@ -2881,28 +2887,19 @@ CRITICAL REQUIREMENTS:
   private async checkVeoAccess(
     userId: string,
     modelVariant: string | null,
-    provider: 'theaimodelab' | 'kie' = 'theaimodelab',
+    _provider: 'theaimodelab' | 'kie' = 'theaimodelab',
   ): Promise<'paid' | 'free_generation'> {
-    const isTheaimodelab =
-      modelVariant === 'THEAIMODELAB_FAST' || modelVariant === 'THEAIMODELAB_QUALITY';
-    const isVeo = modelVariant === 'VEO_FAST' || modelVariant === 'VEO_MAX';
-
-    if (!isTheaimodelab && !isVeo) {
+    // Todos os modelos de vídeo podem ter geração grátis (concedida via admin/
+    // concessões). Resolve o tipo grátis pelo modelVariant e verifica o saldo.
+    const freeType = resolveFreeGenerationType(
+      GenerationType.TEXT_TO_VIDEO,
+      modelVariant,
+    );
+    if (!freeType) {
       return 'paid';
     }
-
-    // Free generations agora cobrem apenas THEAIMODELAB_FAST (não THEAIMODELAB_QUALITY)
-    if (provider === 'theaimodelab' && modelVariant === 'THEAIMODELAB_FAST') {
-      const hasFree = await this.creditsService.hasFreeGeneration(
-        userId,
-        FreeGenerationType.THEAIMODELAB_FAST,
-      );
-      if (hasFree) {
-        return 'free_generation';
-      }
-    }
-
-    return 'paid';
+    const hasFree = await this.creditsService.hasFreeGeneration(userId, freeType);
+    return hasFree ? 'free_generation' : 'paid';
   }
 
   /**
@@ -3209,6 +3206,29 @@ CRITICAL REQUIREMENTS:
       mimeType,
     );
     return publicUrl;
+  }
+
+  /**
+   * Detecta a proporção mais próxima suportada pelo Kling 3.0 a partir de uma
+   * imagem base64: '16:9' (paisagem), '9:16' (retrato) ou '1:1' (quadrado).
+   * Em caso de erro de leitura, assume '9:16' (padrão vertical de social).
+   */
+  private async detectKlingAspectRatio(base64: string): Promise<string> {
+    try {
+      const buffer = Buffer.from(base64, 'base64');
+      const { width, height } = await sharp(buffer).metadata();
+      if (!width || !height) return '9:16';
+
+      const ratio = width / height;
+      if (ratio >= 1.25) return '16:9';
+      if (ratio <= 0.8) return '9:16';
+      return '1:1';
+    } catch (error) {
+      this.logger.warn(
+        `[KLING] Falha ao detectar aspect ratio, usando 9:16: ${(error as Error).message}`,
+      );
+      return '9:16';
+    }
   }
 
   private async uploadBase64Audio(

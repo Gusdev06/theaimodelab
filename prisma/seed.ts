@@ -211,6 +211,14 @@ async function main() {
     { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'SEM_CENSURA', creditsPerUnit: 130, isPerSecond: false },
     { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'SEM_CENSURA', creditsPerUnit: 190, isPerSecond: false },
 
+    // Images - GPT Image 2 (GPT_IMAGE_2) — mirrors NB2 pricing
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 90, isPerSecond: false },
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 130, isPerSecond: false },
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 190, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 90, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 130, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 190, isPerSecond: false },
+
     // Images - Nano Banana Pro (NBP) — v4 pricing
     { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 190, isPerSecond: false },
     { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 190, isPerSecond: false },

@@ -1154,6 +1154,7 @@ export class GenerationProcessor extends WorkerHost {
       imageUrls: data.imageUrls,
       resolution: data.resolution,
       durationSeconds: data.durationSeconds,
+      aspectRatio: data.aspectRatio,
     });
 
     try {

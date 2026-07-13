@@ -27,11 +27,48 @@ const EMPTY_FREE_GENERATIONS: FreeGenerationsMap = {
   VIRTUAL_TRY_ON: 0,
   THEAIMODELAB_FAST: 0,
   UPSCALE: 0,
+  SEM_CENSURA: 0,
+  DEEPDEEP: 0,
+  GPT_IMAGE_2: 0,
+  SEEDREAM_LITE: 0,
+  THEAIMODELAB_QUALITY: 0,
+  VEO_FAST: 0,
+  VEO_MAX: 0,
+  GROK_IMAGINE: 0,
+  GEMINI_OMNI: 0,
+  SEEDANCE_2: 0,
+  KLING_V3_TURBO: 0,
+  COMFYDEPLOY_WAN: 0,
+  MOTION_CONTROL: 0,
+};
+
+/**
+ * Mapeia o modelVariant (string usada na tabela credit_costs) para o
+ * FreeGenerationType correspondente. Cobre todos os modelos existentes.
+ */
+const VARIANT_TO_FREE_TYPE: Record<string, FreeGenerationType> = {
+  NB2: FreeGenerationType.NB2,
+  NBP: FreeGenerationType.NB_PRO,
+  SEM_CENSURA: FreeGenerationType.SEM_CENSURA,
+  DEEPDEEP: FreeGenerationType.DEEPDEEP,
+  GPT_IMAGE_2: FreeGenerationType.GPT_IMAGE_2,
+  SEEDREAM_LITE: FreeGenerationType.SEEDREAM_LITE,
+  THEAIMODELAB_FAST: FreeGenerationType.THEAIMODELAB_FAST,
+  THEAIMODELAB_QUALITY: FreeGenerationType.THEAIMODELAB_QUALITY,
+  VEO_FAST: FreeGenerationType.VEO_FAST,
+  VEO_MAX: FreeGenerationType.VEO_MAX,
+  GROK_IMAGINE: FreeGenerationType.GROK_IMAGINE,
+  GEMINI_OMNI: FreeGenerationType.GEMINI_OMNI,
+  SEEDANCE_2: FreeGenerationType.SEEDANCE_2,
+  KLING_V3_TURBO: FreeGenerationType.KLING_V3_TURBO,
+  COMFYDEPLOY_WAN: FreeGenerationType.COMFYDEPLOY_WAN,
 };
 
 /**
  * Mapeia (generationType, modelVariant) para o tipo de geração grátis elegível.
  * Retorna null se a combinação não tem free generation.
+ * Tipos derivados do generationType (face swap, try-on, motion control) têm
+ * precedência; o restante é resolvido pelo modelVariant.
  */
 export function resolveFreeGenerationType(
   type: GenerationType,
@@ -39,9 +76,10 @@ export function resolveFreeGenerationType(
 ): FreeGenerationType | null {
   if (type === GenerationType.FACE_SWAP) return FreeGenerationType.FACE_SWAP;
   if (type === GenerationType.VIRTUAL_TRY_ON) return FreeGenerationType.VIRTUAL_TRY_ON;
-  if (modelVariant === 'NB2') return FreeGenerationType.NB2;
-  if (modelVariant === 'NBP') return FreeGenerationType.NB_PRO;
-  if (modelVariant === 'THEAIMODELAB_FAST') return FreeGenerationType.THEAIMODELAB_FAST;
+  if (type === GenerationType.MOTION_CONTROL) return FreeGenerationType.MOTION_CONTROL;
+  if (modelVariant && VARIANT_TO_FREE_TYPE[modelVariant]) {
+    return VARIANT_TO_FREE_TYPE[modelVariant];
+  }
   return null;
 }
 

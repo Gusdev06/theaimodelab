@@ -154,6 +154,8 @@ export interface KlingImageToVideoJobData extends BaseJobData {
   resolution: string;
   durationSeconds: number;
   imageUrls: string[];
+  /** Proporção detectada a partir da imagem de entrada: '16:9' | '9:16' | '1:1'. */
+  aspectRatio: string;
 }
 
 export interface ComfyDeployImageToVideoJobData extends BaseJobData {

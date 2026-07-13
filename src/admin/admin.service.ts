@@ -251,14 +251,10 @@ export class AdminService {
       throw new NotFoundException('Usuário não encontrado');
     }
 
-    const freeGenerations: Record<FreeGenerationType, number> = {
-      NB2: 0,
-      NB_PRO: 0,
-      FACE_SWAP: 0,
-      VIRTUAL_TRY_ON: 0,
-      THEAIMODELAB_FAST: 0,
-      UPSCALE: 0,
-    };
+    const freeGenerations = Object.values(FreeGenerationType).reduce(
+      (acc, t) => ({ ...acc, [t]: 0 }),
+      {} as Record<FreeGenerationType, number>,
+    );
     for (const fg of user.freeGenerations) {
       freeGenerations[fg.type] = fg.remaining;
     }
