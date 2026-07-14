@@ -320,6 +320,25 @@ async function main() {
     { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'COMFYDEPLOY_WAN', creditsPerUnit: 125, isPerSecond: true },
     { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'COMFYDEPLOY_WAN', creditsPerUnit: 125, isPerSecond: true },
 
+    // WaveSpeed LTX 2.3 Spicy (WAVESPEED_LTX_SPICY) — NSFW — image-to-video, sem áudio, 5-20s, cobrado por segundo.
+    // Custo real WaveSpeed US$0,02/s (480p), US$0,04/s (720p), US$0,06/s (1080p) — mínimo faturado 5s.
+    // Precificado para ~89% de margem no PIOR plano (Studio, ~$0,001/cr); planos menores rendem mais.
+    // Escala 1x/2x/3x espelha o multiplicador de resolução do próprio provider.
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 182, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 364, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 546, isPerSecond: true },
+
+    // WaveSpeed Seedance 2.0 Fast Spicy (WAVESPEED_SEEDANCE_SPICY) — NSFW — image-to-video, 4-15s, cobrado por segundo.
+    // Custo real WaveSpeed (áudio on): US$0,10/s (480p) × mult. resolução 1x/2x/5x; áudio off = metade do custo.
+    // Precificado para ~89% de margem no PIOR plano (Studio, ~$0,001/cr); planos menores rendem mais.
+    // 4K removido de propósito (custo real absurdo). Tiers: 480p/720p/1080p.
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 909, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 1818, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 4545, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 455, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 909, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 2273, isPerSecond: true },
+
     // Seedream Lite (SEEDREAM_LITE) — KIE API — 60cr basic (2K) / 80cr high (3K), T2I e I2I
     { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 60, isPerSecond: false },
     { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_3K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 80, isPerSecond: false },
@@ -490,6 +509,8 @@ async function main() {
     { slug: 'veo3_fast', label: 'The AI Model Lab Fast', provider: 'KIE' as const, modelVariant: 'VEO_FAST', sortOrder: 6 },
     { slug: 'kling-v3-turbo', label: 'Kling V3 Turbo', provider: 'KIE' as const, modelVariant: 'KLING_V3_TURBO', sortOrder: 7 },
     { slug: 'comfydeploy-wan', label: 'Wan (ComfyDeploy)', provider: 'COMFYDEPLOY' as const, modelVariant: 'COMFYDEPLOY_WAN', sortOrder: 8 },
+    { slug: 'wavespeed-ltx-spicy', label: 'LTX 2.3 Spicy ( NSFW )', provider: 'WAVESPEED' as const, modelVariant: 'WAVESPEED_LTX_SPICY', sortOrder: 9 },
+    { slug: 'wavespeed-seedance-spicy', label: 'Seedance 2.0 Fast Spicy ( NSFW )', provider: 'WAVESPEED' as const, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', sortOrder: 10 },
     {
       slug: 'avatar-video',
       label: 'Vídeo com avatar (HeyGen)',

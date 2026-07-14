@@ -1,9 +1,23 @@
 import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+export interface FunctionCall {
+  name: string;
+  args?: Record<string, any>;
+}
+
+export interface FunctionResponse {
+  name: string;
+  response: Record<string, any>;
+}
+
 export interface ChatPart {
   text?: string;
   inline_data?: { base64: string; mime_type: string };
+  // Function calling passthrough (Gemini): functionCall vem do modelo,
+  // functionResponse é o resultado que devolvemos.
+  functionCall?: FunctionCall;
+  functionResponse?: FunctionResponse;
 }
 
 export interface ChatMessage {
@@ -17,8 +31,11 @@ export interface ChatRequest {
   model?: string;
   temperature?: number;
   max_output_tokens?: number;
-  thinking_level?: 'LOW' | 'MEDIUM' | 'HIGH';
+  thinking_level?: 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH';
   google_search?: boolean;
+  // Declarações de ferramentas (function calling). Repassadas cru ao provider.
+  tools?: Record<string, any>[];
+  tool_config?: Record<string, any>;
 }
 
 export interface ChatResponse {
@@ -30,6 +47,11 @@ export interface ChatResponse {
     candidatesTokenCount?: number;
     totalTokenCount?: number;
   };
+  // Partes cruas do turno do modelo (texto + functionCall), na ordem original.
+  parts?: ChatPart[];
+  // Atalho: apenas as chamadas de função deste turno.
+  functionCalls?: FunctionCall[];
+  groundingChunks?: any[];
 }
 
 @Injectable()

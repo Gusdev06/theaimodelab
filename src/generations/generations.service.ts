@@ -53,6 +53,8 @@ import { GenerateGeminiOmniVideoDto } from './dto/videos/generate-gemini-omni-vi
 import { GenerateSeedanceVideoDto } from './dto/videos/generate-seedance-video.dto';
 import { GenerateKlingImageToVideoDto } from './dto/videos/generate-kling-image-to-video.dto';
 import { GenerateComfyDeployImageToVideoDto } from './dto/videos/generate-comfydeploy-image-to-video.dto';
+import { GenerateWavespeedImageToVideoDto } from './dto/videos/generate-wavespeed-image-to-video.dto';
+import { GenerateWavespeedSeedanceImageToVideoDto } from './dto/videos/generate-wavespeed-seedance-image-to-video.dto';
 import { GenerateTextToSpeechDto } from './dto/generate-text-to-speech.dto';
 import { GenerateVoiceCloneDto } from './dto/generate-voice-clone.dto';
 
@@ -96,6 +98,10 @@ function getModelVariant(model: string | undefined | null): string | null {
     'kling-v3-turbo': 'KLING_V3_TURBO',
     // ComfyDeploy (WanImageToVideo — NSFW/legacy)
     'comfydeploy-wan': 'COMFYDEPLOY_WAN',
+    // WaveSpeed (LTX 2.3 Spicy — image-to-video, NSFW)
+    'wavespeed-ltx-spicy': 'WAVESPEED_LTX_SPICY',
+    // WaveSpeed (Seedance 2.0 Fast Spicy — image-to-video, NSFW)
+    'wavespeed-seedance-spicy': 'WAVESPEED_SEEDANCE_SPICY',
     // KIE API (Seedream Lite) — unificado: T2I se sem images, I2I se com images
     'seedream-5-lite': 'SEEDREAM_LITE',
     // Deepdeep API (n88ed) — image-to-image, requer imagem de input
@@ -151,6 +157,8 @@ import {
   ImageToVideoGrokJobData,
   KlingImageToVideoJobData,
   ComfyDeployImageToVideoJobData,
+  WavespeedImageToVideoJobData,
+  WavespeedSeedanceImageToVideoJobData,
   TextToVideoGrokJobData,
   OmniVideoJobData,
   OmniVideoClipData,
@@ -2644,6 +2652,185 @@ CRITICAL REQUIREMENTS:
       durationSeconds: dto.duration_seconds,
       imageUrl: firstFrameUrl,
     } satisfies ComfyDeployImageToVideoJobData);
+
+    return {
+      id: generation.id,
+      status: GenerationStatus.PROCESSING,
+      creditsConsumed: creditsRequired,
+    };
+  }
+
+  // ─── WaveSpeed — LTX 2.3 Spicy (image-to-video, NSFW) ───────
+
+  async generateImageToVideoWavespeed(
+    userId: string,
+    dto: GenerateWavespeedImageToVideoDto,
+  ): Promise<CreateGenerationResponseDto> {
+    const type = GenerationType.IMAGE_TO_VIDEO;
+    const model = 'wavespeed-ltx-spicy';
+    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const resolution = dto.resolution ?? Resolution.RES_480P;
+
+    await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
+
+    const creditsRequired = await this.plansService.calculateGenerationCost(
+      type,
+      resolution,
+      dto.duration_seconds,
+      false,
+      1,
+      modelVariant,
+    );
+
+    await this.checkConcurrentLimit(userId);
+    await this.ensureSufficientBalance(userId, creditsRequired);
+
+    const generation = await this.prisma.generation.create({
+      data: {
+        userId,
+        type,
+        status: GenerationStatus.PROCESSING,
+        prompt: dto.prompt,
+        modelUsed: model,
+        resolution,
+        durationSeconds: dto.duration_seconds,
+        hasAudio: false,
+        creditsConsumed: creditsRequired,
+        parameters: { provider: 'wavespeed', preset: dto.preset ?? 'tuned' },
+      },
+    });
+
+    const firstFrameUrl = await this.uploadBase64ImagePublic(
+      dto.first_frame,
+      dto.first_frame_mime_type ?? 'image/jpeg',
+      generation.id,
+    );
+
+    await this.prisma.generationInputImage.createMany({
+      data: [
+        {
+          generationId: generation.id,
+          role: GenerationImageRole.FIRST_FRAME,
+          mimeType: dto.first_frame_mime_type ?? 'image/jpeg',
+          order: 0,
+          url: firstFrameUrl,
+        },
+      ],
+    });
+
+    await this.debitCredits(
+      userId,
+      creditsRequired,
+      generation.id,
+      type,
+      resolution,
+    );
+
+    await this.generationQueue.add(GenerationJobName.WAVESPEED_IMAGE_TO_VIDEO, {
+      generationId: generation.id,
+      userId,
+      creditsConsumed: creditsRequired,
+      prompt: dto.prompt,
+      resolution,
+      durationSeconds: dto.duration_seconds,
+      imageUrl: firstFrameUrl,
+      preset: dto.preset,
+    } satisfies WavespeedImageToVideoJobData);
+
+    return {
+      id: generation.id,
+      status: GenerationStatus.PROCESSING,
+      creditsConsumed: creditsRequired,
+    };
+  }
+
+  // ─── WaveSpeed — Seedance 2.0 Fast Spicy (image-to-video, NSFW) ───
+
+  async generateImageToVideoSeedanceWavespeed(
+    userId: string,
+    dto: GenerateWavespeedSeedanceImageToVideoDto,
+  ): Promise<CreateGenerationResponseDto> {
+    const type = GenerationType.IMAGE_TO_VIDEO;
+    const model = 'wavespeed-seedance-spicy';
+    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const resolution = dto.resolution ?? Resolution.RES_720P;
+    // Prompt é opcional no Seedance (image-to-video guia pela imagem).
+    const prompt = dto.prompt ?? '';
+    // Áudio nativo do Seedance — default true (igual à API do WaveSpeed).
+    const generateAudio = dto.generate_audio ?? true;
+
+    await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
+
+    const creditsRequired = await this.plansService.calculateGenerationCost(
+      type,
+      resolution,
+      dto.duration_seconds,
+      generateAudio,
+      1,
+      modelVariant,
+    );
+
+    await this.checkConcurrentLimit(userId);
+    await this.ensureSufficientBalance(userId, creditsRequired);
+
+    const generation = await this.prisma.generation.create({
+      data: {
+        userId,
+        type,
+        status: GenerationStatus.PROCESSING,
+        prompt,
+        modelUsed: model,
+        resolution,
+        durationSeconds: dto.duration_seconds,
+        hasAudio: generateAudio,
+        creditsConsumed: creditsRequired,
+        parameters: {
+          provider: 'wavespeed',
+          aspectRatio: dto.aspect_ratio ?? null,
+        },
+      },
+    });
+
+    const firstFrameUrl = await this.uploadBase64ImagePublic(
+      dto.first_frame,
+      dto.first_frame_mime_type ?? 'image/jpeg',
+      generation.id,
+    );
+
+    await this.prisma.generationInputImage.createMany({
+      data: [
+        {
+          generationId: generation.id,
+          role: GenerationImageRole.FIRST_FRAME,
+          mimeType: dto.first_frame_mime_type ?? 'image/jpeg',
+          order: 0,
+          url: firstFrameUrl,
+        },
+      ],
+    });
+
+    await this.debitCredits(
+      userId,
+      creditsRequired,
+      generation.id,
+      type,
+      resolution,
+    );
+
+    await this.generationQueue.add(
+      GenerationJobName.WAVESPEED_SEEDANCE_IMAGE_TO_VIDEO,
+      {
+        generationId: generation.id,
+        userId,
+        creditsConsumed: creditsRequired,
+        prompt,
+        resolution,
+        durationSeconds: dto.duration_seconds,
+        imageUrl: firstFrameUrl,
+        aspectRatio: dto.aspect_ratio,
+        generateAudio,
+      } satisfies WavespeedSeedanceImageToVideoJobData,
+    );
 
     return {
       id: generation.id,

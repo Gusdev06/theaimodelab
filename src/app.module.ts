@@ -31,6 +31,7 @@ import { FoldersModule } from './folders/folders.module';
 import { VideoEditorModule } from './video-editor/video-editor.module';
 import { PromptEnhancerModule } from './prompt-enhancer/prompt-enhancer.module';
 import { PromptAgentModule } from './prompt-agent/prompt-agent.module';
+import { AgentModule } from './agent/agent.module';
 import { AffiliatesModule } from './affiliates/affiliates.module';
 import { PromptsModule } from './prompts/prompts.module';
 import { PromptPostsModule } from './prompt-posts/prompt-posts.module';
@@ -116,6 +117,7 @@ import { MarketingLeadsModule } from './marketing-leads/marketing-leads.module';
     VideoEditorModule,
     PromptEnhancerModule,
     PromptAgentModule,
+    AgentModule,
     AffiliatesModule,
     ModelsModule,
     PendingGrantsModule,

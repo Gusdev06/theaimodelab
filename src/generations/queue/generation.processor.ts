@@ -17,6 +17,12 @@ import { GeminiOmniVideoProvider } from '../providers/gemini-omni-video.provider
 import { BytedanceSeedanceProvider } from '../providers/bytedance-seedance.provider';
 import { KlingProvider } from '../providers/kling.provider';
 import { ComfyDeployProvider } from '../providers/comfydeploy.provider';
+import {
+  WavespeedVideoProvider,
+  type WavespeedVideoResolution,
+  type SeedanceVideoResolution,
+  type SeedanceAspectRatio,
+} from '../providers/wavespeed-video.provider';
 import { SeedreamLiteProvider } from '../providers/seedream-lite.provider';
 import { SeedreamProvider } from '../providers/seedream.provider';
 import { GptImageProvider } from '../providers/gpt-image.provider';
@@ -52,6 +58,8 @@ import {
   SeedanceVideoJobData,
   KlingImageToVideoJobData,
   ComfyDeployImageToVideoJobData,
+  WavespeedImageToVideoJobData,
+  WavespeedSeedanceImageToVideoJobData,
   TextToSpeechJobData,
   VoiceCloneJobData,
 } from './generation-queue.constants';
@@ -85,6 +93,7 @@ export class GenerationProcessor extends WorkerHost {
     private readonly bytedanceSeedanceProvider: BytedanceSeedanceProvider,
     private readonly klingProvider: KlingProvider,
     private readonly comfyDeployProvider: ComfyDeployProvider,
+    private readonly wavespeedVideoProvider: WavespeedVideoProvider,
     private readonly seedreamLiteProvider: SeedreamLiteProvider,
     private readonly seedreamProvider: SeedreamProvider,
     private readonly gptImageProvider: GptImageProvider,
@@ -147,6 +156,14 @@ export class GenerationProcessor extends WorkerHost {
       case GenerationJobName.COMFYDEPLOY_IMAGE_TO_VIDEO:
         return this.processComfyDeployImageToVideo(
           data as ComfyDeployImageToVideoJobData,
+        );
+      case GenerationJobName.WAVESPEED_IMAGE_TO_VIDEO:
+        return this.processWavespeedImageToVideo(
+          data as WavespeedImageToVideoJobData,
+        );
+      case GenerationJobName.WAVESPEED_SEEDANCE_IMAGE_TO_VIDEO:
+        return this.processWavespeedSeedanceImageToVideo(
+          data as WavespeedSeedanceImageToVideoJobData,
         );
       default:
         throw new Error(`Unknown job name: ${jobName}`);
@@ -1224,6 +1241,68 @@ export class GenerationProcessor extends WorkerHost {
       prompt: data.prompt,
       imageUrl: data.imageUrl,
       durationSeconds: data.durationSeconds,
+    });
+    await this.completeGeneration(data.generationId, result, startTime);
+  }
+
+  // ─── WaveSpeed — LTX 2.3 Spicy (image-to-video, NSFW) ───────
+
+  private async processWavespeedImageToVideo(
+    data: WavespeedImageToVideoJobData,
+  ): Promise<void> {
+    const startTime = Date.now();
+    await this.markProcessingStarted(data.generationId);
+
+    this.logger.log(
+      `[WAVESPEED_IMAGE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s prompt="${data.prompt}"`,
+    );
+
+    // Resolução DB -> resolução aceita pelo LTX (480p/720p/1080p).
+    const resMap: Record<string, WavespeedVideoResolution> = {
+      RES_480P: '480p',
+      RES_720P: '720p',
+      RES_1080P: '1080p',
+    };
+
+    const result = await this.wavespeedVideoProvider.generateImageToVideo({
+      id: data.generationId,
+      prompt: data.prompt,
+      imageUrl: data.imageUrl,
+      durationSeconds: data.durationSeconds,
+      resolution: resMap[data.resolution] ?? '480p',
+      preset: data.preset,
+    });
+    await this.completeGeneration(data.generationId, result, startTime);
+  }
+
+  // ─── WaveSpeed — Seedance 2.0 Fast Spicy (image-to-video, NSFW) ───
+
+  private async processWavespeedSeedanceImageToVideo(
+    data: WavespeedSeedanceImageToVideoJobData,
+  ): Promise<void> {
+    const startTime = Date.now();
+    await this.markProcessingStarted(data.generationId);
+
+    this.logger.log(
+      `[WAVESPEED_SEEDANCE_IMAGE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s audio=${data.generateAudio} prompt="${data.prompt}"`,
+    );
+
+    // Resolução DB -> resolução aceita pelo Seedance (480p/720p/1080p/4k).
+    const resMap: Record<string, SeedanceVideoResolution> = {
+      RES_480P: '480p',
+      RES_720P: '720p',
+      RES_1080P: '1080p',
+      RES_4K: '4k',
+    };
+
+    const result = await this.wavespeedVideoProvider.generateSeedanceImageToVideo({
+      id: data.generationId,
+      prompt: data.prompt,
+      imageUrl: data.imageUrl,
+      durationSeconds: data.durationSeconds,
+      resolution: resMap[data.resolution] ?? '720p',
+      aspectRatio: data.aspectRatio as SeedanceAspectRatio | undefined,
+      generateAudio: data.generateAudio,
     });
     await this.completeGeneration(data.generationId, result, startTime);
   }

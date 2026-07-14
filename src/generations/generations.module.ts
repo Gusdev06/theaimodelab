@@ -28,6 +28,7 @@ import { SeedreamProvider } from './providers/seedream.provider';
 import { GptImageProvider } from './providers/gpt-image.provider';
 import { DeepDeepProvider } from './providers/deepdeep.provider';
 import { WavespeedAudioProvider } from './providers/wavespeed-audio.provider';
+import { WavespeedVideoProvider } from './providers/wavespeed-video.provider';
 import { PromptEnhancerModule } from '../prompt-enhancer/prompt-enhancer.module';
 import { ModelsModule } from '../models/models.module';
 import { VoicesModule } from '../voices/voices.module';
@@ -81,6 +82,7 @@ import { VoicesModule } from '../voices/voices.module';
     GptImageProvider,
     DeepDeepProvider,
     WavespeedAudioProvider,
+    WavespeedVideoProvider,
   ],
   exports: [GenerationsService],
 })

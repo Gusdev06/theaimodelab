@@ -20,6 +20,8 @@ export enum GenerationJobName {
   SEEDANCE_VIDEO = 'seedance-video',
   KLING_IMAGE_TO_VIDEO = 'kling-image-to-video',
   COMFYDEPLOY_IMAGE_TO_VIDEO = 'comfydeploy-image-to-video',
+  WAVESPEED_IMAGE_TO_VIDEO = 'wavespeed-image-to-video',
+  WAVESPEED_SEEDANCE_IMAGE_TO_VIDEO = 'wavespeed-seedance-image-to-video',
 }
 
 interface BaseJobData {
@@ -167,6 +169,28 @@ export interface ComfyDeployImageToVideoJobData extends BaseJobData {
   imageUrl: string;
 }
 
+export interface WavespeedImageToVideoJobData extends BaseJobData {
+  prompt: string;
+  /** Resolução DB (RES_480P | RES_720P | RES_1080P). */
+  resolution: string;
+  durationSeconds: number;
+  imageUrl: string;
+  /** Preset LTX: 'tuned' (recomendado) | 'original'. */
+  preset?: 'tuned' | 'original';
+}
+
+export interface WavespeedSeedanceImageToVideoJobData extends BaseJobData {
+  prompt: string;
+  /** Resolução DB (RES_480P | RES_720P | RES_1080P | RES_4K). */
+  resolution: string;
+  durationSeconds: number;
+  imageUrl: string;
+  /** Proporção do vídeo (opcional — Seedance adapta à imagem se ausente). */
+  aspectRatio?: string;
+  /** Áudio nativo (Seedance 2.0 Fast suporta; muda o custo). */
+  generateAudio: boolean;
+}
+
 
 // Audio job shapes — no longer queued via BullMQ. Kept here as parameter
 // types for the GenerationProcessor's runTextToSpeechDirectly /
@@ -202,7 +226,9 @@ export type GenerationJobData =
   | OmniVideoJobData
   | SeedanceVideoJobData
   | KlingImageToVideoJobData
-  | ComfyDeployImageToVideoJobData;
+  | ComfyDeployImageToVideoJobData
+  | WavespeedImageToVideoJobData
+  | WavespeedSeedanceImageToVideoJobData;
 
 export const IMAGE_JOB_TIMEOUT = 5 * 60 * 1000; // 5 min
 export const VIDEO_JOB_TIMEOUT = 12 * 60 * 1000; // 12 min

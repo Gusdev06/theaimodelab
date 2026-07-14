@@ -49,6 +49,8 @@ import { GenerateGeminiOmniVideoDto } from './dto/videos/generate-gemini-omni-vi
 import { GenerateSeedanceVideoDto } from './dto/videos/generate-seedance-video.dto';
 import { GenerateKlingImageToVideoDto } from './dto/videos/generate-kling-image-to-video.dto';
 import { GenerateComfyDeployImageToVideoDto } from './dto/videos/generate-comfydeploy-image-to-video.dto';
+import { GenerateWavespeedImageToVideoDto } from './dto/videos/generate-wavespeed-image-to-video.dto';
+import { GenerateWavespeedSeedanceImageToVideoDto } from './dto/videos/generate-wavespeed-seedance-image-to-video.dto';
 import { GenerateTextToSpeechDto } from './dto/generate-text-to-speech.dto';
 import { GenerateVoiceCloneDto } from './dto/generate-voice-clone.dto';
 import { UnlimitedStatusResponseDto } from './dto/unlimited-status.dto';
@@ -321,6 +323,34 @@ export class GenerationsController {
     @Body() dto: GenerateComfyDeployImageToVideoDto,
   ): Promise<CreateGenerationResponseDto> {
     return this.generationsService.generateImageToVideoComfyDeploy(userId, dto);
+  }
+
+  @Post('image-to-video-wavespeed')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({
+    summary:
+      'Gera vídeo a partir de imagem via WaveSpeed LTX 2.3 Spicy (NSFW) — duração 5-20s, 480p/720p/1080p',
+  })
+  @ApiResponse({ status: 201, type: CreateGenerationResponseDto })
+  async imageToVideoWavespeed(
+    @CurrentUser('sub') userId: string,
+    @Body() dto: GenerateWavespeedImageToVideoDto,
+  ): Promise<CreateGenerationResponseDto> {
+    return this.generationsService.generateImageToVideoWavespeed(userId, dto);
+  }
+
+  @Post('image-to-video-seedance-spicy')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({
+    summary:
+      'Gera vídeo via WaveSpeed Seedance 2.0 Fast Spicy (NSFW) — 4-15s, 480p/720p/1080p/4k, áudio nativo',
+  })
+  @ApiResponse({ status: 201, type: CreateGenerationResponseDto })
+  async imageToVideoSeedanceSpicy(
+    @CurrentUser('sub') userId: string,
+    @Body() dto: GenerateWavespeedSeedanceImageToVideoDto,
+  ): Promise<CreateGenerationResponseDto> {
+    return this.generationsService.generateImageToVideoSeedanceWavespeed(userId, dto);
   }
 
   @Post('text-to-speech')
