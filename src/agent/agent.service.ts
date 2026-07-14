@@ -172,39 +172,45 @@ export class AgentService {
 
         case 'gerar_imagem': {
           const refImages = this.resolveImages(args.image_indexes, images);
-          return await this.generations.generateImage(userId, {
-            prompt: str(args.prompt),
-            model: str(args.model),
-            resolution: str(args.resolution) as Resolution,
-            aspect_ratio: optStr(args.aspect_ratio),
-            ...(refImages.length ? { images: refImages } : {}),
-          });
+          return {
+            ...(await this.generations.generateImage(userId, {
+              prompt: str(args.prompt),
+              model: str(args.model),
+              resolution: str(args.resolution) as Resolution,
+              aspect_ratio: optStr(args.aspect_ratio),
+              ...(refImages.length ? { images: refImages } : {}),
+            })),
+          };
         }
 
         case 'gerar_video_texto': {
-          return await this.generations.generateTextToVideo(userId, {
-            prompt: str(args.prompt),
-            model: str(args.model),
-            resolution: str(args.resolution) as Resolution,
-            aspect_ratio: optStr(args.aspect_ratio),
-            duration_seconds: optNum(args.duration_seconds),
-            generate_audio: optBool(args.generate_audio),
-            negative_prompt: optStr(args.negative_prompt),
-          });
+          return {
+            ...(await this.generations.generateTextToVideo(userId, {
+              prompt: str(args.prompt),
+              model: str(args.model),
+              resolution: str(args.resolution) as Resolution,
+              aspect_ratio: optStr(args.aspect_ratio),
+              duration_seconds: optNum(args.duration_seconds),
+              generate_audio: optBool(args.generate_audio),
+              negative_prompt: optStr(args.negative_prompt),
+            })),
+          };
         }
 
         case 'gerar_video_imagem': {
           const frame = this.pickImage(args.image_index, images);
-          return await this.generations.generateImageToVideo(userId, {
-            prompt: str(args.prompt),
-            model: optStr(args.model),
-            resolution: str(args.resolution) as Resolution,
-            first_frame: frame.base64,
-            first_frame_mime_type: frame.mime_type ?? 'image/png',
-            aspect_ratio: optStr(args.aspect_ratio),
-            duration_seconds: optNum(args.duration_seconds),
-            generate_audio: optBool(args.generate_audio),
-          });
+          return {
+            ...(await this.generations.generateImageToVideo(userId, {
+              prompt: str(args.prompt),
+              model: optStr(args.model),
+              resolution: str(args.resolution) as Resolution,
+              first_frame: frame.base64,
+              first_frame_mime_type: frame.mime_type ?? 'image/png',
+              aspect_ratio: optStr(args.aspect_ratio),
+              duration_seconds: optNum(args.duration_seconds),
+              generate_audio: optBool(args.generate_audio),
+            })),
+          };
         }
 
         case 'consultar_geracao': {
