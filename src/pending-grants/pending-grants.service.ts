@@ -17,6 +17,29 @@ export const DEFAULT_HUBLA_BUNDLE: FreeGenerationBundle = {
   UPSCALE: 1,
 };
 
+/**
+ * Bundle entregue na compra do CURSO via Perfect Pay.
+ * 2 gerações de cada: imagem (básica + premium) e ferramentas — sem vídeo
+ * (custo alto). Não inclui THEAIMODELAB_FAST (é label de velocidade, não modelo).
+ */
+export const PERFECTPAY_COURSE_BUNDLE: FreeGenerationBundle = {
+  // Imagem básica
+  NB2: 2,
+  NB_PRO: 2,
+  GPT_IMAGE_2: 2,
+  SEEDREAM_LITE: 2,
+  // Imagem premium
+  GROK_IMAGINE: 2,
+  GEMINI_OMNI: 2,
+  SEM_CENSURA: 2,
+  DEEPDEEP: 2,
+  THEAIMODELAB_QUALITY: 2,
+  // Ferramentas
+  FACE_SWAP: 2,
+  VIRTUAL_TRY_ON: 2,
+  UPSCALE: 2,
+};
+
 @Injectable()
 export class PendingGrantsService {
   private readonly logger = new Logger(PendingGrantsService.name);

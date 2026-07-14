@@ -11,7 +11,7 @@ import { WebhookLogsService } from '../webhook-logs/webhook-logs.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaymentsService } from '../payments/payments.service';
 import {
-  DEFAULT_HUBLA_BUNDLE,
+  PERFECTPAY_COURSE_BUNDLE,
   PendingGrantsService,
 } from './pending-grants.service';
 
@@ -24,7 +24,7 @@ import {
  *     (perfectpay_plan_code), credita o pacote na conta do email comprador via
  *     PaymentsService.processCreditPurchase (saldo bônus). Exige conta.
  *  2. Curso (demais produtos): mesmo modelo de Hotmart/Hubla/Greenn — libera o
- *     bundle de gerações grátis (DEFAULT_HUBLA_BUNDLE) por email, consumido no
+ *     bundle de gerações grátis (PERFECTPAY_COURSE_BUNDLE) por email, consumido no
  *     signup quando o usuário se cadastra com esse email.
  *
  * Payload típico (v2.1):
@@ -147,7 +147,7 @@ export class PerfectpayWebhookService {
     // 3) Caso contrário: produto de curso → libera gerações grátis por email.
     const { created } = await this.pendingGrantsService.createPending({
       email,
-      bundle: DEFAULT_HUBLA_BUNDLE,
+      bundle: PERFECTPAY_COURSE_BUNDLE,
       source: 'perfectpay',
       externalEventId,
     });
