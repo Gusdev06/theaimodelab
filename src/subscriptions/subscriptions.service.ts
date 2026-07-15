@@ -259,6 +259,15 @@ export class SubscriptionsService {
       );
     }
 
+    // PerfectPay não permite agendar troca de plano (downgrade) via API nem faz
+    // proration. Para reduzir de plano, o cliente cancela na PerfectPay e assina o
+    // plano menor quando o período atual expira. Bloqueado aqui para não cobrar/quebrar.
+    if (current.paymentProvider !== 'stripe') {
+      throw new BadRequestException(
+        'Downgrade não está disponível para assinaturas PerfectPay. Cancele a assinatura atual e assine o plano desejado ao fim do período.',
+      );
+    }
+
     // Downgrade para Free = cancelar no fim do período
     if (newPlan.slug === 'free') {
       if (current.externalSubscriptionId) {
@@ -316,18 +325,24 @@ export class SubscriptionsService {
       throw new BadRequestException(t('errors.subscriptions.ALREADY_CANCELED'));
     }
 
-    // If a paid downgrade was pending, revert the Stripe price before canceling
-    if (current.scheduledPlanId && current.externalSubscriptionId) {
-      const userCurrency = await this.getUserCurrency(userId);
-      const resolved = await this.plansService.resolvePlanPrice(current.plan.id, userCurrency);
-      await this.stripeService.scheduleSubscriptionPlanChange(
-        current.externalSubscriptionId,
-        resolved.stripePriceId,
-      );
-    }
+    const isStripe = current.paymentProvider === 'stripe';
 
-    // Cancelar no Stripe (cancel_at_period_end)
-    if (current.externalSubscriptionId) {
+    // Só chama o Stripe para assinaturas Stripe. Em PerfectPay a recorrência vive
+    // no lado deles (sem API de cancelamento) — aqui apenas marcamos
+    // cancelAtPeriodEnd; a interrupção da cobrança é feita pelo cliente na PerfectPay
+    // e confirmada pelo webhook (cancelled_by_customer). O acesso segue até o fim do
+    // período pago e expira no cron.
+    if (isStripe && current.externalSubscriptionId) {
+      // If a paid downgrade was pending, revert the Stripe price before canceling
+      if (current.scheduledPlanId) {
+        const userCurrency = await this.getUserCurrency(userId);
+        const resolved = await this.plansService.resolvePlanPrice(current.plan.id, userCurrency);
+        await this.stripeService.scheduleSubscriptionPlanChange(
+          current.externalSubscriptionId,
+          resolved.stripePriceId,
+        );
+      }
+      // Cancelar no Stripe (cancel_at_period_end)
       await this.stripeService.cancelSubscription(
         current.externalSubscriptionId,
       );
@@ -361,6 +376,14 @@ export class SubscriptionsService {
 
     if (current.plan.slug === 'free') {
       throw new BadRequestException(t('errors.subscriptions.CANNOT_PAUSE_FREE'));
+    }
+
+    // Pausar não é suportado na PerfectPay (a recorrência continua cobrando do lado
+    // deles, sem API para pausar). Falha explícita em vez de fingir pausa.
+    if (current.paymentProvider !== 'stripe') {
+      throw new BadRequestException(
+        'Pausar assinatura não está disponível para assinaturas PerfectPay.',
+      );
     }
 
     const resumesAt = new Date();
@@ -399,15 +422,17 @@ export class SubscriptionsService {
       );
     }
 
+    const isStripe = current.paymentProvider === 'stripe';
+
     // If downgrade to free (cancel at period end), revert the cancellation in Stripe
-    if (current.cancelAtPeriodEnd && current.externalSubscriptionId) {
+    if (isStripe && current.cancelAtPeriodEnd && current.externalSubscriptionId) {
       await this.stripeService.reactivateSubscription(
         current.externalSubscriptionId,
       );
     }
 
     // If downgrade to a paid plan, revert the Stripe price back to the current plan
-    if (!current.cancelAtPeriodEnd && current.externalSubscriptionId) {
+    if (isStripe && !current.cancelAtPeriodEnd && current.externalSubscriptionId) {
       const userCurrency = await this.getUserCurrency(userId);
       const resolved = await this.plansService.resolvePlanPrice(current.plan.id, userCurrency);
       await this.stripeService.scheduleSubscriptionPlanChange(
@@ -444,15 +469,18 @@ export class SubscriptionsService {
       );
     }
 
-    // Reativar no Stripe
-    if (current.externalSubscriptionId) {
+    const isStripe = current.paymentProvider === 'stripe';
+
+    // Reativar no Stripe (PerfectPay: apenas remove o cancelAtPeriodEnd local; a
+    // recorrência lá continua ativa se o cliente não tiver cancelado na PerfectPay).
+    if (isStripe && current.externalSubscriptionId) {
       await this.stripeService.reactivateSubscription(
         current.externalSubscriptionId,
       );
     }
 
     // If there was a pending downgrade, revert Stripe price back to current plan
-    if (current.scheduledPlanId && current.externalSubscriptionId) {
+    if (isStripe && current.scheduledPlanId && current.externalSubscriptionId) {
       const userCurrency = await this.getUserCurrency(userId);
       const resolved = await this.plansService.resolvePlanPrice(current.plan.id, userCurrency);
       await this.stripeService.scheduleSubscriptionPlanChange(
