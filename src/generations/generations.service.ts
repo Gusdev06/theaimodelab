@@ -3114,29 +3114,9 @@ CRITICAL REQUIREMENTS:
     return hasFree ? freeType : null;
   }
 
-  private async checkConcurrentLimit(userId: string): Promise<void> {
-    const [processingCount, subscription] = await Promise.all([
-      this.prisma.generation.count({
-        where: { userId, status: GenerationStatus.PROCESSING },
-      }),
-      this.prisma.subscription.findFirst({
-        where: { userId, status: 'ACTIVE' },
-        select: { plan: { select: { maxConcurrentGenerations: true } } },
-        orderBy: { createdAt: 'desc' },
-      }),
-    ]);
-
-    const maxConcurrent = subscription?.plan.maxConcurrentGenerations ?? 5;
-
-    if (processingCount >= maxConcurrent) {
-      throw new HttpException(
-        {
-          code: 'MAX_CONCURRENT_REACHED',
-          message: `Limite de ${maxConcurrent} geração(ões) simultânea(s) atingido. Aguarde uma geração concluir antes de iniciar outra.`,
-        },
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-    }
+  private async checkConcurrentLimit(_userId: string): Promise<void> {
+    // Limite de gerações simultâneas desativado: gerações concorrentes são ilimitadas.
+    return;
   }
 
   private async ensureSufficientBalance(
