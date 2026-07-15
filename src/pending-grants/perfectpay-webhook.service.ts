@@ -86,6 +86,20 @@ export class PerfectpayWebhookService {
 
     const kind = this.classifyEvent(payload);
 
+    // Troca de plano (upgrade/downgrade): a PerfectPay cancela a assinatura ANTIGA
+    // automaticamente. Não revoga nada aqui — a assinatura nova chega em outro
+    // postback 'paid' e a substituição local é feita por lá.
+    if (kind === 'superseded') {
+      this.logger.log(
+        `Perfectpay: assinatura antiga de ${email ?? 'n/a'} auto-cancelada por nova ` +
+          `assinatura (troca de plano). Ignorado — a nova é ativada por outro postback.`,
+      );
+      return {
+        processed: false,
+        reason: 'old subscription auto-canceled due to plan change — ignored',
+      };
+    }
+
     // Cancelamento / reembolso / chargeback de assinatura recorrente.
     // refund/chargeback → revoga na hora; cancelamento normal → acesso até fim do período.
     if (kind === 'canceled' || kind === 'refund' || kind === 'chargeback') {
@@ -100,9 +114,12 @@ export class PerfectpayWebhookService {
         return { processed: false, reason: `no account for email ${email}` };
       }
       const immediate = kind === 'refund' || kind === 'chargeback';
+      // Passa o código da assinatura para só revogar se o cancelamento for da
+      // assinatura ATUAL do usuário (e não de uma recorrência antiga já substituída).
       return this.paymentsService.revokePerfectpaySubscription(user.id, {
         immediate,
         reason: kind,
+        subscriptionCode: this.extractSubscriptionCode(payload) ?? undefined,
       });
     }
 
@@ -122,15 +139,50 @@ export class PerfectpayWebhookService {
     // candidatos de vários campos do postback.
     const planCandidates = this.extractPlanCandidates(payload);
 
+    // Venda recorrente (assinatura) é identificada pela presença do nó `subscription`
+    // no postback (pacotes/cursos avulsos não têm). Usado para dar rede de segurança
+    // e NÃO mascarar falha de mapeamento como se fosse um curso.
+    const isSubscriptionSale =
+      payload?.subscription != null || payload?.subscription_status != null;
+
     // 1) Assinatura mensal? casa com plans.perfectpay_plan_code (planos ativos).
-    const plan = planCandidates.length
-      ? await this.prisma.plan.findFirst({
-          where: { perfectpayPlanCode: { in: planCandidates }, isActive: true },
-        })
-      : null;
+    // ATENÇÃO: o webhook manda o código interno do plano em `plan.code` (ex.: PPLQQPTQU),
+    // que é DIFERENTE do código do link de checkout (ex.: PPU38CQDTOF). O
+    // `perfectpayPlanCode` no banco precisa ser o código do postback.
+    let plan: { id: string; slug: string; name: string } | null =
+      planCandidates.length
+        ? await this.prisma.plan.findFirst({
+            where: { perfectpayPlanCode: { in: planCandidates }, isActive: true },
+            select: { id: true, slug: true, name: true },
+          })
+        : null;
+
+    // 1b) Rede de segurança para assinaturas: se o código não casou (ex.: plano novo
+    // sem perfectpayPlanCode cadastrado), tenta casar pelo nome do plano do postback
+    // ("Plan Creator" → slug "creator"). Só para vendas recorrentes, para não
+    // confundir pacote de crédito avulso com plano.
+    if (!plan && isSubscriptionSale) {
+      plan = await this.matchPlanByName(payload);
+    }
 
     if (plan) {
       return this.handlePlanSubscription(payload, email, plan);
+    }
+
+    // Se é assinatura recorrente mas nenhum plano casou, NÃO trata como curso:
+    // loga alto para investigação e não processa (evita mascarar falha de mapeamento,
+    // que antes deixava o comprador sem assinatura silenciosamente).
+    if (isSubscriptionSale) {
+      this.logger.error(
+        `Perfectpay: venda recorrente de ${email} não casou nenhum plano ativo. ` +
+          `plan.code=${payload?.plan?.code ?? 'n/a'} plan.name="${payload?.plan?.name ?? 'n/a'}" ` +
+          `product=${payload?.product?.code ?? 'n/a'} candidatos=[${planCandidates.join(', ')}]. ` +
+          `Cadastre o perfectpayPlanCode desse plano. Assinatura NÃO ativada.`,
+      );
+      return {
+        processed: false,
+        reason: 'subscription sale matched no active plan',
+      };
     }
 
     // 2) (Legado) Pacote de crédito avulso — mantido para compras antigas.
@@ -194,6 +246,7 @@ export class PerfectpayWebhookService {
       userId: user.id,
       planId: plan.id,
       saleCode,
+      subscriptionCode: this.extractSubscriptionCode(payload) ?? undefined,
       amountCents: this.extractAmountCents(payload),
       currency: this.extractCurrency(payload),
       referredByCode: user.referredByCode ?? undefined,
@@ -250,6 +303,40 @@ export class PerfectpayWebhookService {
     return { processed: true };
   }
 
+  /**
+   * Rede de segurança para casar o plano pelo NOME que vem no postback da assinatura
+   * ("Plan Creator" → slug "creator"), quando o código do plano ainda não foi
+   * cadastrado em `perfectpayPlanCode`. Casa o plano ativo cujo slug apareça como
+   * palavra no nome do postback. Usado só para vendas recorrentes.
+   */
+  private async matchPlanByName(
+    payload: any,
+  ): Promise<{ id: string; slug: string; name: string } | null> {
+    const planName =
+      typeof payload?.plan?.name === 'string'
+        ? payload.plan.name.toLowerCase()
+        : '';
+    if (!planName) return null;
+
+    const activePlans = await this.prisma.plan.findMany({
+      where: { isActive: true },
+      select: { id: true, slug: true, name: true },
+    });
+
+    const match = activePlans.find((p) =>
+      new RegExp(`\\b${p.slug.toLowerCase()}\\b`).test(planName),
+    );
+
+    if (match) {
+      this.logger.warn(
+        `Perfectpay: plano casado por NOME ("${payload?.plan?.name}" → ${match.slug}) ` +
+          `porque nenhum perfectpayPlanCode bateu. Cadastre o código plan.code=${payload?.plan?.code ?? 'n/a'} no plano ${match.slug}.`,
+      );
+    }
+
+    return match ?? null;
+  }
+
   // ────────────────────────────────────────────────────────────
   // Helpers
   // ────────────────────────────────────────────────────────────
@@ -295,7 +382,7 @@ export class PerfectpayWebhookService {
    */
   private classifyEvent(
     payload: any,
-  ): 'paid' | 'refund' | 'chargeback' | 'canceled' | 'ignore' {
+  ): 'paid' | 'refund' | 'chargeback' | 'canceled' | 'superseded' | 'ignore' {
     const status = payload?.sale_status_enum;
     const detail =
       typeof payload?.sale_status_detail === 'string'
@@ -313,6 +400,13 @@ export class PerfectpayWebhookService {
     }
     if (status === 6 || /refund|estorn|reembol|devolv/.test(detail)) {
       return 'refund';
+    }
+    // Auto-cancelamento nativo da PerfectPay quando o cliente adquire outro plano do
+    // mesmo produto ("Cancelada devido a nova assinatura adquirida"). É troca de plano
+    // (upgrade/downgrade) — NÃO revoga acesso; a assinatura nova é ativada por outro
+    // postback 'paid'. Precede a checagem de 'canceled'.
+    if (detail === 'new_subscription_purchased') {
+      return 'superseded';
     }
     if (/cancel/.test(detail) || /cancel|inactive|expired/.test(subStatus)) {
       return 'canceled';
@@ -388,6 +482,20 @@ export class PerfectpayWebhookService {
     if (!code) return null;
     const s = String(code).trim();
     return s.length > 0 ? `perfectpay-${s}` : null;
+  }
+
+  /**
+   * Código ESTÁVEL da assinatura recorrente na PerfectPay (ex.: `PPSUB1O91OH1W`),
+   * que não muda entre cobranças (diferente do `code` da venda, que é por cobrança).
+   * Usado para distinguir renovação × troca de plano e para revogar a assinatura
+   * CERTA — evitando que o auto-cancelamento da assinatura antiga (troca de plano)
+   * cancele a nova, ou que uma cobrança da recorrência antiga reverta o plano.
+   */
+  private extractSubscriptionCode(payload: any): string | null {
+    const code = payload?.subscription?.code ?? payload?.subscription_code ?? null;
+    if (!code) return null;
+    const s = String(code).trim();
+    return s.length > 0 ? s : null;
   }
 
   /** Valor pago em centavos (sale_amount vem na unidade da moeda, ex: 89.90). */

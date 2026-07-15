@@ -310,34 +310,35 @@ async function main() {
     // Kling V3 Turbo (KLING_V3_TURBO) — KIE API — image-to-video, 3-15s, cobrado por segundo.
     // Áudio nativo incluso na kie SEM custo extra (~$0,11/s 720p, ~$0,14/s 1080p com ou
     // sem som) → linhas hasAudio true/false com o MESMO preço.
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 90, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 150, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 90, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 150, isPerSecond: true },
+    // Precificado para ~50% de margem no PIOR plano (Studio, ~$0,001/cr).
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 220, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 280, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 220, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 280, isPerSecond: true },
 
     // ComfyDeploy WanImageToVideo (COMFYDEPLOY_WAN) — NSFW/legacy — image-to-video, sem áudio, apenas 2s/5s, cobrado por segundo.
-    // Custo real US$0,06/s → 125 cr/s garante margem ~52% no pior plano (Studio). 2s = 250 cr, 5s = 625 cr.
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'COMFYDEPLOY_WAN', creditsPerUnit: 125, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'COMFYDEPLOY_WAN', creditsPerUnit: 125, isPerSecond: true },
+    // Custo real US$0,06/s → 120 cr/s garante margem ~50% no pior plano (Studio). 2s = 240 cr, 5s = 600 cr.
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'COMFYDEPLOY_WAN', creditsPerUnit: 120, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'COMFYDEPLOY_WAN', creditsPerUnit: 120, isPerSecond: true },
 
     // WaveSpeed LTX 2.3 Spicy (WAVESPEED_LTX_SPICY) — NSFW — image-to-video, sem áudio, 5-20s, cobrado por segundo.
     // Custo real WaveSpeed US$0,02/s (480p), US$0,04/s (720p), US$0,06/s (1080p) — mínimo faturado 5s.
-    // Precificado para ~89% de margem no PIOR plano (Studio, ~$0,001/cr); planos menores rendem mais.
+    // Precificado para ~50% de margem no PIOR plano (Studio, ~$0,001/cr); planos menores rendem mais.
     // Escala 1x/2x/3x espelha o multiplicador de resolução do próprio provider.
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 182, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 364, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 546, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 40, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 80, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 120, isPerSecond: true },
 
     // WaveSpeed Seedance 2.0 Fast Spicy (WAVESPEED_SEEDANCE_SPICY) — NSFW — image-to-video, 4-15s, cobrado por segundo.
     // Custo real WaveSpeed (áudio on): US$0,10/s (480p) × mult. resolução 1x/2x/5x; áudio off = metade do custo.
-    // Precificado para ~89% de margem no PIOR plano (Studio, ~$0,001/cr); planos menores rendem mais.
+    // Precificado para ~50% de margem no PIOR plano (Studio, ~$0,001/cr); planos menores rendem mais.
     // 4K removido de propósito (custo real absurdo). Tiers: 480p/720p/1080p.
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 909, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 1818, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 4545, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 455, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 909, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 2273, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 200, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 400, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 1000, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 100, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 200, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 500, isPerSecond: true },
 
     // Seedream Lite (SEEDREAM_LITE) — KIE API — 60cr basic (2K) / 80cr high (3K), T2I e I2I
     { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 60, isPerSecond: false },
@@ -346,10 +347,10 @@ async function main() {
     { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_3K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 80, isPerSecond: false },
 
     // Deepdeep (DEEPDEEP) — n88ed API — image-to-image, resolução fixa (front manda RES_2K).
-    // 250 créditos. Custo real US$0,10 (~R$0,567), margem ≥51% em todos os planos.
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'DEEPDEEP', creditsPerUnit: 250, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'DEEPDEEP', creditsPerUnit: 250, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'DEEPDEEP', creditsPerUnit: 250, isPerSecond: false },
+    // Custo real US$0,10 (~R$0,567) → 200 créditos garante margem ~50% no PIOR plano (Studio).
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'DEEPDEEP', creditsPerUnit: 200, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'DEEPDEEP', creditsPerUnit: 200, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'DEEPDEEP', creditsPerUnit: 200, isPerSecond: false },
 
     // Virtual Try-On — NB2 (mirrors IMAGE_TO_IMAGE NB2 pricing)
     { generationType: 'VIRTUAL_TRY_ON', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 90, isPerSecond: false },

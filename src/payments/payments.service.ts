@@ -255,11 +255,22 @@ export class PaymentsService {
     userId: string;
     planId: string;
     saleCode: string;
+    /** Código estável da assinatura recorrente na PerfectPay (PPSUB…). Distingue
+     *  renovação (mesmo código) de troca de plano (código novo). */
+    subscriptionCode?: string;
     amountCents: number;
     currency: string;
     referredByCode?: string;
   }): Promise<{ processed: boolean; reason?: string }> {
-    const { userId, planId, saleCode, amountCents, currency, referredByCode } = params;
+    const {
+      userId,
+      planId,
+      saleCode,
+      subscriptionCode,
+      amountCents,
+      currency,
+      referredByCode,
+    } = params;
 
     const plan = await this.prisma.plan.findUnique({ where: { id: planId } });
     if (!plan) {
@@ -290,8 +301,17 @@ export class PaymentsService {
         orderBy: { createdAt: 'desc' },
       });
 
+      // Renovação = MESMA assinatura recorrente (mesmo código PPSUB). Quando o
+      // postback traz o código da assinatura, casamos por ele; sem código (subs
+      // legadas/admin sem PPSUB), caímos no match por plano para manter compat.
+      const isRenewal = !!activeSub && (
+        subscriptionCode
+          ? activeSub.externalSubscriptionId === subscriptionCode
+          : activeSub.planId === plan.id
+      );
+
       let subscription;
-      if (activeSub && activeSub.planId === plan.id) {
+      if (isRenewal && activeSub) {
         // Renovação do mesmo plano: estende a partir do fim do período vigente
         const base =
           activeSub.currentPeriodEnd > now ? activeSub.currentPeriodEnd : now;
@@ -305,10 +325,15 @@ export class PaymentsService {
             currentPeriodEnd: periodEnd,
             cancelAtPeriodEnd: false,
             paymentRetryCount: 0,
+            // Preenche o código PPSUB se ainda não estava salvo (ex.: sub legada/admin).
+            externalSubscriptionId:
+              subscriptionCode ?? activeSub.externalSubscriptionId,
           },
         });
       } else {
-        // Primeira compra ou troca de plano: cancela ativas e cria nova
+        // Primeira compra ou TROCA DE PLANO (upgrade/downgrade): cancela ativas e
+        // cria nova. A recorrência antiga na PerfectPay é auto-cancelada por lá
+        // ("new_subscription_purchased"), cujo postback é ignorado no webhook.
         await tx.subscription.updateMany({
           where: { userId, status: { in: ['ACTIVE', 'TRIALING', 'PAST_DUE'] } },
           data: { status: 'CANCELED', cancelAtPeriodEnd: false },
@@ -323,7 +348,9 @@ export class PaymentsService {
             currentPeriodStart: now,
             currentPeriodEnd: periodEnd,
             paymentProvider: 'perfectpay',
-            externalSubscriptionId: saleCode,
+            // Guarda o código ESTÁVEL da assinatura (PPSUB…) quando houver; senão o
+            // código da venda como fallback.
+            externalSubscriptionId: subscriptionCode ?? saleCode,
           },
         });
         created = true;
@@ -414,7 +441,7 @@ export class PaymentsService {
    */
   async revokePerfectpaySubscription(
     userId: string,
-    opts: { immediate: boolean; reason: string },
+    opts: { immediate: boolean; reason: string; subscriptionCode?: string },
   ): Promise<{ processed: boolean; reason?: string }> {
     const sub = await this.prisma.subscription.findFirst({
       where: {
@@ -427,6 +454,24 @@ export class PaymentsService {
 
     if (!sub) {
       return { processed: false, reason: 'no active perfectpay subscription' };
+    }
+
+    // Só revoga se o cancelamento for da assinatura ATUAL. Se o postback é de uma
+    // recorrência antiga já substituída (código PPSUB diferente do salvo), ignora —
+    // senão o cancelamento automático da troca de plano cancelaria a assinatura nova.
+    if (
+      opts.subscriptionCode &&
+      sub.externalSubscriptionId &&
+      sub.externalSubscriptionId !== opts.subscriptionCode
+    ) {
+      this.logger.log(
+        `Perfectpay: cancelamento (${opts.reason}) da assinatura ${opts.subscriptionCode} ` +
+          `ignorado — a assinatura atual do user ${userId} é ${sub.externalSubscriptionId} (já substituída).`,
+      );
+      return {
+        processed: false,
+        reason: 'cancellation is for a superseded subscription — ignored',
+      };
     }
 
     if (opts.immediate) {
