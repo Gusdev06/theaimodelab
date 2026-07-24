@@ -164,16 +164,17 @@ export class PlansService {
   }
 
   // Pricing Gemini Omni Video — ancorado em VEO_MAX (~1408 cr/USD de custo KIE).
+  // v5: reprecificado para ~70% de margem no pior plano (créditos = custo_USD × 3333 ≈ ×2,367 sobre v4).
   // Sem vídeo: varia por (resolution, duration). Com vídeo: flat por resolution.
   private static readonly OMNI_PRICING_NO_VIDEO: Record<string, Record<number, number>> = {
-    RES_720P:  { 4: 630,  6: 840,  8: 1060, 10: 1270 },
-    RES_1080P: { 4: 630,  6: 840,  8: 1060, 10: 1270 },
-    RES_4K:    { 4: 1480, 6: 1690, 8: 1900, 10: 2110 },
+    RES_720P:  { 4: 1490, 6: 1990, 8: 2510, 10: 3010 },
+    RES_1080P: { 4: 1490, 6: 1990, 8: 2510, 10: 3010 },
+    RES_4K:    { 4: 3500, 6: 4000, 8: 4500, 10: 5000 },
   };
   private static readonly OMNI_PRICING_WITH_VIDEO: Record<string, number> = {
-    RES_720P:  1690,
-    RES_1080P: 1690,
-    RES_4K:    2530,
+    RES_720P:  4000,
+    RES_1080P: 4000,
+    RES_4K:    5990,
   };
 
   private static calculateOmniCost(
@@ -203,15 +204,16 @@ export class PlansService {
 
   // Pricing Bytedance Seedance 2.0 — per-second, varia por (resolution, hasVideoInput).
   // Ancorado em VEO_MAX (~1408 cr/USD). "With video" = tem reference_video_urls.
+  // v5: reprecificado para ~70% de margem no pior plano (créditos = custo_USD × 3333 ≈ ×2,367 sobre v4).
   private static readonly SEEDANCE_PRICING_NO_VIDEO: Record<string, number> = {
-    RES_480P:  130,
-    RES_720P:  290,
-    RES_1080P: 720,
+    RES_480P:   310,
+    RES_720P:   685,
+    RES_1080P: 1705,
   };
   private static readonly SEEDANCE_PRICING_WITH_VIDEO: Record<string, number> = {
-    RES_480P:   80,
-    RES_720P:  175,
-    RES_1080P: 440,
+    RES_480P:   190,
+    RES_720P:   415,
+    RES_1080P: 1040,
   };
 
   private static calculateSeedanceCost(

@@ -197,175 +197,179 @@ async function main() {
   console.log('💰 Creating credit costs...');
 
   const creditCosts = [
-    // Images - Nano Banana 2 (NB2) — v4 pricing
-    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 90, isPerSecond: false },
-    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 130, isPerSecond: false },
-    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 190, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 90, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 130, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 190, isPerSecond: false },
+    // Images - Nano Banana 2 (NB2) — v5 pricing (~70% margem no pior plano; créditos = custo_USD × 3333)
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 135, isPerSecond: false },
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 200, isPerSecond: false },
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 300, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 135, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 200, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 300, isPerSecond: false },
 
     // Images - Sem censura (SEM_CENSURA) — matches NB2 pricing, no 1K
-    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'SEM_CENSURA', creditsPerUnit: 130, isPerSecond: false },
-    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'SEM_CENSURA', creditsPerUnit: 190, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'SEM_CENSURA', creditsPerUnit: 130, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'SEM_CENSURA', creditsPerUnit: 190, isPerSecond: false },
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'SEM_CENSURA', creditsPerUnit: 200, isPerSecond: false },
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'SEM_CENSURA', creditsPerUnit: 300, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'SEM_CENSURA', creditsPerUnit: 200, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'SEM_CENSURA', creditsPerUnit: 300, isPerSecond: false },
 
     // Images - GPT Image 2 (GPT_IMAGE_2) — mirrors NB2 pricing
-    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 90, isPerSecond: false },
-    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 130, isPerSecond: false },
-    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 190, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 90, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 130, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 190, isPerSecond: false },
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 135, isPerSecond: false },
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 200, isPerSecond: false },
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 300, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 135, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 200, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 300, isPerSecond: false },
 
-    // Images - Nano Banana Pro (NBP) — v4 pricing
-    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 190, isPerSecond: false },
-    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 190, isPerSecond: false },
-    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 250, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 190, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 190, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 250, isPerSecond: false },
+    // Images - Nano Banana Pro (NBP) — v5 pricing (~70% margem)
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 300, isPerSecond: false },
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 300, isPerSecond: false },
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 400, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 300, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 300, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 400, isPerSecond: false },
 
-    // Motion Control (no model variant) — per second pricing
-    { generationType: 'MOTION_CONTROL', resolution: 'RES_720P', hasAudio: false, modelVariant: null, creditsPerUnit: 70, isPerSecond: true },
-    { generationType: 'MOTION_CONTROL', resolution: 'RES_1080P', hasAudio: false, modelVariant: null, creditsPerUnit: 100, isPerSecond: true },
+    // Motion Control (no model variant) — per second pricing (~70% margem no pior plano)
+    { generationType: 'MOTION_CONTROL', resolution: 'RES_720P', hasAudio: false, modelVariant: null, creditsPerUnit: 100, isPerSecond: true },
+    { generationType: 'MOTION_CONTROL', resolution: 'RES_1080P', hasAudio: false, modelVariant: null, creditsPerUnit: 155, isPerSecond: true },
 
     // The AI Model Lab Fast (THEAIMODELAB_FAST) — theaimodelab-provider — Text to Video
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 600, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 600, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 560, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 560, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_4K', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 1600, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 1120, isPerSecond: false },
+    // Custo de provedor não documentado → bump proporcional +67% (v4→v5) para acompanhar as demais famílias.
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 1000, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 1000, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 935, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 935, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_4K', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 2665, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 1865, isPerSecond: false },
 
     // The AI Model Lab Fast (THEAIMODELAB_FAST) — theaimodelab-provider — Image to Video
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 600, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 600, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 560, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 560, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_4K', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 1600, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 1120, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 1000, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 1000, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 935, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 935, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_4K', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 2665, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 1865, isPerSecond: false },
 
     // The AI Model Lab Fast (THEAIMODELAB_FAST) — theaimodelab-provider — Reference Video
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 600, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 600, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 560, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 560, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_4K', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 1600, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 1120, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 1000, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 1000, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 935, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 935, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_4K', hasAudio: false, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 2665, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'THEAIMODELAB_FAST', creditsPerUnit: 1865, isPerSecond: false },
 
     // The AI Model Lab Quality (THEAIMODELAB_QUALITY) — theaimodelab-provider — Text to Video
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1000, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1000, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1240, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1240, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_4K', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 2000, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1740, isPerSecond: false },
+    // Custo de provedor não documentado → bump proporcional +67% (v4→v5) para acompanhar as demais famílias.
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1665, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1665, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 2065, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 2065, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_4K', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 3335, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 2900, isPerSecond: false },
 
     // The AI Model Lab Quality (THEAIMODELAB_QUALITY) — theaimodelab-provider — Image to Video
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1000, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1000, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1240, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1240, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_4K', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 2000, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1740, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1665, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1665, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 2065, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 2065, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_4K', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 3335, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 2900, isPerSecond: false },
 
     // The AI Model Lab Quality (THEAIMODELAB_QUALITY) — theaimodelab-provider — Reference Video
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1000, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1000, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1240, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1240, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_4K', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 2000, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1740, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1665, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 1665, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 2065, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 2065, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_4K', hasAudio: false, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 3335, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'THEAIMODELAB_QUALITY', creditsPerUnit: 2900, isPerSecond: false },
 
-    // Veo 3.1 Fast (VEO_FAST) — KIE API — always hasAudio=true — more expensive than The AI Model Lab
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 810, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 810, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 1610, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 810, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 810, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 1610, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 810, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 810, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 1610, isPerSecond: false },
+    // Veo 3.1 Fast (VEO_FAST) — KIE API — always hasAudio=true — ~70% margem (créditos = custo_USD × 3333)
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 1920, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 1920, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 3810, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 1920, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 1920, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 3810, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 1920, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 1920, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 3810, isPerSecond: false },
 
-    // Veo 3.1 Quality (VEO_MAX) — KIE API — always hasAudio=true — more expensive than The AI Model Lab
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 1800, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 1800, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 2540, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 1800, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 1800, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 2540, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 1800, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 1800, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 2540, isPerSecond: false },
+    // Veo 3.1 Quality (VEO_MAX) — KIE API — always hasAudio=true — ~70% margem (créditos = custo_USD × 3333)
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 4260, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 4260, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 6010, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 4260, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 4260, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 6010, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 4260, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 4260, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 6010, isPerSecond: false },
 
     // Grok Imagine (GROK_IMAGINE) — KIE API — Fast mode (normal), no audio, duration 6-30s charged per second
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'GROK_IMAGINE', creditsPerUnit: 40, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'GROK_IMAGINE', creditsPerUnit: 80, isPerSecond: true },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'GROK_IMAGINE', creditsPerUnit: 40, isPerSecond: true },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'GROK_IMAGINE', creditsPerUnit: 80, isPerSecond: true },
+    // Custo de provedor não documentado → bump proporcional +67% (v4→v5) para acompanhar as demais famílias.
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'GROK_IMAGINE', creditsPerUnit: 67, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'GROK_IMAGINE', creditsPerUnit: 135, isPerSecond: true },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'GROK_IMAGINE', creditsPerUnit: 67, isPerSecond: true },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'GROK_IMAGINE', creditsPerUnit: 135, isPerSecond: true },
 
     // Kling V3 Turbo (KLING_V3_TURBO) — KIE API — image-to-video, 3-15s, cobrado por segundo.
     // Áudio nativo incluso na kie SEM custo extra (~$0,11/s 720p, ~$0,14/s 1080p com ou
     // sem som) → linhas hasAudio true/false com o MESMO preço.
-    // Precificado para ~50% de margem no PIOR plano (Studio, ~$0,001/cr).
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 220, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 280, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 220, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 280, isPerSecond: true },
+    // Precificado para ~70% de margem no PIOR plano (Studio, ~$0,001/cr); créditos = custo_USD × 3333.
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 370, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 470, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 370, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'KLING_V3_TURBO', creditsPerUnit: 470, isPerSecond: true },
 
     // ComfyDeploy WanImageToVideo (COMFYDEPLOY_WAN) — NSFW/legacy — image-to-video, sem áudio, apenas 2s/5s, cobrado por segundo.
-    // Custo real US$0,06/s → 120 cr/s garante margem ~50% no pior plano (Studio). 2s = 240 cr, 5s = 600 cr.
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'COMFYDEPLOY_WAN', creditsPerUnit: 120, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'COMFYDEPLOY_WAN', creditsPerUnit: 120, isPerSecond: true },
+    // Custo real US$0,06/s → 200 cr/s garante margem ~70% no pior plano (Studio). 2s = 400 cr, 5s = 1000 cr.
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'COMFYDEPLOY_WAN', creditsPerUnit: 200, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'COMFYDEPLOY_WAN', creditsPerUnit: 200, isPerSecond: true },
 
     // WaveSpeed LTX 2.3 Spicy (WAVESPEED_LTX_SPICY) — NSFW — image-to-video, sem áudio, 5-20s, cobrado por segundo.
     // Custo real WaveSpeed US$0,02/s (480p), US$0,04/s (720p), US$0,06/s (1080p) — mínimo faturado 5s.
-    // Precificado para ~50% de margem no PIOR plano (Studio, ~$0,001/cr); planos menores rendem mais.
+    // Precificado para ~70% de margem no PIOR plano (Studio, ~$0,001/cr); planos menores rendem mais.
     // Escala 1x/2x/3x espelha o multiplicador de resolução do próprio provider.
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 40, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 80, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 120, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 70, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 135, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 200, isPerSecond: true },
 
     // WaveSpeed Seedance 2.0 Fast Spicy (WAVESPEED_SEEDANCE_SPICY) — NSFW — image-to-video, 4-15s, cobrado por segundo.
     // Custo real WaveSpeed (áudio on): US$0,10/s (480p) × mult. resolução 1x/2x/5x; áudio off = metade do custo.
-    // Precificado para ~50% de margem no PIOR plano (Studio, ~$0,001/cr); planos menores rendem mais.
+    // Precificado para ~70% de margem no PIOR plano (Studio, ~$0,001/cr); planos menores rendem mais.
     // 4K removido de propósito (custo real absurdo). Tiers: 480p/720p/1080p.
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 200, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 400, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 1000, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 100, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 200, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 500, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 335, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 670, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 1670, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 170, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 335, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 835, isPerSecond: true },
 
-    // Seedream Lite (SEEDREAM_LITE) — KIE API — 60cr basic (2K) / 80cr high (3K), T2I e I2I
-    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 60, isPerSecond: false },
-    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_3K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 80, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 60, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_3K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 80, isPerSecond: false },
+    // Seedream Lite (SEEDREAM_LITE) — KIE API — 100cr basic (2K) / 135cr high (3K), T2I e I2I
+    // Custo de provedor não documentado → bump proporcional +67% (v4→v5) para acompanhar as demais famílias.
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 100, isPerSecond: false },
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_3K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 135, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 100, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_3K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 135, isPerSecond: false },
 
     // Deepdeep (DEEPDEEP) — n88ed API — image-to-image, resolução fixa (front manda RES_2K).
-    // Custo real US$0,10 (~R$0,567) → 200 créditos garante margem ~50% no PIOR plano (Studio).
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'DEEPDEEP', creditsPerUnit: 200, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'DEEPDEEP', creditsPerUnit: 200, isPerSecond: false },
-    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'DEEPDEEP', creditsPerUnit: 200, isPerSecond: false },
+    // Custo real US$0,10 (~R$0,567) → 335 créditos garante margem ~70% no PIOR plano (Studio).
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'DEEPDEEP', creditsPerUnit: 335, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'DEEPDEEP', creditsPerUnit: 335, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'DEEPDEEP', creditsPerUnit: 335, isPerSecond: false },
 
     // Virtual Try-On — NB2 (mirrors IMAGE_TO_IMAGE NB2 pricing)
-    { generationType: 'VIRTUAL_TRY_ON', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 90, isPerSecond: false },
-    { generationType: 'VIRTUAL_TRY_ON', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 130, isPerSecond: false },
-    { generationType: 'VIRTUAL_TRY_ON', resolution: 'RES_4K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 190, isPerSecond: false },
+    { generationType: 'VIRTUAL_TRY_ON', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 135, isPerSecond: false },
+    { generationType: 'VIRTUAL_TRY_ON', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 200, isPerSecond: false },
+    { generationType: 'VIRTUAL_TRY_ON', resolution: 'RES_4K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 300, isPerSecond: false },
 
     // Virtual Try-On — NBP (mirrors IMAGE_TO_IMAGE NBP pricing)
-    { generationType: 'VIRTUAL_TRY_ON', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 190, isPerSecond: false },
-    { generationType: 'VIRTUAL_TRY_ON', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 190, isPerSecond: false },
-    { generationType: 'VIRTUAL_TRY_ON', resolution: 'RES_4K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 250, isPerSecond: false },
+    { generationType: 'VIRTUAL_TRY_ON', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 300, isPerSecond: false },
+    { generationType: 'VIRTUAL_TRY_ON', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 300, isPerSecond: false },
+    { generationType: 'VIRTUAL_TRY_ON', resolution: 'RES_4K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 400, isPerSecond: false },
 
     // Face Swap — NB2 (mirrors IMAGE_TO_IMAGE NB2 pricing)
-    { generationType: 'FACE_SWAP', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 90, isPerSecond: false },
-    { generationType: 'FACE_SWAP', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 130, isPerSecond: false },
-    { generationType: 'FACE_SWAP', resolution: 'RES_4K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 190, isPerSecond: false },
+    { generationType: 'FACE_SWAP', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 135, isPerSecond: false },
+    { generationType: 'FACE_SWAP', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 200, isPerSecond: false },
+    { generationType: 'FACE_SWAP', resolution: 'RES_4K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 300, isPerSecond: false },
   ];
 
   // Deactivate all existing credit costs, then upsert new ones
