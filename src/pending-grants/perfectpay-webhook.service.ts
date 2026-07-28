@@ -49,9 +49,10 @@ import {
  *   - 4 (completed)
  *
  * Autenticação: comparação timing-safe entre `payload.token` (ou header
- * `x-perfectpay-token`) e PERFECTPAY_WEBHOOK_TOKEN. Se a env não estiver
- * configurada, a checagem é pulada (com warning), mantendo paridade com os
- * outros providers desse módulo.
+ * `x-perfectpay-token`) e os tokens aceitos — PERFECTPAY_WEBHOOK_TOKEN e
+ * PERFECTPAY_WEBHOOK_EXTRA_TOKENS (contas de afiliados), ambos aceitando
+ * lista separada por vírgula. Se nenhuma env estiver configurada, a checagem
+ * é pulada (com warning), mantendo paridade com os outros providers desse módulo.
  */
 @Injectable()
 export class PerfectpayWebhookService {
@@ -346,8 +347,19 @@ export class PerfectpayWebhookService {
     headers?: Record<string, string>,
     queryToken?: string,
   ): void {
-    const expected = this.configService.get<string>('PERFECTPAY_WEBHOOK_TOKEN');
-    if (!expected) {
+    // Aceita múltiplos tokens (conta principal + contas de afiliados), separados
+    // por vírgula em PERFECTPAY_WEBHOOK_TOKEN, com adicionais opcionais em
+    // PERFECTPAY_WEBHOOK_EXTRA_TOKENS.
+    const expectedTokens = [
+      this.configService.get<string>('PERFECTPAY_WEBHOOK_TOKEN'),
+      this.configService.get<string>('PERFECTPAY_WEBHOOK_EXTRA_TOKENS'),
+    ]
+      .filter((v): v is string => typeof v === 'string')
+      .flatMap((v) => v.split(','))
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0);
+
+    if (expectedTokens.length === 0) {
       this.logger.warn(
         'PERFECTPAY_WEBHOOK_TOKEN not configured — skipping token check',
       );
@@ -366,8 +378,11 @@ export class PerfectpayWebhookService {
     }
 
     const a = Buffer.from(received);
-    const b = Buffer.from(expected);
-    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    const valid = expectedTokens.some((expected) => {
+      const b = Buffer.from(expected);
+      return a.length === b.length && timingSafeEqual(a, b);
+    });
+    if (!valid) {
       throw new UnauthorizedException('Invalid Perfectpay token');
     }
   }
