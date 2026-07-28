@@ -85,19 +85,47 @@ const STRIPE = {
 const CHECKOUT = {
   creator: process.env.CHECKOUT_URL_CREATOR ?? 'https://checkout.centerpag.com/pay/PPU38CQDTOF',
   pro: process.env.CHECKOUT_URL_PRO ?? 'https://checkout.centerpag.com/pay/PPU38CQDTOD',
-  advanced: process.env.CHECKOUT_URL_ADVANCED ?? 'https://checkout.centerpag.com/pay/PPU38CQDTOA',
-  studio: process.env.CHECKOUT_URL_STUDIO ?? 'https://checkout.centerpag.com/pay/PPU38CQDTOH',
+  advanced: process.env.CHECKOUT_URL_ADVANCED ?? 'https://checkout.centerpag.com/pay/PPU38CQDTOH',
+  studio: process.env.CHECKOUT_URL_STUDIO ?? 'https://checkout.centerpag.com/pay/PPU38CQDTOA',
 };
 
 // ── Códigos de PLANO na Perfect Pay (mapeiam o postback → plano/assinatura) ──
 // Por padrão é o último segmento do link de checkout (ex: .../pay/PPU38CQDTOF).
 // O webhook coleta candidatos (plan.code, segmento da URL, etc.) e casa com
 // Plan.perfectpayPlanCode. Preencher via env se o code do postback for diferente.
+// Códigos de POSTBACK (plan.code que a Perfect Pay envia no webhook), da aba Planos.
+// NÃO são os codes do link de checkout (PPU38…) — usar o code errado faz o webhook
+// não casar o plano. Ver memória perfectpay-plan-codes.
 const PERFECTPAY = {
-  creator: process.env.PERFECTPAY_PLAN_CREATOR ?? 'PPU38CQDTOF',
-  pro: process.env.PERFECTPAY_PLAN_PRO ?? 'PPU38CQDTOD',
-  advanced: process.env.PERFECTPAY_PLAN_ADVANCED ?? 'PPU38CQDTOA',
-  studio: process.env.PERFECTPAY_PLAN_STUDIO ?? 'PPU38CQDTOH',
+  creator: process.env.PERFECTPAY_PLAN_CREATOR ?? 'PPLQQPTQU', // Plan Creator ($19,90)
+  pro: process.env.PERFECTPAY_PLAN_PRO ?? 'PPLQQPTQS', // Plan Pro ($39,90)
+  advanced: process.env.PERFECTPAY_PLAN_ADVANCED ?? 'PPLQQPTQV', // Plan Advanced ($54,90)
+  studio: process.env.PERFECTPAY_PLAN_STUDIO ?? 'PPLQQPTQQ', // Plan Studio ($79,90)
+};
+
+// ── Pacotes de crédito avulsos (top-up) — checkout de PAGAMENTO ÚNICO na Perfect Pay ──
+// Diferente dos planos, cada pacote é uma venda avulsa (não recorrente). Qualquer
+// usuário com conta pode comprar; o webhook credita em bonus_credits_remaining (não expira).
+// checkoutUrl = link que o front abre.
+// perfectpayPlanCode = code que a Perfect Pay envia no POSTBACK do webhook
+//   (⚠️ é o plan.code do postback, tipo PPLQQ…, NÃO o code do link de checkout PPU38…).
+// Preencher via env DEPOIS de criar os 5 produtos avulsos na Perfect Pay — enquanto
+// estiver vazio, o pacote aparece na vitrine mas o webhook não casa a venda (não credita).
+const PACKAGE_CHECKOUT = {
+  plus: process.env.CHECKOUT_URL_PACK_PLUS ?? 'https://checkout.centerpag.com/pay/PPU38CQDSUI',
+  turbo: process.env.CHECKOUT_URL_PACK_TURBO ?? 'https://checkout.centerpag.com/pay/PPU38CQDSUH',
+  mega: process.env.CHECKOUT_URL_PACK_MEGA ?? 'https://checkout.centerpag.com/pay/PPU38CQDSUJ',
+  ultra: process.env.CHECKOUT_URL_PACK_ULTRA ?? 'https://checkout.centerpag.com/pay/PPU38CQDSUG',
+  max: process.env.CHECKOUT_URL_PACK_MAX ?? 'https://checkout.centerpag.com/pay/PPU38CQENO8',
+};
+// Códigos de postback (plan.code que a Perfect Pay envia no webhook), lidos da aba
+// Planos do produto AI MODEL LAB. NÃO são os codes do link de checkout (PPU38…).
+const PACKAGE_PERFECTPAY: Record<string, string | null> = {
+  plus: process.env.PERFECTPAY_PACK_PLUS ?? 'PPLQQPTKB', // THE AI MODEL LAB - PLUS ($11,90)
+  turbo: process.env.PERFECTPAY_PACK_TURBO ?? 'PPLQQPTKA', // THE AI MODEL LAB - TURBO ($24,90)
+  mega: process.env.PERFECTPAY_PACK_MEGA ?? 'PPLQQPTKC', // THE AI MODEL LAB - MEGA ($46,90)
+  ultra: process.env.PERFECTPAY_PACK_ULTRA ?? 'PPLQQPTK9', // THE AI MODEL LAB - ULTRA ($74,90)
+  max: process.env.PERFECTPAY_PACK_MAX ?? 'PPLQQQ3AN', // THE AI MODEL LAB - MAX ($99,90)
 };
 
 async function main() {
@@ -410,6 +438,15 @@ async function main() {
   console.log('📦 Creating credit packages...');
 
   const packageData = [
+    // ── Pacotes de crédito avulsos ATIVOS (top-up, USD) — vitrine em GET /credits/packages ──
+    // Preço por crédito é premium vs. assinatura (nunca abaixo do plano Studio ~$1,00/1k),
+    // com desconto por volume, pra não canibalizar a recorrência. Crédito não expira.
+    // priceCents = centavos de USD; o valor de exibição vem da linha USD em packagePriceData.
+    { name: 'Plus', update: { credits: 5000, priceCents: 1190, sortOrder: 10, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.plus || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.plus }, create: { name: 'Plus', credits: 5000, priceCents: 1190, sortOrder: 10, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.plus || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.plus } },
+    { name: 'Turbo', update: { credits: 12000, priceCents: 2490, sortOrder: 11, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.turbo || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.turbo }, create: { name: 'Turbo', credits: 12000, priceCents: 2490, sortOrder: 11, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.turbo || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.turbo } },
+    { name: 'Mega', update: { credits: 25000, priceCents: 4690, sortOrder: 12, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.mega || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.mega }, create: { name: 'Mega', credits: 25000, priceCents: 4690, sortOrder: 12, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.mega || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.mega } },
+    { name: 'Ultra', update: { credits: 42000, priceCents: 7490, sortOrder: 13, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.ultra || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.ultra }, create: { name: 'Ultra', credits: 42000, priceCents: 7490, sortOrder: 13, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.ultra || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.ultra } },
+    { name: 'Max', update: { credits: 60000, priceCents: 9990, sortOrder: 14, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.max || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.max }, create: { name: 'Max', credits: 60000, priceCents: 9990, sortOrder: 14, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.max || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.max } },
     // ── Pacotes avulsos DESATIVADOS: monetização migrou 100% para assinatura mensal ──
     // (os antigos pacotes Creator/Pro/Advanced/Studio viraram os PLANOS mensais acima).
     // Mantidos no banco (isActive:false) só para histórico de pagamentos legados.
@@ -481,6 +518,13 @@ async function main() {
     { name: 'Pro', currency: 'USD', priceCents: 3990, stripePriceId: '' },
     { name: 'Advanced', currency: 'USD', priceCents: 5490, stripePriceId: '' },
     { name: 'Studio', currency: 'USD', priceCents: 7990, stripePriceId: '' },
+    // ── Pacotes avulsos ATIVOS (top-up) — só USD (checkout externo Perfect Pay, sem Stripe) ──
+    // resolvePackagePrice cai no preço USD para qualquer moeda quando não há a moeda do user.
+    { name: 'Plus', currency: 'USD', priceCents: 1190, stripePriceId: '' },
+    { name: 'Turbo', currency: 'USD', priceCents: 2490, stripePriceId: '' },
+    { name: 'Mega', currency: 'USD', priceCents: 4690, stripePriceId: '' },
+    { name: 'Ultra', currency: 'USD', priceCents: 7490, stripePriceId: '' },
+    { name: 'Max', currency: 'USD', priceCents: 9990, stripePriceId: '' },
   ];
 
   const packagesByName = new Map(packages.map((p) => [p.name, p]));
