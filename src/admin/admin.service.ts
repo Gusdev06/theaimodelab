@@ -632,6 +632,76 @@ export class AdminService {
   // DASHBOARD STATS ENDPOINTS
   // ============================================
 
+  /**
+   * Atribuição de cadastros: agrega os usuários criados no período pelos UTMs
+   * gravados no momento do cadastro (utm_campaign = campanha, utm_content =
+   * criativo, no padrão Meta "nome|id") e cruza com quem já pagou (qualquer
+   * payment COMPLETED) para dar conversão por origem. Chave vazia = cadastro
+   * orgânico/direto (sem UTM capturado).
+   */
+  async getAttributionStats(days: number) {
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+
+    const users = await this.prisma.user.findMany({
+      where: { createdAt: { gte: since } },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        createdAt: true,
+        utmSource: true,
+        utmMedium: true,
+        utmCampaign: true,
+        utmContent: true,
+        utmTerm: true,
+        payments: {
+          where: { status: 'COMPLETED' },
+          select: { id: true },
+          take: 1,
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const rows = users.map((u) => ({
+      id: u.id,
+      email: u.email,
+      name: u.name,
+      createdAt: u.createdAt,
+      utmSource: u.utmSource,
+      utmMedium: u.utmMedium,
+      utmCampaign: u.utmCampaign,
+      utmContent: u.utmContent,
+      utmTerm: u.utmTerm,
+      paid: u.payments.length > 0,
+    }));
+
+    const aggregate = (pick: (r: (typeof rows)[number]) => string | null) => {
+      const map = new Map<string, { key: string; signups: number; paid: number }>();
+      for (const r of rows) {
+        const key = pick(r) ?? '';
+        const bucket = map.get(key) ?? { key, signups: 0, paid: 0 };
+        bucket.signups += 1;
+        if (r.paid) bucket.paid += 1;
+        map.set(key, bucket);
+      }
+      return [...map.values()].sort((a, b) => b.signups - a.signups);
+    };
+
+    return {
+      days,
+      totalSignups: rows.length,
+      withAttribution: rows.filter((r) => r.utmSource || r.utmCampaign).length,
+      paidTotal: rows.filter((r) => r.paid).length,
+      byCampaign: aggregate((r) => r.utmCampaign),
+      byContent: aggregate((r) => r.utmContent),
+      bySource: aggregate((r) => r.utmSource),
+      byMedium: aggregate((r) => r.utmMedium),
+      recent: rows.slice(0, 100),
+    };
+  }
+
   async getFinancialStats(days: number) {
     const since = new Date();
     since.setDate(since.getDate() - days);

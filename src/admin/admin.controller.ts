@@ -92,6 +92,13 @@ export class AdminController {
     return this.adminService.getHealthStats();
   }
 
+  @Get('attribution')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({ summary: 'Atribuição de cadastros por campanha/criativo (UTMs do cadastro)' })
+  async getAttributionStats(@Query() dto: DateRangeDto) {
+    return this.adminService.getAttributionStats(dto.days);
+  }
+
   @Get('users')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
   @ApiOperation({ summary: 'Lista todos os usuários (paginado, busca)' })

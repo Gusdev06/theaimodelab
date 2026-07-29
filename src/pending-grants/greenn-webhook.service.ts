@@ -8,7 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { EmailService } from '../email/email.service';
 import { WebhookLogsService } from '../webhook-logs/webhook-logs.service';
 import {
-  DEFAULT_HUBLA_BUNDLE,
+  PERFECTPAY_COURSE_BUNDLE,
   PendingGrantsService,
 } from './pending-grants.service';
 
@@ -16,8 +16,9 @@ import {
  * Webhook da Greenn (https://gitlab.com/llgod/greenn-webhook).
  *
  * Mesmo modelo de Hotmart/Hubla: a compra do curso na Greenn libera o bundle
- * de gerações grátis (DEFAULT_HUBLA_BUNDLE) por email. Quando o usuário se
- * cadastra com esse email, as gerações são consumidas no signup.
+ * de gerações grátis (PERFECTPAY_COURSE_BUNDLE, o mesmo do curso na Perfect
+ * Pay) por email. Quando o usuário se cadastra com esse email, as gerações
+ * são consumidas no signup.
  *
  * Eventos relevantes:
  *   - { type: 'sale',     event: 'saleUpdated',     currentStatus: 'paid' }
@@ -72,7 +73,7 @@ export class GreennWebhookService {
 
     const { created } = await this.pendingGrantsService.createPending({
       email,
-      bundle: DEFAULT_HUBLA_BUNDLE,
+      bundle: PERFECTPAY_COURSE_BUNDLE,
       source: 'greenn',
       externalEventId,
     });

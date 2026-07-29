@@ -153,7 +153,15 @@ export class MetaConversionsService {
     });
   }
 
+  // Meta CAPI desativado (2026-07-29): eventos de conversão são enviados
+  // exclusivamente pela UTMify (pixel no site + webhooks PerfectPay/Cakto
+  // configurados no painel dela). Os call sites (Lead no cadastro, Purchase
+  // na ativação) ficam dormentes — para reativar, mude para false.
+  private readonly metaCapiDisabled = true;
+
   private async trackEvent(input: TrackEventInput): Promise<void> {
+    if (this.metaCapiDisabled) return;
+
     const pixelId = this.configService.get<string>('META_PIXEL_ID') ||
       this.configService.get<string>('NEXT_PUBLIC_META_PIXEL_ID') ||
       '1327084455720433';
