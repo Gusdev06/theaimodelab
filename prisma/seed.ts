@@ -89,6 +89,22 @@ const CHECKOUT = {
   studio: process.env.CHECKOUT_URL_STUDIO ?? 'https://checkout.centerpag.com/pay/PPU38CQDTOA',
 };
 
+// ── Cakto (gateway BRL, Brasil) — assinatura recorrente ──
+// Produto único "THE AI MODEL LAB" (id d954f7b1-…); cada plano é uma OFERTA cujo
+// short-code é o segmento do link pay.cakto.com.br/<offer>. Esse offer code casa a
+// venda com o plano no webhook (Plan.caktoOfferCode) e vira o checkoutUrl BRL em
+// plan_prices. Fonte: API Cakto /public_api/offers/?product=<id>.
+const CAKTO_OFFERS: Record<string, string> = {
+  'ultra-basic': process.env.CAKTO_OFFER_ULTRABASIC ?? '3bs2w2w',
+  starter: process.env.CAKTO_OFFER_STARTER ?? '6y427as',
+  basic: process.env.CAKTO_OFFER_BASIC ?? 'uxrhbdr',
+  creator: process.env.CAKTO_OFFER_CREATOR ?? 'sdqeha6',
+  pro: process.env.CAKTO_OFFER_PRO ?? '372vqec',
+  advanced: process.env.CAKTO_OFFER_ADVANCED ?? 'ooy9qkc',
+  studio: process.env.CAKTO_OFFER_STUDIO ?? '3a7idye',
+};
+const caktoCheckoutUrl = (offer: string) => `https://pay.cakto.com.br/${offer}`;
+
 // ── Códigos de PLANO na Perfect Pay (mapeiam o postback → plano/assinatura) ──
 // Por padrão é o último segmento do link de checkout (ex: .../pay/PPU38CQDTOF).
 // O webhook coleta candidatos (plan.code, segmento da URL, etc.) e casa com
@@ -209,12 +225,27 @@ async function main() {
   let planPriceCount = 0;
   for (const pp of planPriceData) {
     const plan = plansBySlug.get(pp.slug);
-    if (!plan || !pp.stripePriceId) continue;
+    if (!plan) continue;
+
+    // BRL é cobrado pela Cakto (checkout externo, sem Stripe). Para essas linhas o
+    // que habilita o preço é ter uma oferta Cakto, não um stripePriceId.
+    const caktoOffer = pp.currency === 'BRL' ? CAKTO_OFFERS[pp.slug] : undefined;
+    if (!pp.stripePriceId && !caktoOffer) continue;
+
+    const checkoutUrl = caktoOffer ? caktoCheckoutUrl(caktoOffer) : null;
+
     await prisma.planPrice.upsert({
       where: { planId_currency: { planId: plan.id, currency: pp.currency } },
-      update: { priceCents: pp.priceCents, stripePriceId: pp.stripePriceId, isActive: true },
-      create: { planId: plan.id, currency: pp.currency, priceCents: pp.priceCents, stripePriceId: pp.stripePriceId },
+      update: { priceCents: pp.priceCents, stripePriceId: pp.stripePriceId, isActive: true, checkoutUrl },
+      create: { planId: plan.id, currency: pp.currency, priceCents: pp.priceCents, stripePriceId: pp.stripePriceId, checkoutUrl },
     });
+
+    // Guarda o offer code da Cakto no plano (casamento da venda no webhook).
+    if (caktoOffer && plan.caktoOfferCode !== caktoOffer) {
+      await prisma.plan.update({ where: { id: plan.id }, data: { caktoOfferCode: caktoOffer } });
+      plan.caktoOfferCode = caktoOffer;
+    }
+
     planPriceCount++;
   }
   console.log(`✅ Created ${planPriceCount} plan prices`);

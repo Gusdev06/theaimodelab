@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { GenerationType, Resolution } from '@prisma/client';
+import { PlanResponseDto } from './dto/plan-response.dto';
 
 /**
  * Maps plan slugs to env var names for Stripe price IDs.
@@ -60,6 +61,36 @@ export class PlansService {
       orderBy: { sortOrder: 'asc' },
     });
     return plans.map((p) => this.overridePriceId(p, PLAN_PRICE_ENV));
+  }
+
+  /**
+   * Vitrine pública em BRL (Brasil, /pt-br). Diferente do USD, a visibilidade é por
+   * MOEDA: expõe todo plano com um PlanPrice BRL ativo e link de checkout Cakto —
+   * o que inclui tiers legados (ultra-basic/starter/basic) que ficam isActive:false
+   * globalmente mas são vendidos na Cakto. Preço e checkoutUrl vêm da linha BRL.
+   */
+  async findBrlPublicPlans(): Promise<PlanResponseDto[]> {
+    const prices = await this.prisma.planPrice.findMany({
+      where: { currency: 'BRL', isActive: true, checkoutUrl: { not: null } },
+      include: { plan: true },
+    });
+    return prices
+      .filter((pp) => pp.plan.slug !== 'free')
+      .sort((a, b) => a.plan.sortOrder - b.plan.sortOrder)
+      .map((pp) => ({
+        id: pp.plan.id,
+        slug: pp.plan.slug,
+        name: pp.plan.name,
+        description: pp.plan.description,
+        priceCents: pp.priceCents,
+        currency: 'BRL',
+        creditsPerMonth: pp.plan.creditsPerMonth,
+        maxConcurrentGenerations: pp.plan.maxConcurrentGenerations,
+        hasWatermark: pp.plan.hasWatermark,
+        galleryRetentionDays: pp.plan.galleryRetentionDays,
+        hasApiAccess: pp.plan.hasApiAccess,
+        checkoutUrl: pp.checkoutUrl,
+      }));
   }
 
   async findPlanBySlug(slug: string) {

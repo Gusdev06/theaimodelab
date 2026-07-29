@@ -27,11 +27,19 @@ export class PlansController {
   async findAll(
     @Query('currency') currencyQuery?: string,
   ): Promise<PlanResponseDto[]> {
-    // Monetização é 100% assinatura mensal via Perfect Pay, precificada em USD
-    // (não há mais preço em BRL). Ignoramos a moeda pedida e sempre resolvemos USD
-    // a partir de plan_prices; o front só redireciona para o checkout recorrente.
-    void currencyQuery;
-    const requestedCurrency = 'USD';
+    // Duas vitrines por moeda:
+    //  - BRL (Brasil, /pt-br): assinatura via Cakto. Expõe os 7 tiers com PlanPrice
+    //    BRL ativo + link de checkout Cakto (inclui os legados ultra-basic/starter/basic).
+    //  - USD (default, /en e /es): assinatura via Perfect Pay, os 4 planos ativos.
+    const requestedCurrency =
+      typeof currencyQuery === 'string' && currencyQuery.trim().toUpperCase() === 'BRL'
+        ? 'BRL'
+        : 'USD';
+
+    if (requestedCurrency === 'BRL') {
+      return this.plansService.findBrlPublicPlans();
+    }
+
     const plans = await this.plansService.findAllPlans();
     return Promise.all(
       plans.map(async (p) => {

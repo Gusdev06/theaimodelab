@@ -261,6 +261,10 @@ export class PaymentsService {
     amountCents: number;
     currency: string;
     referredByCode?: string;
+    /** Gateway que originou a venda. Default 'perfectpay' (USD). A Cakto ('cakto',
+     *  BRL/Brasil) reutiliza este método passando provider:'cakto'. O provider é
+     *  gravado em subscription/payment e usado para casar a assinatura correta. */
+    provider?: string;
   }): Promise<{ processed: boolean; reason?: string }> {
     const {
       userId,
@@ -271,6 +275,7 @@ export class PaymentsService {
       currency,
       referredByCode,
     } = params;
+    const provider = params.provider ?? 'perfectpay';
 
     const plan = await this.prisma.plan.findUnique({ where: { id: planId } });
     if (!plan) {
@@ -295,7 +300,7 @@ export class PaymentsService {
       const activeSub = await tx.subscription.findFirst({
         where: {
           userId,
-          paymentProvider: 'perfectpay',
+          paymentProvider: provider,
           status: { in: ['ACTIVE', 'PAST_DUE'] },
         },
         orderBy: { createdAt: 'desc' },
@@ -347,7 +352,7 @@ export class PaymentsService {
             status: 'ACTIVE',
             currentPeriodStart: now,
             currentPeriodEnd: periodEnd,
-            paymentProvider: 'perfectpay',
+            paymentProvider: provider,
             // Guarda o código ESTÁVEL da assinatura (PPSUB…) quando houver; senão o
             // código da venda como fallback.
             externalSubscriptionId: subscriptionCode ?? saleCode,
@@ -382,7 +387,7 @@ export class PaymentsService {
           amountCents,
           currency: currency.toUpperCase(),
           status: 'COMPLETED',
-          provider: 'perfectpay',
+          provider,
           externalPaymentId: saleCode,
           subscriptionId: subscription.id,
         },
@@ -407,12 +412,12 @@ export class PaymentsService {
     });
 
     if (skipped) {
-      this.logger.log(`Perfectpay sale ${saleCode} já processado — skip`);
+      this.logger.log(`${provider} sale ${saleCode} já processado — skip`);
       return { processed: false, reason: 'duplicate sale' };
     }
 
     this.logger.log(
-      `Perfectpay subscription ${created ? 'ATIVADA' : 'RENOVADA'} — user ${userId}, plano ${plan.slug} (${plan.creditsPerMonth} créditos)`,
+      `${provider} subscription ${created ? 'ATIVADA' : 'RENOVADA'} — user ${userId}, plano ${plan.slug} (${plan.creditsPerMonth} créditos)`,
     );
 
     if (created) {
@@ -441,19 +446,26 @@ export class PaymentsService {
    */
   async revokePerfectpaySubscription(
     userId: string,
-    opts: { immediate: boolean; reason: string; subscriptionCode?: string },
+    opts: {
+      immediate: boolean;
+      reason: string;
+      subscriptionCode?: string;
+      /** Gateway da assinatura a revogar. Default 'perfectpay'; Cakto passa 'cakto'. */
+      provider?: string;
+    },
   ): Promise<{ processed: boolean; reason?: string }> {
+    const provider = opts.provider ?? 'perfectpay';
     const sub = await this.prisma.subscription.findFirst({
       where: {
         userId,
-        paymentProvider: 'perfectpay',
+        paymentProvider: provider,
         status: { in: ['ACTIVE', 'PAST_DUE'] },
       },
       orderBy: { createdAt: 'desc' },
     });
 
     if (!sub) {
-      return { processed: false, reason: 'no active perfectpay subscription' };
+      return { processed: false, reason: `no active ${provider} subscription` };
     }
 
     // Só revoga se o cancelamento for da assinatura ATUAL. Se o postback é de uma

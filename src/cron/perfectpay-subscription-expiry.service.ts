@@ -36,7 +36,10 @@ export class PerfectpaySubscriptionExpiryService {
 
           const expired = await this.prisma.subscription.findMany({
             where: {
-              paymentProvider: 'perfectpay',
+              // Cobre os dois gateways de checkout externo recorrente: Perfect Pay
+              // (USD) e Cakto (BRL/Brasil). Ambos gerem a recorrência por fora e
+              // dependem deste cron pra expirar quando o pagamento lapsa.
+              paymentProvider: { in: ['perfectpay', 'cakto'] },
               status: SubscriptionStatus.ACTIVE,
               OR: [
                 // Cancelamento agendado: expira exatamente no fim do período pago.
@@ -48,7 +51,7 @@ export class PerfectpaySubscriptionExpiryService {
             select: { id: true, userId: true },
           });
 
-          this.logger.log(`Found ${expired.length} lapsed Perfect Pay subscriptions to expire`);
+          this.logger.log(`Found ${expired.length} lapsed Perfect Pay/Cakto subscriptions to expire`);
 
           let expiredCount = 0;
           for (const sub of expired) {
