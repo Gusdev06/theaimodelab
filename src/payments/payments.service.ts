@@ -423,7 +423,15 @@ export class PaymentsService {
     if (created) {
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
-        select: { email: true, name: true },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          phone: true,
+          country: true,
+          fbp: true,
+          fbc: true,
+        },
       });
       if (user?.email) {
         await this.emailService.sendSubscriptionEmail(
@@ -432,6 +440,20 @@ export class PaymentsService {
           plan.name,
           plan.creditsPerMonth,
         );
+        // Purchase no Meta CAPI apenas na ATIVAÇÃO (primeira compra/troca de
+        // plano). Renovações mensais não disparam — decisão de negócio: o pixel
+        // otimiza para aquisição, não para receita recorrente.
+        await this.metaConversionsService.trackPurchase({
+          user,
+          eventId: saleCode,
+          contentId: plan.slug,
+          contentName: plan.name,
+          valueCents: amountCents,
+          currency,
+          orderId: saleCode,
+          provider,
+          purchaseType: 'subscription',
+        });
       }
     }
 
