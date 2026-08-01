@@ -15,6 +15,7 @@ import {
   AsaasPixAutoAuthorization,
 } from '../payments/asaas-subscriptions.service';
 import { PaymentsService } from '../payments/payments.service';
+import { CaktoApiService } from '../payments/cakto-api.service';
 import { CreditsService } from '../credits/credits.service';
 import { SubscriptionResponseDto } from './dto/subscription-response.dto';
 import { t } from '../common/i18n/t';
@@ -34,6 +35,7 @@ export class SubscriptionsService {
     private readonly asaasService: AsaasService,
     private readonly asaasSubscriptionsService: AsaasSubscriptionsService,
     private readonly paymentsService: PaymentsService,
+    private readonly caktoApiService: CaktoApiService,
     private readonly creditsService: CreditsService,
     private readonly configService: ConfigService,
     private readonly metaConversionsService: MetaConversionsService,
@@ -326,6 +328,35 @@ export class SubscriptionsService {
     }
 
     const isStripe = current.paymentProvider === 'stripe';
+    const isCakto = current.paymentProvider === 'cakto';
+
+    // Cakto (BRL) tem API de cancelamento — diferente da PerfectPay. Cancelamos a
+    // recorrência de fato para interromper as cobranças futuras; sem isso, marcar
+    // cancelAtPeriodEnd só encerraria o acesso local e a Cakto seguiria cobrando.
+    // A chamada é IMEDIATA na cobrança, mas o acesso segue até o fim do período
+    // (cancelAtPeriodEnd + cron). Best-effort: se a API falhar (ou faltar credencial),
+    // não bloqueamos o cancelamento — logamos e seguimos; o webhook subscription_canceled
+    // é o backstop e é idempotente com o estado local.
+    if (isCakto && current.externalSubscriptionId) {
+      if (this.caktoApiService.isConfigured()) {
+        try {
+          await this.caktoApiService.cancelSubscription(
+            current.externalSubscriptionId,
+          );
+        } catch (err: any) {
+          this.logger.error(
+            `Cakto: falha ao cancelar a recorrência da subscription ${current.id} ` +
+              `(user ${userId}, cakto ${current.externalSubscriptionId}) — cobrança pode seguir, ` +
+              `cancelar manualmente no painel Cakto. Erro: ${err?.message ?? err}`,
+          );
+        }
+      } else {
+        this.logger.warn(
+          `Cakto: CAKTO_CLIENT_ID/SECRET não configurados — subscription ${current.id} ` +
+            `marcada localmente, mas a recorrência NÃO foi cancelada na Cakto.`,
+        );
+      }
+    }
 
     // Só chama o Stripe para assinaturas Stripe. Em PerfectPay a recorrência vive
     // no lado deles (sem API de cancelamento) — aqui apenas marcamos

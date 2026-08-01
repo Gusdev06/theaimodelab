@@ -4,6 +4,7 @@ import { PaymentsService } from './payments.service';
 import { StripeService } from './stripe.service';
 import { AsaasService } from './asaas.service';
 import { AsaasSubscriptionsService } from './asaas-subscriptions.service';
+import { CaktoApiService } from './cakto-api.service';
 import { AsaasController } from './asaas.controller';
 import { StripeWebhookService } from './webhooks/stripe-webhook.service';
 import { MercadoPagoWebhookService } from './webhooks/mercadopago-webhook.service';
@@ -22,6 +23,7 @@ import { MetaModule } from '../meta/meta.module';
     StripeService,
     AsaasService,
     AsaasSubscriptionsService,
+    CaktoApiService,
     StripeWebhookService,
     MercadoPagoWebhookService,
     AsaasWebhookService,
@@ -31,6 +33,7 @@ import { MetaModule } from '../meta/meta.module';
     StripeService,
     AsaasService,
     AsaasSubscriptionsService,
+    CaktoApiService,
   ],
 })
 export class PaymentsModule {}

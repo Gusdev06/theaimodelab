@@ -19,8 +19,8 @@ export const DEFAULT_HUBLA_BUNDLE: FreeGenerationBundle = {
 
 /**
  * Bundle entregue na compra do CURSO via Perfect Pay.
- * 2 gerações de cada: imagem (básica + premium) e ferramentas — sem vídeo
- * (custo alto). Não inclui THEAIMODELAB_FAST (é label de velocidade, não modelo).
+ * 2 gerações de cada modelo — TODOS os modelos, exceto SEEDANCE_2
+ * (custo muito alto). Cobre imagem (básica + premium), ferramentas e vídeo.
  */
 export const PERFECTPAY_COURSE_BUNDLE: FreeGenerationBundle = {
   // Imagem básica
@@ -34,10 +34,17 @@ export const PERFECTPAY_COURSE_BUNDLE: FreeGenerationBundle = {
   SEM_CENSURA: 2,
   DEEPDEEP: 2,
   THEAIMODELAB_QUALITY: 2,
+  THEAIMODELAB_FAST: 2,
   // Ferramentas
   FACE_SWAP: 2,
   VIRTUAL_TRY_ON: 2,
   UPSCALE: 2,
+  MOTION_CONTROL: 2,
+  // Vídeo (exceto SEEDANCE_2)
+  VEO_FAST: 2,
+  VEO_MAX: 2,
+  KLING_V3_TURBO: 2,
+  COMFYDEPLOY_WAN: 2,
 };
 
 @Injectable()
