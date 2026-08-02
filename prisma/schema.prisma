@@ -52,6 +52,7 @@ model User {
   creditBalance           CreditBalance?
   creditTransactions      CreditTransaction[]
   adminEmailBroadcasts    EmailBroadcast[]          @relation("admin_email_broadcasts")
+  emailSequenceLogs       EmailSequenceLog[]
   emailVerificationTokens EmailVerificationToken[]
   feedback                Feedback?
   brands                  Brand[]
@@ -157,6 +158,7 @@ model CreditPackage {
   stripePriceId      String?              @map("stripe_price_id")
   checkoutUrl        String?              @map("checkout_url")
   perfectpayPlanCode String?              @map("perfectpay_plan_code")
+  caktoOfferCode     String?              @map("cakto_offer_code")
   createdAt          DateTime             @default(now()) @map("created_at")
   prices             CreditPackagePrice[]
   payments           Payment[]
@@ -171,6 +173,7 @@ model CreditPackagePrice {
   priceCents      Int           @map("price_cents")
   stripePriceId   String        @map("stripe_price_id")
   isActive        Boolean       @default(true) @map("is_active")
+  checkoutUrl     String?       @map("checkout_url")
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")
   creditPackage   CreditPackage @relation(fields: [creditPackageId], references: [id], onDelete: Cascade)
@@ -1021,6 +1024,34 @@ model EmailBroadcastRecipient {
   @@map("email_broadcast_recipients")
 }
 
+/// Configurações globais da aplicação editáveis pelo admin (chave-valor).
+/// Ex.: 'onboarding_sequence_enabled' liga/desliga o cron de sequências de email.
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}
+
+/// Log de envios das sequências automáticas de email (onboarding e pós-assinatura).
+/// Uma linha por (usuário, email da sequência) — o unique garante idempotência do
+/// cron: nenhum usuário recebe o mesmo email da sequência duas vezes.
+model EmailSequenceLog {
+  id            String   @id @default(cuid())
+  userId        String   @map("user_id")
+  sequence      String
+  emailKey      String   @map("email_key")
+  resendEmailId String?  @map("resend_email_id")
+  sentAt        DateTime @default(now()) @map("sent_at")
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, emailKey])
+  @@index([userId])
+  @@index([sequence, sentAt])
+  @@map("email_sequence_logs")
+}
+
 enum CommunityPostStatus {
   PENDING
   APPROVED
@@ -1227,4 +1258,22 @@ model Brand {
 
   @@index([userId])
   @@map("brands")
+}
+
+/// Eventos de analytics de produto enviados pelo frontend (ex.: paywall shown/clicked).
+/// Auth opcional: userId preenchido quando há JWT válido, null para visitantes anônimos.
+/// eventName/action ficam em colunas dedicadas (para agregação rápida) e o restante do
+/// contexto (trigger, surface, toolType, credits*, targetId, locale, url, …) vai no payload.
+model AnalyticsEvent {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  eventName String   @map("event_name")
+  action    String?
+  payload   Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([eventName, createdAt])
+  @@map("analytics_events")
 }

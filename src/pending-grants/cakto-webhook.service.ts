@@ -75,8 +75,9 @@ export class CaktoWebhookService {
       payload,
     );
 
-    // Casa o plano pelo offer code da Cakto. Se nada casar, o evento é de outro
-    // produto da conta (não é nosso) → ignora sem erro.
+    // Casa o plano pelo offer code da Cakto. Se nada casar, tentamos casar um
+    // PACOTE de crédito avulso (produto de pagamento único). Se nada casar, o
+    // evento é de outro produto da conta (não é nosso) → ignora sem erro.
     const offerCandidates = this.extractOfferCandidates(data);
     const plan = offerCandidates.length
       ? await this.prisma.plan.findFirst({
@@ -85,14 +86,40 @@ export class CaktoWebhookService {
         })
       : null;
 
+    const kind = this.classifyEvent(payload, data);
+
     if (!plan) {
+      // Pacote de crédito avulso (one-off, BRL via Cakto). Concede créditos bônus
+      // reutilizando o mesmo caminho do fluxo Perfect Pay de pacotes.
+      const creditPackage = offerCandidates.length
+        ? await this.prisma.creditPackage.findFirst({
+            where: { caktoOfferCode: { in: offerCandidates } },
+            select: { id: true, name: true, credits: true },
+          })
+        : null;
+
+      if (creditPackage) {
+        // Reembolso/chargeback/cancelamento de pacote: bônus one-off não gera
+        // revogação de assinatura — apenas logamos e ignoramos (sem erro).
+        if (kind !== 'paid') {
+          return {
+            processed: false,
+            reason: `ignored ${kind} event for credit package "${creditPackage.name}"`,
+          };
+        }
+        if (!email) {
+          throw new BadRequestException(
+            'Email do comprador não encontrado no payload',
+          );
+        }
+        return this.handleCreditPurchase(data, email, creditPackage);
+      }
+
       return {
         processed: false,
-        reason: `no plan matched cakto offer candidates=[${offerCandidates.join(', ')}]`,
+        reason: `no plan/package matched cakto offer candidates=[${offerCandidates.join(', ')}]`,
       };
     }
-
-    const kind = this.classifyEvent(payload, data);
 
     // Reembolso / chargeback → revoga na hora. Cancelamento → acesso até fim do período.
     if (kind === 'canceled' || kind === 'refund' || kind === 'chargeback') {
@@ -165,6 +192,57 @@ export class CaktoWebhookService {
       referredByCode: user.referredByCode ?? undefined,
       provider: 'cakto',
     });
+  }
+
+  /**
+   * Credita um PACOTE de crédito avulso (one-off) comprado via Cakto.
+   *
+   * Espelha o fluxo Perfect Pay de pacotes: o comprador precisa ter conta (casada
+   * pelo email); sem conta, NÃO credita (apenas loga). Reutiliza
+   * `PaymentsService.processCreditPurchase`, que credita em bonus (não expira),
+   * registra pagamento/ledger, comissão de afiliado, email de confirmação e
+   * evento de compra. Idempotência: `saleCode` (id da order) vira o
+   * `externalPaymentId` — a 2ª entrega da mesma venda é ignorada lá dentro.
+   */
+  private async handleCreditPurchase(
+    data: any,
+    email: string,
+    creditPackage: { id: string; name: string; credits: number },
+  ): Promise<{ processed: boolean; reason?: string }> {
+    const saleCode = this.extractSaleCode(data);
+    if (!saleCode) {
+      throw new BadRequestException(
+        'Id da venda (data.id) não encontrado no payload',
+      );
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: { id: true, referredByCode: true },
+    });
+
+    if (!user) {
+      this.logger.warn(
+        `Cakto: compra do pacote "${creditPackage.name}" (venda ${saleCode}) mas nenhuma conta tem o email ${email}. Não creditado.`,
+      );
+      return { processed: false, reason: `no account for email ${email}` };
+    }
+
+    await this.paymentsService.processCreditPurchase(
+      user.id,
+      creditPackage.id,
+      this.extractAmountCents(data),
+      saleCode,
+      this.extractCurrency(data),
+      user.referredByCode ?? undefined,
+      'cakto',
+    );
+
+    this.logger.log(
+      `Cakto credit purchase: +${creditPackage.credits} créditos (${creditPackage.name}) → user ${user.id} (${email})`,
+    );
+
+    return { processed: true };
   }
 
   // ────────────────────────────────────────────────────────────

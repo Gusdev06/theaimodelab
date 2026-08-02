@@ -4,12 +4,14 @@ import { PassportModule } from '@nestjs/passport';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { WelcomeCreditsService } from './welcome-credits.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { GoogleStrategy } from './strategies/google.strategy';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { EmailModule } from '../email/email.module';
 import { PendingGrantsModule } from '../pending-grants/pending-grants.module';
 import { MetaModule } from '../meta/meta.module';
+import { SettingsModule } from '../settings/settings.module';
 
 @Module({
   imports: [
@@ -19,6 +21,7 @@ import { MetaModule } from '../meta/meta.module';
     EmailModule,
     PendingGrantsModule,
     MetaModule,
+    SettingsModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
@@ -29,7 +32,7 @@ import { MetaModule } from '../meta/meta.module';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, GoogleStrategy, JwtStrategy],
+  providers: [AuthService, WelcomeCreditsService, GoogleStrategy, JwtStrategy],
   exports: [AuthService],
 })
 export class AuthModule {}

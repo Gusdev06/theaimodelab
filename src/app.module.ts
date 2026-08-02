@@ -52,6 +52,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { parseRedisConfig } from './common/redis-config';
 import { MetaModule } from './meta/meta.module';
 import { MarketingLeadsModule } from './marketing-leads/marketing-leads.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 
 
 @Module({
@@ -135,6 +136,7 @@ import { MarketingLeadsModule } from './marketing-leads/marketing-leads.module';
     UnlimitedModule,
     MetaModule,
     MarketingLeadsModule,
+    AnalyticsModule,
   ],
   controllers: [AppController],
   providers: [

@@ -546,7 +546,7 @@ export class PaymentsService {
     externalPaymentId: string,
     currency: string,
     referredByCode?: string,
-    provider: 'stripe' | 'asaas' | 'perfectpay' = 'stripe',
+    provider: 'stripe' | 'asaas' | 'perfectpay' | 'cakto' = 'stripe',
   ): Promise<void> {
     const creditPackage = await this.prisma.creditPackage.findUnique({
       where: { id: packageId },

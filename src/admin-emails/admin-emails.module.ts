@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { PrismaModule } from '../prisma/prisma.module';
 import { EmailModule } from '../email/email.module';
+import { SettingsModule } from '../settings/settings.module';
 import { AdminEmailsController } from './admin-emails.controller';
 import { AdminEmailsService } from './admin-emails.service';
 import { EmailBroadcastProcessor } from './queue/email-broadcast.processor';
@@ -11,6 +12,7 @@ import { EMAIL_BROADCAST_QUEUE } from './queue/email-broadcast.constants';
   imports: [
     PrismaModule,
     EmailModule,
+    SettingsModule,
     BullModule.registerQueue({
       name: EMAIL_BROADCAST_QUEUE,
       defaultJobOptions: {

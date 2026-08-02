@@ -144,6 +144,27 @@ const PACKAGE_PERFECTPAY: Record<string, string | null> = {
   max: process.env.PERFECTPAY_PACK_MAX ?? 'PPLQQQ3AN', // THE AI MODEL LAB - MAX ($99,90)
 };
 
+// ── Pacotes de crédito avulsos em BRL via Cakto (coexiste com Perfect Pay USD) ──
+// Produto de PAGAMENTO ÚNICO na Cakto; cada pacote é uma OFERTA. O offer short-code
+// (= segmento do link pay.cakto.com.br/<offer>) casa a venda no webhook via
+// CreditPackage.caktoOfferCode. Preencher DEPOIS de rodar
+//   `npx ts-node scripts/cakto-create-credit-packages.ts`
+// (ou via env). Enquanto o offer code estiver vazio, o pacote NÃO aparece em BRL
+// (o front esconde a seção) e o webhook não credita a venda.
+//
+// Preços BRL (âncora acima do câmbio, terminando em ,90 — padrão dos planos).
+// FONTE DA VERDADE dos preços BRL dos pacotes — ajuste aqui para mudar os valores.
+const PACKAGE_CAKTO: Record<
+  string,
+  { name: string; priceCentsBrl: number; caktoOfferCode: string | null }
+> = {
+  plus: { name: 'Plus', priceCentsBrl: 2490, caktoOfferCode: process.env.CAKTO_PACK_PLUS ?? null }, // R$24,90
+  turbo: { name: 'Turbo', priceCentsBrl: 5990, caktoOfferCode: process.env.CAKTO_PACK_TURBO ?? null }, // R$59,90
+  mega: { name: 'Mega', priceCentsBrl: 10990, caktoOfferCode: process.env.CAKTO_PACK_MEGA ?? null }, // R$109,90
+  ultra: { name: 'Ultra', priceCentsBrl: 19990, caktoOfferCode: process.env.CAKTO_PACK_ULTRA ?? null }, // R$199,90
+  max: { name: 'Max', priceCentsBrl: 42990, caktoOfferCode: process.env.CAKTO_PACK_MAX ?? null }, // R$429,90
+};
+
 async function main() {
   console.log('🌱 Starting database seed...');
 
@@ -473,11 +494,11 @@ async function main() {
     // Preço por crédito é premium vs. assinatura (nunca abaixo do plano Studio ~$1,00/1k),
     // com desconto por volume, pra não canibalizar a recorrência. Crédito não expira.
     // priceCents = centavos de USD; o valor de exibição vem da linha USD em packagePriceData.
-    { name: 'Plus', update: { credits: 5000, priceCents: 1190, sortOrder: 10, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.plus || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.plus }, create: { name: 'Plus', credits: 5000, priceCents: 1190, sortOrder: 10, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.plus || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.plus } },
-    { name: 'Turbo', update: { credits: 12000, priceCents: 2490, sortOrder: 11, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.turbo || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.turbo }, create: { name: 'Turbo', credits: 12000, priceCents: 2490, sortOrder: 11, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.turbo || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.turbo } },
-    { name: 'Mega', update: { credits: 25000, priceCents: 4690, sortOrder: 12, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.mega || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.mega }, create: { name: 'Mega', credits: 25000, priceCents: 4690, sortOrder: 12, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.mega || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.mega } },
-    { name: 'Ultra', update: { credits: 42000, priceCents: 7490, sortOrder: 13, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.ultra || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.ultra }, create: { name: 'Ultra', credits: 42000, priceCents: 7490, sortOrder: 13, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.ultra || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.ultra } },
-    { name: 'Max', update: { credits: 60000, priceCents: 9990, sortOrder: 14, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.max || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.max }, create: { name: 'Max', credits: 60000, priceCents: 9990, sortOrder: 14, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.max || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.max } },
+    { name: 'Plus', update: { credits: 5000, priceCents: 1190, sortOrder: 10, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.plus || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.plus, caktoOfferCode: PACKAGE_CAKTO.plus.caktoOfferCode }, create: { name: 'Plus', credits: 5000, priceCents: 1190, sortOrder: 10, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.plus || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.plus, caktoOfferCode: PACKAGE_CAKTO.plus.caktoOfferCode } },
+    { name: 'Turbo', update: { credits: 12000, priceCents: 2490, sortOrder: 11, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.turbo || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.turbo, caktoOfferCode: PACKAGE_CAKTO.turbo.caktoOfferCode }, create: { name: 'Turbo', credits: 12000, priceCents: 2490, sortOrder: 11, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.turbo || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.turbo, caktoOfferCode: PACKAGE_CAKTO.turbo.caktoOfferCode } },
+    { name: 'Mega', update: { credits: 25000, priceCents: 4690, sortOrder: 12, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.mega || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.mega, caktoOfferCode: PACKAGE_CAKTO.mega.caktoOfferCode }, create: { name: 'Mega', credits: 25000, priceCents: 4690, sortOrder: 12, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.mega || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.mega, caktoOfferCode: PACKAGE_CAKTO.mega.caktoOfferCode } },
+    { name: 'Ultra', update: { credits: 42000, priceCents: 7490, sortOrder: 13, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.ultra || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.ultra, caktoOfferCode: PACKAGE_CAKTO.ultra.caktoOfferCode }, create: { name: 'Ultra', credits: 42000, priceCents: 7490, sortOrder: 13, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.ultra || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.ultra, caktoOfferCode: PACKAGE_CAKTO.ultra.caktoOfferCode } },
+    { name: 'Max', update: { credits: 60000, priceCents: 9990, sortOrder: 14, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.max || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.max, caktoOfferCode: PACKAGE_CAKTO.max.caktoOfferCode }, create: { name: 'Max', credits: 60000, priceCents: 9990, sortOrder: 14, isActive: true, checkoutUrl: PACKAGE_CHECKOUT.max || null, perfectpayPlanCode: PACKAGE_PERFECTPAY.max, caktoOfferCode: PACKAGE_CAKTO.max.caktoOfferCode } },
     // ── Pacotes avulsos DESATIVADOS: monetização migrou 100% para assinatura mensal ──
     // (os antigos pacotes Creator/Pro/Advanced/Studio viraram os PLANOS mensais acima).
     // Mantidos no banco (isActive:false) só para histórico de pagamentos legados.
@@ -519,7 +540,7 @@ async function main() {
   // ============================================
   console.log('💱 Creating credit package prices (multi-currency)...');
 
-  const packagePriceData: Array<{ name: string; currency: string; priceCents: number; stripePriceId: string }> = [
+  const packagePriceData: Array<{ name: string; currency: string; priceCents: number; stripePriceId: string; checkoutUrl?: string | null }> = [
     // BRL
     { name: 'Boost P', currency: 'BRL', priceCents: 1690, stripePriceId: STRIPE.priceBoostP },
     { name: 'Boost M', currency: 'BRL', priceCents: 2690, stripePriceId: STRIPE.priceBoostM },
@@ -556,6 +577,18 @@ async function main() {
     { name: 'Mega', currency: 'USD', priceCents: 4690, stripePriceId: '' },
     { name: 'Ultra', currency: 'USD', priceCents: 7490, stripePriceId: '' },
     { name: 'Max', currency: 'USD', priceCents: 9990, stripePriceId: '' },
+    // ── Pacotes avulsos ATIVOS em BRL (checkout externo Cakto, sem Stripe) ──
+    // checkoutUrl = link Cakto (só existe quando o offer code está preenchido).
+    // Preços/offers centralizados em PACKAGE_CAKTO (fonte da verdade — ajuste lá).
+    ...Object.values(PACKAGE_CAKTO).map((c) => ({
+      name: c.name,
+      currency: 'BRL',
+      priceCents: c.priceCentsBrl,
+      stripePriceId: '',
+      checkoutUrl: c.caktoOfferCode
+        ? `https://pay.cakto.com.br/${c.caktoOfferCode}`
+        : null,
+    })),
   ];
 
   const packagesByName = new Map(packages.map((p) => [p.name, p]));
@@ -567,8 +600,20 @@ async function main() {
     if (!pkg) continue;
     await prisma.creditPackagePrice.upsert({
       where: { creditPackageId_currency: { creditPackageId: pkg.id, currency: pp.currency } },
-      update: { priceCents: pp.priceCents, stripePriceId: pp.stripePriceId, isActive: true },
-      create: { creditPackageId: pkg.id, currency: pp.currency, priceCents: pp.priceCents, stripePriceId: pp.stripePriceId },
+      update: {
+        priceCents: pp.priceCents,
+        stripePriceId: pp.stripePriceId,
+        isActive: true,
+        // Só sobrescreve checkoutUrl quando fornecido (Cakto); não apaga o que já existir.
+        ...(pp.checkoutUrl !== undefined ? { checkoutUrl: pp.checkoutUrl } : {}),
+      },
+      create: {
+        creditPackageId: pkg.id,
+        currency: pp.currency,
+        priceCents: pp.priceCents,
+        stripePriceId: pp.stripePriceId,
+        checkoutUrl: pp.checkoutUrl ?? null,
+      },
     });
     packagePriceCount++;
   }

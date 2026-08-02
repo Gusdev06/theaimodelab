@@ -13,6 +13,7 @@ import { t } from '../common/i18n/t';
 import { PendingGrantsService } from '../pending-grants/pending-grants.service';
 import { TrackingDto } from './dto/tracking.dto';
 import { MetaConversionsService, MetaRequestContext } from '../meta/meta-conversions.service';
+import { WelcomeCreditsService } from './welcome-credits.service';
 
 const SIGNUP_BONUS_CREDITS = 50;
 
@@ -57,6 +58,7 @@ export class AuthService {
     private readonly emailService: EmailService,
     private readonly pendingGrantsService: PendingGrantsService,
     private readonly metaConversionsService: MetaConversionsService,
+    private readonly welcomeCreditsService: WelcomeCreditsService,
   ) { }
 
   /**
@@ -176,6 +178,10 @@ export class AuthService {
 
       return newUser;
     });
+
+    // Concede créditos de boas-vindas (env WELCOME_CREDITS_AMOUNT; default OFF).
+    // Idempotente e à prova de falhas — nunca quebra o signup.
+    await this.welcomeCreditsService.grantIfEligible(user.id);
 
     // Envia email de verificação (fire-and-forget)
     const verificationCode = this.generateSixDigitCode();
@@ -518,6 +524,10 @@ export class AuthService {
 
     // Envia welcome email para novos usuários Google (fire-and-forget)
     if (isNewUser) {
+      // Concede créditos de boas-vindas (env WELCOME_CREDITS_AMOUNT; default OFF).
+      // Idempotente e à prova de falhas — nunca quebra o login/cadastro Google.
+      await this.welcomeCreditsService.grantIfEligible(user.id);
+
       this.emailService.sendWelcomeEmail(user.email, user.name).catch((err) => {
         this.logger.error(`Failed to send welcome email: ${err.message}`);
       });

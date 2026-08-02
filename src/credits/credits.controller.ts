@@ -81,30 +81,7 @@ export class CreditsController {
       });
       resolvedCurrency = user.currency;
     }
-    const packages = await this.creditsService.getPackages();
-    return Promise.all(
-      packages.map(async (pkg) => {
-        let priceCents = pkg.priceCents;
-        let currency = 'BRL';
-        try {
-          const resolved = await this.plansService.resolvePackagePrice(pkg.id, resolvedCurrency!);
-          priceCents = resolved.priceCents;
-          currency = resolved.currency;
-        } catch {}
-        return {
-          id: pkg.id,
-          name: pkg.name,
-          credits: pkg.credits,
-          priceCents,
-          currency,
-          isActive: pkg.isActive,
-          sortOrder: pkg.sortOrder,
-          stripePriceId: pkg.stripePriceId,
-          checkoutUrl: pkg.checkoutUrl,
-          createdAt: pkg.createdAt,
-        };
-      }),
-    );
+    return this.buildPackagesForCurrency(resolvedCurrency!, true);
   }
 
   @Public()
@@ -112,29 +89,67 @@ export class CreditsController {
   @ApiOperation({ summary: 'Lista pacotes de créditos (público, sem autenticação)' })
   async getPackagesPublic(@Query('currency') currencyQuery?: string) {
     const resolvedCurrency = (currencyQuery ?? 'BRL').toUpperCase();
+    return this.buildPackagesForCurrency(resolvedCurrency, false);
+  }
+
+  /**
+   * Monta a vitrine de pacotes na moeda pedida.
+   *
+   * Currency-aware como os planos: BRL usa o link de checkout da Cakto (que só
+   * existe quando o CreditPackage tem `caktoOfferCode` cadastrado). Quando a moeda
+   * pedida NÃO for atendida (ex.: BRL sem oferta Cakto → cairia no fallback USD)
+   * o pacote é OMITIDO da lista, para o front esconder a seção se a lista vier
+   * vazia. Para as demais moedas (USD/EUR) o comportamento original é mantido.
+   */
+  private async buildPackagesForCurrency(
+    requestedCurrency: string,
+    includeStripePriceId: boolean,
+  ) {
+    const currency = requestedCurrency.toUpperCase();
     const packages = await this.creditsService.getPackages();
-    return Promise.all(
+    const results = await Promise.all(
       packages.map(async (pkg) => {
         let priceCents = pkg.priceCents;
-        let currency = 'BRL';
+        let resolvedCurrency = 'BRL';
+        let checkoutUrl = pkg.checkoutUrl;
+        let matchedRequested = false;
         try {
-          const resolved = await this.plansService.resolvePackagePrice(pkg.id, resolvedCurrency);
+          const resolved = await this.plansService.resolvePackagePrice(pkg.id, currency);
           priceCents = resolved.priceCents;
-          currency = resolved.currency;
-        } catch {}
+          resolvedCurrency = resolved.currency;
+          matchedRequested = resolved.matchedRequested;
+          // BRL (Cakto) exige o checkout da própria moeda — SEM fallback para o
+          // do pacote (PerfectPay/USD), senão o guard abaixo nunca dispara e o
+          // usuário BR veria preço em R$ com checkout em dólar.
+          checkoutUrl =
+            currency === 'BRL'
+              ? (resolved.checkoutUrl ?? null)
+              : (resolved.checkoutUrl ?? pkg.checkoutUrl);
+        } catch {
+          return null;
+        }
+
+        // BRL só aparece se houver preço BRL de verdade E link de checkout Cakto.
+        // Sem offer code cadastrado → checkoutUrl NULL → não mostra o pacote em BRL.
+        if (currency === 'BRL' && (!matchedRequested || !checkoutUrl)) {
+          return null;
+        }
+
         return {
           id: pkg.id,
           name: pkg.name,
           credits: pkg.credits,
           priceCents,
-          currency,
+          currency: resolvedCurrency,
           isActive: pkg.isActive,
           sortOrder: pkg.sortOrder,
-          checkoutUrl: pkg.checkoutUrl,
+          ...(includeStripePriceId ? { stripePriceId: pkg.stripePriceId } : {}),
+          checkoutUrl,
           createdAt: pkg.createdAt,
         };
       }),
     );
+    return results.filter((p): p is NonNullable<typeof p> => p !== null);
   }
 
   @Post('purchase')

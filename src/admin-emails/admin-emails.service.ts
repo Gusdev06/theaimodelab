@@ -7,7 +7,11 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { Prisma, EmailBroadcastRecipientType, EmailBroadcastStatus } from '@prisma/client';
+import {
+  Prisma,
+  EmailBroadcastRecipientType,
+  EmailBroadcastStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 import {
@@ -17,6 +21,17 @@ import {
 } from './queue/email-broadcast.constants';
 import { renderMarkdownToEmailHtml } from './helpers/markdown.helper';
 import { wrapInBroadcastTemplate } from './helpers/email-template.helper';
+import {
+  EMAIL_LOCALES,
+  ONBOARDING_EMAILS,
+  POST_SUBSCRIPTION_EMAILS,
+  type EmailLocale,
+} from '../email-sequences/onboarding-sequence-templates';
+import {
+  buildLowBalanceEmail,
+  buildCreditsDepletedEmail,
+  buildWinbackEmail,
+} from '../email-sequences/lifecycle-templates';
 import {
   applyMergeTags,
   buildMergeVars,
@@ -181,7 +196,11 @@ export class AdminEmailsService {
         const userByEmail = new Map(
           users.map((u) => [
             u.email.toLowerCase(),
-            { id: u.id, name: u.name, plan: u.subscriptions[0]?.plan?.name ?? null },
+            {
+              id: u.id,
+              name: u.name,
+              plan: u.subscriptions[0]?.plan?.name ?? null,
+            },
           ]),
         );
         return normalized.map((email) => {
@@ -227,7 +246,9 @@ export class AdminEmailsService {
       }
 
       default:
-        throw new BadRequestException(`Tipo de destinatário inválido: ${String(type)}`);
+        throw new BadRequestException(
+          `Tipo de destinatário inválido: ${String(type)}`,
+        );
     }
   }
 
@@ -247,7 +268,10 @@ export class AdminEmailsService {
    * `format='html'`: assume que o body já é um HTML completo (do `<!DOCTYPE>`
    * até `</html>` ou um fragmento standalone) — usa direto, sem template.
    */
-  async renderHtml(body: string, format: 'markdown' | 'html' = 'markdown'): Promise<string> {
+  async renderHtml(
+    body: string,
+    format: 'markdown' | 'html' = 'markdown',
+  ): Promise<string> {
     if (format === 'html') {
       return body;
     }
@@ -300,7 +324,8 @@ export class AdminEmailsService {
         bodyMarkdown: input.bodyMarkdown,
         bodyHtml,
         recipientType: input.recipientType,
-        recipientFilter: (input.recipientFilter ?? null) as Prisma.InputJsonValue,
+        recipientFilter: (input.recipientFilter ??
+          null) as Prisma.InputJsonValue,
         totalRecipients: recipients.length,
         status: EmailBroadcastStatus.PENDING,
         triggeredById: input.triggeredByUserId,
@@ -350,7 +375,10 @@ export class AdminEmailsService {
       email: input.triggeredByEmail,
     });
 
-    const renderedHtml = await this.renderHtml(input.bodyMarkdown, input.format);
+    const renderedHtml = await this.renderHtml(
+      input.bodyMarkdown,
+      input.format,
+    );
     const finalHtml = applyMergeTags(renderedHtml, vars);
     const finalSubject = `[TESTE] ${applyMergeTags(input.subject, vars)}`;
 
@@ -360,6 +388,103 @@ export class AdminEmailsService {
       html: finalHtml,
     });
     this.logger.log(`Email de teste enviado para ${input.triggeredByEmail}`);
+  }
+
+  // ─── Sequências automáticas ──────────────────────────────────────────────
+  /**
+   * Lista todos os emails das sequências automáticas pra preview no admin,
+   * com o conteúdo dos 3 idiomas (pt-BR, en, es). Onboarding/pós-assinatura
+   * são estáticos; os de lifecycle dependem de números da conta do usuário,
+   * então vão com dados de EXEMPLO (`sample`).
+   */
+  listSequenceTemplates(): Array<{
+    key: string;
+    sequence: string;
+    trigger: string;
+    sample: boolean;
+    content: Record<EmailLocale, { subject: string; bodyMarkdown: string }>;
+  }> {
+    const appUrl =
+      this.configService.get<string>('FRONTEND_URL')?.split(',')[0]?.trim() ||
+      'https://theaimodelab.com';
+
+    const localized = <T>(build: (locale: EmailLocale) => T) =>
+      Object.fromEntries(EMAIL_LOCALES.map((l) => [l, build(l)])) as Record<EmailLocale, T>;
+
+    const dayBased = [...ONBOARDING_EMAILS, ...POST_SUBSCRIPTION_EMAILS].map(
+      (e) => ({
+        key: e.key,
+        sequence: e.sequence,
+        trigger:
+          e.sequence === 'onboarding'
+            ? e.offsetDays === 0
+              ? 'Logo após o cadastro'
+              : `Dia ${e.offsetDays} após o cadastro`
+            : e.offsetDays === 0
+              ? 'Logo após assinar'
+              : `Dia ${e.offsetDays} após assinar`,
+        sample: false,
+        content: localized((l) => ({
+          subject: e.content[l].subject,
+          bodyMarkdown: e.content[l].body(appUrl),
+        })),
+      }),
+    );
+
+    const lowBalance = localized((l) =>
+      buildLowBalanceEmail({ appUrl, totalCredits: 2100, monthlyCredits: 12000 }, l),
+    );
+    const depleted = localized((l) =>
+      buildCreditsDepletedEmail(
+        {
+          appUrl,
+          monthlyCredits: 12000,
+          daysUsed: 9,
+          daysUntilRenewal: 21,
+          upgrade: { name: 'Pro', creditsPerMonth: 30000, priceUsd: 39.9 },
+        },
+        l,
+      ),
+    );
+    const winback = localized((l) => buildWinbackEmail({ appUrl, generationsCount: 87 }, l));
+
+    const lifecycle = [
+      {
+        key: 'lifecycle_low_balance',
+        trigger: 'Saldo ≤ 20% da cota mensal (máx. 1x por ciclo)',
+        built: lowBalance,
+      },
+      {
+        key: 'lifecycle_depleted',
+        trigger: 'Créditos zerados faltando ≥ 5 dias pra renovação',
+        built: depleted,
+      },
+      {
+        key: 'lifecycle_winback',
+        trigger: '7 dias após o plano expirar/cancelar',
+        built: winback,
+      },
+    ].map((e) => ({
+      key: e.key,
+      sequence: 'lifecycle',
+      trigger: e.trigger,
+      sample: true,
+      content: localized((l) => ({
+        subject: e.built[l].subject,
+        bodyMarkdown: e.built[l].body,
+      })),
+    }));
+
+    return [...dayBased, ...lifecycle];
+  }
+
+  /** Total de emails enviados por sequência (onboarding, post_subscription). */
+  async getSequenceStats(): Promise<Array<{ sequence: string; sent: number }>> {
+    const grouped = await this.prisma.emailSequenceLog.groupBy({
+      by: ['sequence'],
+      _count: { _all: true },
+    });
+    return grouped.map((g) => ({ sequence: g.sequence, sent: g._count._all }));
   }
 
   // ─── Histórico ───────────────────────────────────────────────────────────

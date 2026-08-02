@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -24,9 +25,11 @@ import {
   JwtPayload,
 } from '../common/decorators/current-user.decorator';
 import { AdminEmailsService } from './admin-emails.service';
+import { SettingsService, SETTING_KEYS } from '../settings/settings.service';
 import { CreateBroadcastDto } from './dto/create-broadcast.dto';
 import { RecipientSelectionDto } from './dto/recipient-filter.dto';
 import { SendTestDto } from './dto/send-test.dto';
+import { UpdateSequenceSettingsDto } from './dto/update-sequence-settings.dto';
 
 @ApiTags('admin-emails')
 @ApiBearerAuth()
@@ -35,7 +38,71 @@ import { SendTestDto } from './dto/send-test.dto';
 @Roles('ADMIN')
 @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
 export class AdminEmailsController {
-  constructor(private readonly adminEmails: AdminEmailsService) {}
+  constructor(
+    private readonly adminEmails: AdminEmailsService,
+    private readonly settings: SettingsService,
+  ) {}
+
+  // ─── Sequências automáticas (onboarding + pós-assinatura) ─────
+  @Get('sequences/settings')
+  @ApiOperation({
+    summary: 'Estado da sequência automática + total enviado por trilha',
+  })
+  @ApiResponse({
+    status: 200,
+    schema: {
+      example: {
+        enabled: false,
+        stats: [{ sequence: 'onboarding', sent: 42 }],
+      },
+    },
+  })
+  async getSequenceSettings() {
+    const [enabled, welcomeCreditsRaw, stats] = await Promise.all([
+      this.settings.getBool(SETTING_KEYS.onboardingSequenceEnabled, false),
+      this.settings.getInt(SETTING_KEYS.welcomeCreditsAmount, 0),
+      this.adminEmails.getSequenceStats(),
+    ]);
+    // Linha ausente ou com valor inválido conta como desligado (0).
+    const welcomeCredits =
+      welcomeCreditsRaw !== null && welcomeCreditsRaw > 0
+        ? welcomeCreditsRaw
+        : 0;
+    return { enabled, welcomeCredits, stats };
+  }
+
+  @Patch('sequences/settings')
+  @ApiOperation({
+    summary:
+      'Liga/desliga o cron das sequências automáticas e/ou ajusta os créditos de boas-vindas',
+  })
+  async updateSequenceSettings(@Body() dto: UpdateSequenceSettingsDto) {
+    if (dto.enabled !== undefined) {
+      await this.settings.setBool(
+        SETTING_KEYS.onboardingSequenceEnabled,
+        dto.enabled,
+      );
+    }
+    if (dto.welcomeCredits !== undefined) {
+      await this.settings.setInt(
+        SETTING_KEYS.welcomeCreditsAmount,
+        dto.welcomeCredits,
+      );
+    }
+    const [enabled, welcomeCredits] = await Promise.all([
+      this.settings.getBool(SETTING_KEYS.onboardingSequenceEnabled, false),
+      this.settings.getInt(SETTING_KEYS.welcomeCreditsAmount, 0),
+    ]);
+    return { enabled, welcomeCredits: welcomeCredits ?? 0 };
+  }
+
+  @Get('sequences/templates')
+  @ApiOperation({
+    summary: 'Templates das sequências automáticas (pra preview no admin)',
+  })
+  getSequenceTemplates() {
+    return { items: this.adminEmails.listSequenceTemplates() };
+  }
 
   // ─── Preview da contagem antes de disparar ────────────────────
   @Post('preview-count')
@@ -44,12 +111,17 @@ export class AdminEmailsController {
   })
   @ApiResponse({ status: 200, schema: { example: { count: 134 } } })
   async previewCount(@Body() dto: RecipientSelectionDto) {
-    return this.adminEmails.previewRecipientCount(dto.recipientType, dto.recipientFilter);
+    return this.adminEmails.previewRecipientCount(
+      dto.recipientType,
+      dto.recipientFilter,
+    );
   }
 
   // ─── Renderiza HTML pra preview do front ──────────────────────
   @Post('render-preview')
-  @ApiOperation({ summary: 'Renderiza markdown → HTML final + aplica merge tags' })
+  @ApiOperation({
+    summary: 'Renderiza markdown → HTML final + aplica merge tags',
+  })
   async renderPreview(
     @Body()
     body: {
@@ -83,7 +155,9 @@ export class AdminEmailsController {
 
   // ─── Cria + dispara o broadcast (assíncrono via BullMQ) ───────
   @Post('send')
-  @ApiOperation({ summary: 'Cria broadcast e enfileira pra disparo assíncrono' })
+  @ApiOperation({
+    summary: 'Cria broadcast e enfileira pra disparo assíncrono',
+  })
   async send(@CurrentUser() user: JwtPayload, @Body() dto: CreateBroadcastDto) {
     const broadcast = await this.adminEmails.createAndDispatch({
       triggeredByUserId: user.sub,

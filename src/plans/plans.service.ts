@@ -312,22 +312,48 @@ export class PlansService {
 
   /**
    * Resolve o CreditPackagePrice para a moeda do usuário. Fallback: USD.
+   *
+   * `matchedRequested` indica se a linha retornada é da moeda pedida (true) ou se
+   * caiu no fallback USD (false). Usado pelos endpoints para esconder pacotes que
+   * não têm preço na moeda pedida (ex.: BRL sem oferta Cakto ainda cadastrada).
    */
   async resolvePackagePrice(
     creditPackageId: string,
     userCurrency: string,
-  ): Promise<{ currency: string; priceCents: number; stripePriceId: string }> {
+  ): Promise<{
+    currency: string;
+    priceCents: number;
+    stripePriceId: string;
+    checkoutUrl: string | null;
+    matchedRequested: boolean;
+  }> {
     const currency = userCurrency.toUpperCase();
     const primary = await this.prisma.creditPackagePrice.findUnique({
       where: { creditPackageId_currency: { creditPackageId, currency } },
     });
-    if (primary?.isActive) return primary;
+    if (primary?.isActive) {
+      return {
+        currency: primary.currency,
+        priceCents: primary.priceCents,
+        stripePriceId: primary.stripePriceId,
+        checkoutUrl: primary.checkoutUrl,
+        matchedRequested: true,
+      };
+    }
 
     if (currency !== 'USD') {
       const usd = await this.prisma.creditPackagePrice.findUnique({
         where: { creditPackageId_currency: { creditPackageId, currency: 'USD' } },
       });
-      if (usd?.isActive) return usd;
+      if (usd?.isActive) {
+        return {
+          currency: usd.currency,
+          priceCents: usd.priceCents,
+          stripePriceId: usd.stripePriceId,
+          checkoutUrl: usd.checkoutUrl,
+          matchedRequested: false,
+        };
+      }
     }
 
     throw new NotFoundException(
