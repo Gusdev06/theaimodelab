@@ -1374,15 +1374,26 @@ export class GenerationsService {
     const videoBuffer = Buffer.from(dto.video, 'base64');
     const durationSeconds = getVideoDurationSeconds(videoBuffer);
 
-    const creditsRequired = await this.plansService.calculateGenerationCost(
+    const freeGenType = await this.resolveFreeGenForRequest(
+      userId,
       type,
-      dbResolution,
-      durationSeconds,
-      false,
+      null,
     );
+    const isFreeGeneration = freeGenType !== null;
+
+    const creditsRequired = isFreeGeneration
+      ? 0
+      : await this.plansService.calculateGenerationCost(
+          type,
+          dbResolution,
+          durationSeconds,
+          false,
+        );
 
     await this.checkConcurrentLimit(userId);
-    await this.ensureSufficientBalance(userId, creditsRequired);
+    if (!isFreeGeneration) {
+      await this.ensureSufficientBalance(userId, creditsRequired);
+    }
 
     const generation = await this.prisma.generation.create({
       data: {
@@ -1394,6 +1405,7 @@ export class GenerationsService {
         durationSeconds,
         hasAudio: false,
         creditsConsumed: creditsRequired,
+        usedFreeGeneration: isFreeGeneration,
         parameters: { resolution },
       },
     });
@@ -1451,18 +1463,27 @@ export class GenerationsService {
       ],
     });
 
-    await this.debitCredits(
-      userId,
-      creditsRequired,
-      generation.id,
-      type,
-      dbResolution,
-    );
+    if (isFreeGeneration && freeGenType) {
+      await this.creditsService.consumeFreeGeneration(
+        userId,
+        generation.id,
+        freeGenType,
+      );
+    } else {
+      await this.debitCredits(
+        userId,
+        creditsRequired,
+        generation.id,
+        type,
+        dbResolution,
+      );
+    }
 
     await this.generationQueue.add(GenerationJobName.MOTION_CONTROL, {
       generationId: generation.id,
       userId,
       creditsConsumed: creditsRequired,
+      usedFreeGeneration: isFreeGeneration,
       videoUrl: videoPublicUrl,
       imageUrl: imagePublicUrl,
       resolution,
@@ -2082,17 +2103,28 @@ CRITICAL REQUIREMENTS:
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
 
-    const creditsRequired = await this.plansService.calculateGenerationCost(
+    const freeGenType = await this.resolveFreeGenForRequest(
+      userId,
       type,
-      dto.resolution,
-      dto.duration_seconds,
-      false,
-      1,
       modelVariant,
     );
+    const isFreeGeneration = freeGenType !== null;
+
+    const creditsRequired = isFreeGeneration
+      ? 0
+      : await this.plansService.calculateGenerationCost(
+          type,
+          dto.resolution,
+          dto.duration_seconds,
+          false,
+          1,
+          modelVariant,
+        );
 
     await this.checkConcurrentLimit(userId);
-    await this.ensureSufficientBalance(userId, creditsRequired);
+    if (!isFreeGeneration) {
+      await this.ensureSufficientBalance(userId, creditsRequired);
+    }
 
     const generation = await this.prisma.generation.create({
       data: {
@@ -2106,6 +2138,7 @@ CRITICAL REQUIREMENTS:
         hasAudio: false,
         aspectRatio: dto.aspect_ratio,
         creditsConsumed: creditsRequired,
+        usedFreeGeneration: isFreeGeneration,
         parameters: { provider: 'kie', mode: 'normal' },
       },
     });
@@ -2152,18 +2185,27 @@ CRITICAL REQUIREMENTS:
 
     await this.prisma.generationInputImage.createMany({ data: inputImageData });
 
-    await this.debitCredits(
-      userId,
-      creditsRequired,
-      generation.id,
-      type,
-      dto.resolution,
-    );
+    if (isFreeGeneration && freeGenType) {
+      await this.creditsService.consumeFreeGeneration(
+        userId,
+        generation.id,
+        freeGenType,
+      );
+    } else {
+      await this.debitCredits(
+        userId,
+        creditsRequired,
+        generation.id,
+        type,
+        dto.resolution,
+      );
+    }
 
     await this.generationQueue.add(GenerationJobName.IMAGE_TO_VIDEO_GROK, {
       generationId: generation.id,
       userId,
       creditsConsumed: creditsRequired,
+      usedFreeGeneration: isFreeGeneration,
       prompt: dto.prompt,
       resolution: dto.resolution,
       durationSeconds: dto.duration_seconds,
@@ -2191,17 +2233,28 @@ CRITICAL REQUIREMENTS:
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
 
-    const creditsRequired = await this.plansService.calculateGenerationCost(
+    const freeGenType = await this.resolveFreeGenForRequest(
+      userId,
       type,
-      dto.resolution,
-      dto.duration_seconds,
-      false,
-      1,
       modelVariant,
     );
+    const isFreeGeneration = freeGenType !== null;
+
+    const creditsRequired = isFreeGeneration
+      ? 0
+      : await this.plansService.calculateGenerationCost(
+          type,
+          dto.resolution,
+          dto.duration_seconds,
+          false,
+          1,
+          modelVariant,
+        );
 
     await this.checkConcurrentLimit(userId);
-    await this.ensureSufficientBalance(userId, creditsRequired);
+    if (!isFreeGeneration) {
+      await this.ensureSufficientBalance(userId, creditsRequired);
+    }
 
     const generation = await this.prisma.generation.create({
       data: {
@@ -2215,22 +2268,32 @@ CRITICAL REQUIREMENTS:
         hasAudio: false,
         aspectRatio: dto.aspect_ratio,
         creditsConsumed: creditsRequired,
+        usedFreeGeneration: isFreeGeneration,
         parameters: { provider: 'kie', mode: 'normal' },
       },
     });
 
-    await this.debitCredits(
-      userId,
-      creditsRequired,
-      generation.id,
-      type,
-      dto.resolution,
-    );
+    if (isFreeGeneration && freeGenType) {
+      await this.creditsService.consumeFreeGeneration(
+        userId,
+        generation.id,
+        freeGenType,
+      );
+    } else {
+      await this.debitCredits(
+        userId,
+        creditsRequired,
+        generation.id,
+        type,
+        dto.resolution,
+      );
+    }
 
     await this.generationQueue.add(GenerationJobName.TEXT_TO_VIDEO_GROK, {
       generationId: generation.id,
       userId,
       creditsConsumed: creditsRequired,
+      usedFreeGeneration: isFreeGeneration,
       prompt: dto.prompt,
       resolution: dto.resolution,
       durationSeconds: dto.duration_seconds,
@@ -2266,18 +2329,29 @@ CRITICAL REQUIREMENTS:
         ? GenerationType.IMAGE_TO_VIDEO
         : GenerationType.TEXT_TO_VIDEO;
 
-    const creditsRequired = await this.plansService.calculateGenerationCost(
+    const freeGenType = await this.resolveFreeGenForRequest(
+      userId,
       type,
-      dto.resolution,
-      dto.duration_seconds,
-      false,
-      1,
       modelVariant,
-      hasVideoInput,
     );
+    const isFreeGeneration = freeGenType !== null;
+
+    const creditsRequired = isFreeGeneration
+      ? 0
+      : await this.plansService.calculateGenerationCost(
+          type,
+          dto.resolution,
+          dto.duration_seconds,
+          false,
+          1,
+          modelVariant,
+          hasVideoInput,
+        );
 
     await this.checkConcurrentLimit(userId);
-    await this.ensureSufficientBalance(userId, creditsRequired);
+    if (!isFreeGeneration) {
+      await this.ensureSufficientBalance(userId, creditsRequired);
+    }
 
     const generation = await this.prisma.generation.create({
       data: {
@@ -2291,6 +2365,7 @@ CRITICAL REQUIREMENTS:
         hasAudio: false,
         aspectRatio: dto.aspect_ratio,
         creditsConsumed: creditsRequired,
+        usedFreeGeneration: isFreeGeneration,
         parameters: { provider: 'kie', hasVideoInput },
       },
     });
@@ -2331,18 +2406,27 @@ CRITICAL REQUIREMENTS:
       videoList = [{ url: videoUrl, start: 0, ends }];
     }
 
-    await this.debitCredits(
-      userId,
-      creditsRequired,
-      generation.id,
-      type,
-      dto.resolution,
-    );
+    if (isFreeGeneration && freeGenType) {
+      await this.creditsService.consumeFreeGeneration(
+        userId,
+        generation.id,
+        freeGenType,
+      );
+    } else {
+      await this.debitCredits(
+        userId,
+        creditsRequired,
+        generation.id,
+        type,
+        dto.resolution,
+      );
+    }
 
     await this.generationQueue.add(GenerationJobName.OMNI_VIDEO, {
       generationId: generation.id,
       userId,
       creditsConsumed: creditsRequired,
+      usedFreeGeneration: isFreeGeneration,
       prompt: dto.prompt,
       resolution: dto.resolution,
       durationSeconds: dto.duration_seconds,
@@ -2382,18 +2466,29 @@ CRITICAL REQUIREMENTS:
         ? GenerationType.REFERENCE_VIDEO
         : GenerationType.TEXT_TO_VIDEO;
 
-    const creditsRequired = await this.plansService.calculateGenerationCost(
+    const freeGenType = await this.resolveFreeGenForRequest(
+      userId,
       type,
-      dto.resolution,
-      dto.duration_seconds,
-      false,
-      1,
       modelVariant,
-      hasVideoInput,
     );
+    const isFreeGeneration = freeGenType !== null;
+
+    const creditsRequired = isFreeGeneration
+      ? 0
+      : await this.plansService.calculateGenerationCost(
+          type,
+          dto.resolution,
+          dto.duration_seconds,
+          false,
+          1,
+          modelVariant,
+          hasVideoInput,
+        );
 
     await this.checkConcurrentLimit(userId);
-    await this.ensureSufficientBalance(userId, creditsRequired);
+    if (!isFreeGeneration) {
+      await this.ensureSufficientBalance(userId, creditsRequired);
+    }
 
     const generation = await this.prisma.generation.create({
       data: {
@@ -2407,6 +2502,7 @@ CRITICAL REQUIREMENTS:
         hasAudio: dto.generate_audio ?? false,
         aspectRatio: dto.aspect_ratio,
         creditsConsumed: creditsRequired,
+        usedFreeGeneration: isFreeGeneration,
         parameters: { provider: 'kie', hasVideoInput },
       },
     });
@@ -2454,18 +2550,27 @@ CRITICAL REQUIREMENTS:
       referenceAudioUrls = [audioUrl];
     }
 
-    await this.debitCredits(
-      userId,
-      creditsRequired,
-      generation.id,
-      type,
-      dto.resolution,
-    );
+    if (isFreeGeneration && freeGenType) {
+      await this.creditsService.consumeFreeGeneration(
+        userId,
+        generation.id,
+        freeGenType,
+      );
+    } else {
+      await this.debitCredits(
+        userId,
+        creditsRequired,
+        generation.id,
+        type,
+        dto.resolution,
+      );
+    }
 
     await this.generationQueue.add(GenerationJobName.SEEDANCE_VIDEO, {
       generationId: generation.id,
       userId,
       creditsConsumed: creditsRequired,
+      usedFreeGeneration: isFreeGeneration,
       prompt: dto.prompt,
       resolution: dto.resolution,
       durationSeconds: dto.duration_seconds,
@@ -2500,17 +2605,28 @@ CRITICAL REQUIREMENTS:
     // créditos é o mesmo com ou sem som (linhas hasAudio true/false idênticas).
     const generateAudio = dto.generate_audio ?? false;
 
-    const creditsRequired = await this.plansService.calculateGenerationCost(
+    const freeGenType = await this.resolveFreeGenForRequest(
+      userId,
       type,
-      dto.resolution,
-      dto.duration_seconds,
-      generateAudio,
-      1,
       modelVariant,
     );
+    const isFreeGeneration = freeGenType !== null;
+
+    const creditsRequired = isFreeGeneration
+      ? 0
+      : await this.plansService.calculateGenerationCost(
+          type,
+          dto.resolution,
+          dto.duration_seconds,
+          generateAudio,
+          1,
+          modelVariant,
+        );
 
     await this.checkConcurrentLimit(userId);
-    await this.ensureSufficientBalance(userId, creditsRequired);
+    if (!isFreeGeneration) {
+      await this.ensureSufficientBalance(userId, creditsRequired);
+    }
 
     const generation = await this.prisma.generation.create({
       data: {
@@ -2523,6 +2639,7 @@ CRITICAL REQUIREMENTS:
         durationSeconds: dto.duration_seconds,
         hasAudio: generateAudio,
         creditsConsumed: creditsRequired,
+        usedFreeGeneration: isFreeGeneration,
         parameters: { provider: 'kie' },
       },
     });
@@ -2545,13 +2662,21 @@ CRITICAL REQUIREMENTS:
       ],
     });
 
-    await this.debitCredits(
-      userId,
-      creditsRequired,
-      generation.id,
-      type,
-      dto.resolution,
-    );
+    if (isFreeGeneration && freeGenType) {
+      await this.creditsService.consumeFreeGeneration(
+        userId,
+        generation.id,
+        freeGenType,
+      );
+    } else {
+      await this.debitCredits(
+        userId,
+        creditsRequired,
+        generation.id,
+        type,
+        dto.resolution,
+      );
+    }
 
     // Kling 3.0 exige aspect_ratio ('16:9' | '9:16' | '1:1'). Usa o valor
     // escolhido na UI; se ausente, detecta a partir da imagem de entrada.
@@ -2562,6 +2687,7 @@ CRITICAL REQUIREMENTS:
       generationId: generation.id,
       userId,
       creditsConsumed: creditsRequired,
+      usedFreeGeneration: isFreeGeneration,
       prompt: dto.prompt,
       resolution: dto.resolution,
       durationSeconds: dto.duration_seconds,
@@ -2590,17 +2716,28 @@ CRITICAL REQUIREMENTS:
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
 
-    const creditsRequired = await this.plansService.calculateGenerationCost(
+    const freeGenType = await this.resolveFreeGenForRequest(
+      userId,
       type,
-      resolution,
-      dto.duration_seconds,
-      false,
-      1,
       modelVariant,
     );
+    const isFreeGeneration = freeGenType !== null;
+
+    const creditsRequired = isFreeGeneration
+      ? 0
+      : await this.plansService.calculateGenerationCost(
+          type,
+          resolution,
+          dto.duration_seconds,
+          false,
+          1,
+          modelVariant,
+        );
 
     await this.checkConcurrentLimit(userId);
-    await this.ensureSufficientBalance(userId, creditsRequired);
+    if (!isFreeGeneration) {
+      await this.ensureSufficientBalance(userId, creditsRequired);
+    }
 
     const generation = await this.prisma.generation.create({
       data: {
@@ -2613,6 +2750,7 @@ CRITICAL REQUIREMENTS:
         durationSeconds: dto.duration_seconds,
         hasAudio: false,
         creditsConsumed: creditsRequired,
+        usedFreeGeneration: isFreeGeneration,
         parameters: { provider: 'comfydeploy' },
       },
     });
@@ -2635,18 +2773,27 @@ CRITICAL REQUIREMENTS:
       ],
     });
 
-    await this.debitCredits(
-      userId,
-      creditsRequired,
-      generation.id,
-      type,
-      resolution,
-    );
+    if (isFreeGeneration && freeGenType) {
+      await this.creditsService.consumeFreeGeneration(
+        userId,
+        generation.id,
+        freeGenType,
+      );
+    } else {
+      await this.debitCredits(
+        userId,
+        creditsRequired,
+        generation.id,
+        type,
+        resolution,
+      );
+    }
 
     await this.generationQueue.add(GenerationJobName.COMFYDEPLOY_IMAGE_TO_VIDEO, {
       generationId: generation.id,
       userId,
       creditsConsumed: creditsRequired,
+      usedFreeGeneration: isFreeGeneration,
       prompt: dto.prompt,
       resolution,
       durationSeconds: dto.duration_seconds,
