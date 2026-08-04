@@ -313,7 +313,7 @@ export class AuthService {
     }
 
     if (!user.emailVerified) {
-      throw new UnauthorizedException({ message: 'Email ou senha inválidos', code: 'EMAIL_NOT_VERIFIED' });
+      throw new UnauthorizedException({ message: t('errors.auth.EMAIL_NOT_VERIFIED'), code: 'EMAIL_NOT_VERIFIED' });
     }
 
     const tokens = await this.generateTokens(user);
