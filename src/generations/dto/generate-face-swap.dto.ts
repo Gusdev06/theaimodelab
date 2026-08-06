@@ -39,4 +39,14 @@ export class GenerateFaceSwapDto {
   @IsString()
   @IsIn(['1K', '2K', '4K'])
   resolution?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Variante do modelo. SEM_CENSURA ativa o modo Unlocked (NSFW), que roda o face swap pelo modelo sem censura.',
+    enum: ['SEM_CENSURA'],
+  })
+  @IsOptional()
+  @IsString()
+  @IsIn(['SEM_CENSURA'])
+  model_variant?: string;
 }

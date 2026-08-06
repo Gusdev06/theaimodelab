@@ -72,6 +72,14 @@ import {
 const UNDRESS_PROMPT =
   'remove all visible clothing from the subject in the image, keeping natural body proportions and anatomy, tits, vagina, ass, etc.';
 
+/**
+ * Prompt de face swap usado quando o modo Unlocked (NSFW) está ligado, rodando
+ * pelo Seedream (WaveSpeed, image-to-image) com `skipSafetyWrapper`. Também é
+ * reaproveitado como fallback de segurança do face swap padrão (nano-banana-2).
+ */
+const FACE_SWAP_SEEDREAM_PROMPT =
+  'Recreate the scene in Image 2 (clothing, body pose, and setting) replacing the person with the woman in Image 1. Preserve facial features, skin tone and body proportions from Image 1 with photorealistic lighting and shadows.';
+
 @Processor(GENERATION_QUEUE, {
   concurrency: 5,
   lockDuration: 15 * 60 * 1000, // 15 min — vídeos podem demorar até 12 min
@@ -916,8 +924,28 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[FACE_SWAP] ${data.generationId} resolution=${data.resolution} sourceImage=${data.sourceImageUrl} targetImage=${data.targetImageUrl}`,
+      `[FACE_SWAP] ${data.generationId} resolution=${data.resolution} nsfw=${data.nsfw ?? false} sourceImage=${data.sourceImageUrl} targetImage=${data.targetImageUrl}`,
     );
+
+    // Unlocked (NSFW): rota direto pelo Seedream sem censura. Não passa pelo
+    // nano-banana-2 porque ele devolveria um resultado com roupa em vez de erro
+    // — então o fallback de segurança nem dispararia.
+    if (data.nsfw) {
+      const resolutionMap: Record<string, Resolution> = {
+        '1K': Resolution.RES_1K,
+        '2K': Resolution.RES_2K,
+        '4K': Resolution.RES_4K,
+      };
+      const result = await this.seedreamProvider.generateImage({
+        id: data.generationId,
+        prompt: FACE_SWAP_SEEDREAM_PROMPT,
+        resolution: resolutionMap[data.resolution] ?? Resolution.RES_2K,
+        imageUrls: [data.sourceImageUrl, data.targetImageUrl],
+        skipSafetyWrapper: true,
+      });
+      await this.completeGeneration(data.generationId, result, startTime);
+      return;
+    }
 
     try {
       const result = await this.faceSwapProvider.generateFaceSwap({
@@ -930,11 +958,9 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
-        const faceSwapFallbackPrompt =
-          'Recreate the scene in Image 2 (clothing, body pose, and setting) replacing the person with the woman in Image 1. Preserve facial features, skin tone and body proportions from Image 1 with photorealistic lighting and shadows.';
         const result = await this.fallbackToSeedream(
           data.generationId,
-          faceSwapFallbackPrompt,
+          FACE_SWAP_SEEDREAM_PROMPT,
           undefined,
           error,
           'processFaceSwap',

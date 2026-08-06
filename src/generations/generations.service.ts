@@ -1654,6 +1654,9 @@ CRITICAL REQUIREMENTS:
     const resolution =
       resolutionMap[dto.resolution ?? '2K'] ?? Resolution.RES_2K;
 
+    // Unlocked (NSFW): roda o face swap pelo modelo sem censura (Seedream).
+    const nsfw = dto.model_variant === 'SEM_CENSURA';
+
     const modelVariant = getModelVariant('nano-banana-2');
 
     const freeGenType = await this.resolveFreeGenForRequest(
@@ -1685,12 +1688,12 @@ CRITICAL REQUIREMENTS:
         type,
         status: GenerationStatus.PROCESSING,
         prompt: 'Face Swap',
-        modelUsed: 'nano-banana-2',
+        modelUsed: nsfw ? 'sem-censura' : 'nano-banana-2',
         resolution,
         hasAudio: false,
         creditsConsumed: creditsRequired,
         usedFreeGeneration: isFreeGeneration,
-        parameters: { feature: 'face_swap' },
+        parameters: { feature: 'face_swap', nsfw },
       },
     });
 
@@ -1751,6 +1754,7 @@ CRITICAL REQUIREMENTS:
       sourceImageUrl: sourceUrl,
       targetImageUrl: targetUrl,
       resolution: dto.resolution ?? '2K',
+      nsfw,
     } satisfies FaceSwapJobData);
 
     return {

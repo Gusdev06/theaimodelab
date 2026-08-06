@@ -87,6 +87,8 @@ export interface FaceSwapJobData extends BaseJobData {
   sourceImageUrl: string;
   targetImageUrl: string;
   resolution: string;
+  // Unlocked (NSFW): quando true, roda o face swap pelo Seedream sem censura.
+  nsfw?: boolean;
 }
 
 export interface TextToVideoKieJobData extends BaseJobData {
