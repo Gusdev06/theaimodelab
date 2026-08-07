@@ -19,13 +19,31 @@ import { GenerationResult } from './theaimodelab.provider';
 const LTX_MODEL = 'wavespeed-ai/ltx-2.3-spicy/image-to-video';
 const SEEDANCE_MODEL = 'bytedance/seedance-2.0-fast/image-to-video-spicy';
 
+// MiniMax H3 — modelo geral (não-NSFW), áudio nativo sempre incluso, 5–15s.
+// Resoluções 480p / 768p (768p é o canvas nativo). Três modos:
+const MINIMAX_H3_T2V_MODEL = 'wavespeed-ai/minimax-h3/text-to-video';
+const MINIMAX_H3_I2V_MODEL = 'wavespeed-ai/minimax-h3/image-to-video';
+const MINIMAX_H3_REF_MODEL = 'wavespeed-ai/minimax-h3/reference-to-video';
+
 const POLL_MAX_ATTEMPTS = 180; // ~9 min a 3s
 const POLL_INTERVAL_MS = 3_000;
 
-export type WavespeedVideoResolution = '480p' | '720p' | '1080p';
+export type WavespeedVideoResolution = '480p' | '720p' | '768p' | '1080p';
 export type SeedanceVideoResolution = '480p' | '720p' | '1080p' | '4k';
 export type WavespeedVideoPreset = 'tuned' | 'original';
 export type SeedanceAspectRatio = '16:9' | '9:16' | '4:3' | '3:4' | '1:1' | '21:9';
+
+/** MiniMax H3 — só expõe 480p (mais barato/rápido) e 768p (nativo). */
+export type MinimaxH3Resolution = '480p' | '768p';
+/** MiniMax H3 aspect ratios suportados (text/reference; image segue a imagem). */
+export type MinimaxH3AspectRatio =
+  | '16:9'
+  | '9:16'
+  | '1:1'
+  | '4:3'
+  | '3:4'
+  | '21:9'
+  | '9:21';
 
 export interface WavespeedImageToVideoInput {
   id: string;
@@ -45,6 +63,39 @@ export interface SeedanceSpicyImageToVideoInput {
   resolution: SeedanceVideoResolution;
   aspectRatio?: SeedanceAspectRatio;
   generateAudio: boolean;
+}
+
+export interface MinimaxH3TextToVideoInput {
+  id: string;
+  prompt: string;
+  durationSeconds: number;
+  resolution: MinimaxH3Resolution;
+  aspectRatio?: MinimaxH3AspectRatio;
+}
+
+export interface MinimaxH3ImageToVideoInput {
+  id: string;
+  prompt: string;
+  /** URL pública da imagem de entrada (primeiro frame). */
+  imageUrl: string;
+  /** URL pública do último frame (opcional — interpola do primeiro para este). */
+  lastImageUrl?: string;
+  durationSeconds: number;
+  resolution: MinimaxH3Resolution;
+}
+
+export interface MinimaxH3ReferenceToVideoInput {
+  id: string;
+  prompt: string;
+  durationSeconds: number;
+  resolution: MinimaxH3Resolution;
+  aspectRatio?: MinimaxH3AspectRatio;
+  /** URLs públicas — citadas no prompt como <Picture 1>..<Picture 9>. Máx 9. */
+  referenceImageUrls?: string[];
+  /** URLs públicas — <Video 1>..<Video 3>. Máx 3, 480p, total ≤15s. */
+  referenceVideoUrls?: string[];
+  /** URLs públicas — <Audio 1>..<Audio 3>. Máx 3, ≤15s cada. */
+  referenceAudioUrls?: string[];
 }
 
 interface CreatePredictionResponse {
@@ -161,6 +212,115 @@ export class WavespeedVideoProvider {
     const outputUrl = await this.downloadAndUpload(resultUrl, input.id, 0);
 
     return { outputUrls: [outputUrl], modelUsed: SEEDANCE_MODEL };
+  }
+
+  // ─── MiniMax H3 — text-to-video ──────────────────────────────
+  async generateMinimaxH3TextToVideo(
+    input: MinimaxH3TextToVideoInput,
+  ): Promise<GenerationResult> {
+    if (!this.apiKey) {
+      throw new Error(
+        'Não foi possível gerar o vídeo agora. Entre em contato com o suporte.',
+      );
+    }
+
+    const duration = Math.min(15, Math.max(5, Math.round(input.durationSeconds)));
+
+    this.logger.log(
+      `[MINIMAX_H3_T2V] gen=${input.id} resolution=${input.resolution} duration=${duration}s aspect=${input.aspectRatio ?? '16:9'} prompt="${input.prompt.slice(0, 80)}"`,
+    );
+
+    const body: Record<string, unknown> = {
+      prompt: input.prompt,
+      resolution: input.resolution,
+      duration,
+      seed: -1,
+    };
+    if (input.aspectRatio) body.aspect_ratio = input.aspectRatio;
+
+    const predictionId = await this.createPrediction(MINIMAX_H3_T2V_MODEL, body);
+    this.logger.log(`[MINIMAX_H3_T2V] prediction created: ${predictionId}`);
+
+    const resultUrl = await this.pollPrediction(predictionId);
+    const outputUrl = await this.downloadAndUpload(resultUrl, input.id, 0);
+
+    return { outputUrls: [outputUrl], modelUsed: MINIMAX_H3_T2V_MODEL };
+  }
+
+  // ─── MiniMax H3 — image-to-video (aspect segue a imagem) ─────
+  async generateMinimaxH3ImageToVideo(
+    input: MinimaxH3ImageToVideoInput,
+  ): Promise<GenerationResult> {
+    if (!this.apiKey) {
+      throw new Error(
+        'Não foi possível gerar o vídeo agora. Entre em contato com o suporte.',
+      );
+    }
+    if (!input.imageUrl) {
+      throw new Error('MiniMax H3: imagem de entrada ausente.');
+    }
+
+    const duration = Math.min(15, Math.max(5, Math.round(input.durationSeconds)));
+
+    this.logger.log(
+      `[MINIMAX_H3_I2V] gen=${input.id} resolution=${input.resolution} duration=${duration}s lastFrame=${input.lastImageUrl ? 'yes' : 'no'} prompt="${input.prompt.slice(0, 80)}"`,
+    );
+
+    const body: Record<string, unknown> = {
+      prompt: input.prompt,
+      image: input.imageUrl,
+      resolution: input.resolution,
+      duration,
+      seed: -1,
+    };
+    if (input.lastImageUrl) body.last_image = input.lastImageUrl;
+
+    const predictionId = await this.createPrediction(MINIMAX_H3_I2V_MODEL, body);
+    this.logger.log(`[MINIMAX_H3_I2V] prediction created: ${predictionId}`);
+
+    const resultUrl = await this.pollPrediction(predictionId);
+    const outputUrl = await this.downloadAndUpload(resultUrl, input.id, 0);
+
+    return { outputUrls: [outputUrl], modelUsed: MINIMAX_H3_I2V_MODEL };
+  }
+
+  // ─── MiniMax H3 — reference-to-video (multimodal) ────────────
+  async generateMinimaxH3ReferenceToVideo(
+    input: MinimaxH3ReferenceToVideoInput,
+  ): Promise<GenerationResult> {
+    if (!this.apiKey) {
+      throw new Error(
+        'Não foi possível gerar o vídeo agora. Entre em contato com o suporte.',
+      );
+    }
+
+    const duration = Math.min(15, Math.max(5, Math.round(input.durationSeconds)));
+
+    this.logger.log(
+      `[MINIMAX_H3_REF] gen=${input.id} resolution=${input.resolution} duration=${duration}s aspect=${input.aspectRatio ?? '16:9'} refImages=${input.referenceImageUrls?.length ?? 0} refVideos=${input.referenceVideoUrls?.length ?? 0} refAudios=${input.referenceAudioUrls?.length ?? 0} prompt="${input.prompt.slice(0, 80)}"`,
+    );
+
+    const body: Record<string, unknown> = {
+      prompt: input.prompt,
+      resolution: input.resolution,
+      duration,
+      seed: -1,
+    };
+    if (input.aspectRatio) body.aspect_ratio = input.aspectRatio;
+    if (input.referenceImageUrls?.length)
+      body.reference_images = input.referenceImageUrls.slice(0, 9);
+    if (input.referenceVideoUrls?.length)
+      body.reference_videos = input.referenceVideoUrls.slice(0, 3);
+    if (input.referenceAudioUrls?.length)
+      body.reference_audios = input.referenceAudioUrls.slice(0, 3);
+
+    const predictionId = await this.createPrediction(MINIMAX_H3_REF_MODEL, body);
+    this.logger.log(`[MINIMAX_H3_REF] prediction created: ${predictionId}`);
+
+    const resultUrl = await this.pollPrediction(predictionId);
+    const outputUrl = await this.downloadAndUpload(resultUrl, input.id, 0);
+
+    return { outputUrls: [outputUrl], modelUsed: MINIMAX_H3_REF_MODEL };
   }
 
   private async createPrediction(

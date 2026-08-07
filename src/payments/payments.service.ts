@@ -317,7 +317,9 @@ export class PaymentsService {
 
       let subscription;
       if (isRenewal && activeSub) {
-        // Renovação do mesmo plano: estende a partir do fim do período vigente
+        // Renovação: estende a partir do fim do período vigente. A PerfectPay pode
+        // trocar o plano DENTRO da mesma assinatura recorrente (mesmo PPSUB), então
+        // o planId sempre segue o plano do postback.
         const base =
           activeSub.currentPeriodEnd > now ? activeSub.currentPeriodEnd : now;
         const periodEnd = new Date(base);
@@ -325,6 +327,7 @@ export class PaymentsService {
         subscription = await tx.subscription.update({
           where: { id: activeSub.id },
           data: {
+            planId: plan.id,
             status: 'ACTIVE',
             currentPeriodStart: now,
             currentPeriodEnd: periodEnd,

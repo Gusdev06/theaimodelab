@@ -22,6 +22,8 @@ import {
   type WavespeedVideoResolution,
   type SeedanceVideoResolution,
   type SeedanceAspectRatio,
+  type MinimaxH3Resolution,
+  type MinimaxH3AspectRatio,
 } from '../providers/wavespeed-video.provider';
 import { SeedreamLiteProvider } from '../providers/seedream-lite.provider';
 import { SeedreamProvider } from '../providers/seedream.provider';
@@ -60,6 +62,9 @@ import {
   ComfyDeployImageToVideoJobData,
   WavespeedImageToVideoJobData,
   WavespeedSeedanceImageToVideoJobData,
+  MinimaxH3TextToVideoJobData,
+  MinimaxH3ImageToVideoJobData,
+  MinimaxH3ReferenceToVideoJobData,
   TextToSpeechJobData,
   VoiceCloneJobData,
 } from './generation-queue.constants';
@@ -172,6 +177,18 @@ export class GenerationProcessor extends WorkerHost {
       case GenerationJobName.WAVESPEED_SEEDANCE_IMAGE_TO_VIDEO:
         return this.processWavespeedSeedanceImageToVideo(
           data as WavespeedSeedanceImageToVideoJobData,
+        );
+      case GenerationJobName.MINIMAX_H3_TEXT_TO_VIDEO:
+        return this.processMinimaxH3TextToVideo(
+          data as MinimaxH3TextToVideoJobData,
+        );
+      case GenerationJobName.MINIMAX_H3_IMAGE_TO_VIDEO:
+        return this.processMinimaxH3ImageToVideo(
+          data as MinimaxH3ImageToVideoJobData,
+        );
+      case GenerationJobName.MINIMAX_H3_REFERENCE_TO_VIDEO:
+        return this.processMinimaxH3ReferenceToVideo(
+          data as MinimaxH3ReferenceToVideoJobData,
         );
       default:
         throw new Error(`Unknown job name: ${jobName}`);
@@ -1330,6 +1347,85 @@ export class GenerationProcessor extends WorkerHost {
       aspectRatio: data.aspectRatio as SeedanceAspectRatio | undefined,
       generateAudio: data.generateAudio,
     });
+    await this.completeGeneration(data.generationId, result, startTime);
+  }
+
+  // ─── WaveSpeed — MiniMax H3 (text/image/reference to video) ───
+  // Resolução DB -> string do WaveSpeed. RES_720P mapeia para '768p'
+  // (canvas nativo do MiniMax H3); RES_480P -> '480p'.
+  private static readonly MINIMAX_H3_RES_MAP: Record<
+    string,
+    MinimaxH3Resolution
+  > = {
+    RES_480P: '480p',
+    RES_720P: '768p',
+  };
+
+  private async processMinimaxH3TextToVideo(
+    data: MinimaxH3TextToVideoJobData,
+  ): Promise<void> {
+    const startTime = Date.now();
+    await this.markProcessingStarted(data.generationId);
+
+    this.logger.log(
+      `[MINIMAX_H3_TEXT_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s aspect=${data.aspectRatio ?? '16:9'} prompt="${data.prompt}"`,
+    );
+
+    const result = await this.wavespeedVideoProvider.generateMinimaxH3TextToVideo({
+      id: data.generationId,
+      prompt: data.prompt,
+      durationSeconds: data.durationSeconds,
+      resolution:
+        GenerationProcessor.MINIMAX_H3_RES_MAP[data.resolution] ?? '480p',
+      aspectRatio: data.aspectRatio as MinimaxH3AspectRatio | undefined,
+    });
+    await this.completeGeneration(data.generationId, result, startTime);
+  }
+
+  private async processMinimaxH3ImageToVideo(
+    data: MinimaxH3ImageToVideoJobData,
+  ): Promise<void> {
+    const startTime = Date.now();
+    await this.markProcessingStarted(data.generationId);
+
+    this.logger.log(
+      `[MINIMAX_H3_IMAGE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s lastFrame=${data.lastImageUrl ? 'yes' : 'no'} prompt="${data.prompt}"`,
+    );
+
+    const result = await this.wavespeedVideoProvider.generateMinimaxH3ImageToVideo({
+      id: data.generationId,
+      prompt: data.prompt,
+      imageUrl: data.imageUrl,
+      lastImageUrl: data.lastImageUrl,
+      durationSeconds: data.durationSeconds,
+      resolution:
+        GenerationProcessor.MINIMAX_H3_RES_MAP[data.resolution] ?? '480p',
+    });
+    await this.completeGeneration(data.generationId, result, startTime);
+  }
+
+  private async processMinimaxH3ReferenceToVideo(
+    data: MinimaxH3ReferenceToVideoJobData,
+  ): Promise<void> {
+    const startTime = Date.now();
+    await this.markProcessingStarted(data.generationId);
+
+    this.logger.log(
+      `[MINIMAX_H3_REFERENCE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s aspect=${data.aspectRatio ?? '16:9'} refImages=${data.referenceImageUrls?.length ?? 0} refVideos=${data.referenceVideoUrls?.length ?? 0} refAudios=${data.referenceAudioUrls?.length ?? 0} prompt="${data.prompt}"`,
+    );
+
+    const result =
+      await this.wavespeedVideoProvider.generateMinimaxH3ReferenceToVideo({
+        id: data.generationId,
+        prompt: data.prompt,
+        durationSeconds: data.durationSeconds,
+        resolution:
+          GenerationProcessor.MINIMAX_H3_RES_MAP[data.resolution] ?? '480p',
+        aspectRatio: data.aspectRatio as MinimaxH3AspectRatio | undefined,
+        referenceImageUrls: data.referenceImageUrls,
+        referenceVideoUrls: data.referenceVideoUrls,
+        referenceAudioUrls: data.referenceAudioUrls,
+      });
     await this.completeGeneration(data.generationId, result, startTime);
   }
 

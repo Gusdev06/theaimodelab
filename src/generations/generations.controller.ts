@@ -51,6 +51,9 @@ import { GenerateKlingImageToVideoDto } from './dto/videos/generate-kling-image-
 import { GenerateComfyDeployImageToVideoDto } from './dto/videos/generate-comfydeploy-image-to-video.dto';
 import { GenerateWavespeedImageToVideoDto } from './dto/videos/generate-wavespeed-image-to-video.dto';
 import { GenerateWavespeedSeedanceImageToVideoDto } from './dto/videos/generate-wavespeed-seedance-image-to-video.dto';
+import { GenerateMinimaxH3TextToVideoDto } from './dto/videos/generate-minimax-h3-text-to-video.dto';
+import { GenerateMinimaxH3ImageToVideoDto } from './dto/videos/generate-minimax-h3-image-to-video.dto';
+import { GenerateMinimaxH3ReferenceToVideoDto } from './dto/videos/generate-minimax-h3-reference-to-video.dto';
 import { GenerateTextToSpeechDto } from './dto/generate-text-to-speech.dto';
 import { GenerateVoiceCloneDto } from './dto/generate-voice-clone.dto';
 import { UnlimitedStatusResponseDto } from './dto/unlimited-status.dto';
@@ -351,6 +354,48 @@ export class GenerationsController {
     @Body() dto: GenerateWavespeedSeedanceImageToVideoDto,
   ): Promise<CreateGenerationResponseDto> {
     return this.generationsService.generateImageToVideoSeedanceWavespeed(userId, dto);
+  }
+
+  @Post('minimax-h3-text-to-video')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({
+    summary:
+      'Gera vídeo a partir de texto via WaveSpeed MiniMax H3 — 5-15s, 480p/768p, áudio nativo',
+  })
+  @ApiResponse({ status: 201, type: CreateGenerationResponseDto })
+  async minimaxH3TextToVideo(
+    @CurrentUser('sub') userId: string,
+    @Body() dto: GenerateMinimaxH3TextToVideoDto,
+  ): Promise<CreateGenerationResponseDto> {
+    return this.generationsService.generateMinimaxH3TextToVideo(userId, dto);
+  }
+
+  @Post('minimax-h3-image-to-video')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({
+    summary:
+      'Gera vídeo a partir de imagem via WaveSpeed MiniMax H3 — 5-15s, 480p/768p, áudio nativo, último frame opcional',
+  })
+  @ApiResponse({ status: 201, type: CreateGenerationResponseDto })
+  async minimaxH3ImageToVideo(
+    @CurrentUser('sub') userId: string,
+    @Body() dto: GenerateMinimaxH3ImageToVideoDto,
+  ): Promise<CreateGenerationResponseDto> {
+    return this.generationsService.generateMinimaxH3ImageToVideo(userId, dto);
+  }
+
+  @Post('minimax-h3-reference-to-video')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({
+    summary:
+      'Gera vídeo via WaveSpeed MiniMax H3 com referências (até 9 imagens, 3 vídeos, 3 áudios) — 5-15s, 480p/768p, áudio nativo',
+  })
+  @ApiResponse({ status: 201, type: CreateGenerationResponseDto })
+  async minimaxH3ReferenceToVideo(
+    @CurrentUser('sub') userId: string,
+    @Body() dto: GenerateMinimaxH3ReferenceToVideoDto,
+  ): Promise<CreateGenerationResponseDto> {
+    return this.generationsService.generateMinimaxH3ReferenceToVideo(userId, dto);
   }
 
   @Post('text-to-speech')

@@ -22,6 +22,9 @@ export enum GenerationJobName {
   COMFYDEPLOY_IMAGE_TO_VIDEO = 'comfydeploy-image-to-video',
   WAVESPEED_IMAGE_TO_VIDEO = 'wavespeed-image-to-video',
   WAVESPEED_SEEDANCE_IMAGE_TO_VIDEO = 'wavespeed-seedance-image-to-video',
+  MINIMAX_H3_TEXT_TO_VIDEO = 'minimax-h3-text-to-video',
+  MINIMAX_H3_IMAGE_TO_VIDEO = 'minimax-h3-image-to-video',
+  MINIMAX_H3_REFERENCE_TO_VIDEO = 'minimax-h3-reference-to-video',
 }
 
 interface BaseJobData {
@@ -193,6 +196,36 @@ export interface WavespeedSeedanceImageToVideoJobData extends BaseJobData {
   generateAudio: boolean;
 }
 
+// MiniMax H3 — resolução DB é RES_480P ou RES_720P (RES_720P mapeia p/ '768p'
+// no provider). Áudio nativo sempre on (generateAudio sempre true).
+export interface MinimaxH3TextToVideoJobData extends BaseJobData {
+  prompt: string;
+  resolution: string;
+  durationSeconds: number;
+  aspectRatio?: string;
+  generateAudio: boolean;
+}
+
+export interface MinimaxH3ImageToVideoJobData extends BaseJobData {
+  prompt: string;
+  resolution: string;
+  durationSeconds: number;
+  imageUrl: string;
+  lastImageUrl?: string;
+  generateAudio: boolean;
+}
+
+export interface MinimaxH3ReferenceToVideoJobData extends BaseJobData {
+  prompt: string;
+  resolution: string;
+  durationSeconds: number;
+  aspectRatio?: string;
+  referenceImageUrls?: string[];
+  referenceVideoUrls?: string[];
+  referenceAudioUrls?: string[];
+  generateAudio: boolean;
+}
+
 
 // Audio job shapes — no longer queued via BullMQ. Kept here as parameter
 // types for the GenerationProcessor's runTextToSpeechDirectly /
@@ -230,7 +263,10 @@ export type GenerationJobData =
   | KlingImageToVideoJobData
   | ComfyDeployImageToVideoJobData
   | WavespeedImageToVideoJobData
-  | WavespeedSeedanceImageToVideoJobData;
+  | WavespeedSeedanceImageToVideoJobData
+  | MinimaxH3TextToVideoJobData
+  | MinimaxH3ImageToVideoJobData
+  | MinimaxH3ReferenceToVideoJobData;
 
 export const IMAGE_JOB_TIMEOUT = 5 * 60 * 1000; // 5 min
 export const VIDEO_JOB_TIMEOUT = 12 * 60 * 1000; // 12 min

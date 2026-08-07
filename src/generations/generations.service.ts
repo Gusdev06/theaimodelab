@@ -55,6 +55,9 @@ import { GenerateKlingImageToVideoDto } from './dto/videos/generate-kling-image-
 import { GenerateComfyDeployImageToVideoDto } from './dto/videos/generate-comfydeploy-image-to-video.dto';
 import { GenerateWavespeedImageToVideoDto } from './dto/videos/generate-wavespeed-image-to-video.dto';
 import { GenerateWavespeedSeedanceImageToVideoDto } from './dto/videos/generate-wavespeed-seedance-image-to-video.dto';
+import { GenerateMinimaxH3TextToVideoDto } from './dto/videos/generate-minimax-h3-text-to-video.dto';
+import { GenerateMinimaxH3ImageToVideoDto } from './dto/videos/generate-minimax-h3-image-to-video.dto';
+import { GenerateMinimaxH3ReferenceToVideoDto } from './dto/videos/generate-minimax-h3-reference-to-video.dto';
 import { GenerateTextToSpeechDto } from './dto/generate-text-to-speech.dto';
 import { GenerateVoiceCloneDto } from './dto/generate-voice-clone.dto';
 
@@ -102,6 +105,8 @@ function getModelVariant(model: string | undefined | null): string | null {
     'wavespeed-ltx-spicy': 'WAVESPEED_LTX_SPICY',
     // WaveSpeed (Seedance 2.0 Fast Spicy — image-to-video, NSFW)
     'wavespeed-seedance-spicy': 'WAVESPEED_SEEDANCE_SPICY',
+    // WaveSpeed (MiniMax H3 — text/image/reference to video, áudio nativo)
+    'wavespeed-minimax-h3': 'WAVESPEED_MINIMAX_H3',
     // KIE API (Seedream Lite) — unificado: T2I se sem images, I2I se com images
     'seedream-5-lite': 'SEEDREAM_LITE',
     // Deepdeep API (n88ed) — image-to-image, requer imagem de input
@@ -159,6 +164,9 @@ import {
   ComfyDeployImageToVideoJobData,
   WavespeedImageToVideoJobData,
   WavespeedSeedanceImageToVideoJobData,
+  MinimaxH3TextToVideoJobData,
+  MinimaxH3ImageToVideoJobData,
+  MinimaxH3ReferenceToVideoJobData,
   TextToVideoGrokJobData,
   OmniVideoJobData,
   OmniVideoClipData,
@@ -2981,6 +2989,288 @@ CRITICAL REQUIREMENTS:
         aspectRatio: dto.aspect_ratio,
         generateAudio,
       } satisfies WavespeedSeedanceImageToVideoJobData,
+    );
+
+    return {
+      id: generation.id,
+      status: GenerationStatus.PROCESSING,
+      creditsConsumed: creditsRequired,
+    };
+  }
+
+  // ─── WaveSpeed — MiniMax H3 (text/image/reference to video) ───
+  // Áudio nativo sempre incluso (hasAudio: true). 768p mapeia p/ RES_720P.
+
+  async generateMinimaxH3TextToVideo(
+    userId: string,
+    dto: GenerateMinimaxH3TextToVideoDto,
+  ): Promise<CreateGenerationResponseDto> {
+    const type = GenerationType.TEXT_TO_VIDEO;
+    const model = 'wavespeed-minimax-h3';
+    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const resolution = dto.resolution ?? Resolution.RES_480P;
+
+    await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
+
+    const creditsRequired = await this.plansService.calculateGenerationCost(
+      type,
+      resolution,
+      dto.duration_seconds,
+      true,
+      1,
+      modelVariant,
+    );
+
+    await this.checkConcurrentLimit(userId);
+    await this.ensureSufficientBalance(userId, creditsRequired);
+
+    const generation = await this.prisma.generation.create({
+      data: {
+        userId,
+        type,
+        status: GenerationStatus.PROCESSING,
+        prompt: dto.prompt,
+        modelUsed: model,
+        resolution,
+        durationSeconds: dto.duration_seconds,
+        hasAudio: true,
+        aspectRatio: dto.aspect_ratio,
+        creditsConsumed: creditsRequired,
+        parameters: { provider: 'wavespeed', mode: 'text' },
+      },
+    });
+
+    await this.debitCredits(userId, creditsRequired, generation.id, type, resolution);
+
+    await this.generationQueue.add(GenerationJobName.MINIMAX_H3_TEXT_TO_VIDEO, {
+      generationId: generation.id,
+      userId,
+      creditsConsumed: creditsRequired,
+      prompt: dto.prompt,
+      resolution,
+      durationSeconds: dto.duration_seconds,
+      aspectRatio: dto.aspect_ratio,
+      generateAudio: true,
+    } satisfies MinimaxH3TextToVideoJobData);
+
+    return {
+      id: generation.id,
+      status: GenerationStatus.PROCESSING,
+      creditsConsumed: creditsRequired,
+    };
+  }
+
+  async generateMinimaxH3ImageToVideo(
+    userId: string,
+    dto: GenerateMinimaxH3ImageToVideoDto,
+  ): Promise<CreateGenerationResponseDto> {
+    const type = GenerationType.IMAGE_TO_VIDEO;
+    const model = 'wavespeed-minimax-h3';
+    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const resolution = dto.resolution ?? Resolution.RES_480P;
+
+    await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
+
+    const creditsRequired = await this.plansService.calculateGenerationCost(
+      type,
+      resolution,
+      dto.duration_seconds,
+      true,
+      1,
+      modelVariant,
+    );
+
+    await this.checkConcurrentLimit(userId);
+    await this.ensureSufficientBalance(userId, creditsRequired);
+
+    const generation = await this.prisma.generation.create({
+      data: {
+        userId,
+        type,
+        status: GenerationStatus.PROCESSING,
+        prompt: dto.prompt,
+        modelUsed: model,
+        resolution,
+        durationSeconds: dto.duration_seconds,
+        hasAudio: true,
+        creditsConsumed: creditsRequired,
+        parameters: { provider: 'wavespeed', mode: 'image' },
+      },
+    });
+
+    const firstFrameUrl = await this.uploadBase64ImagePublic(
+      dto.first_frame,
+      dto.first_frame_mime_type ?? 'image/jpeg',
+      generation.id,
+    );
+
+    let lastFrameUrl: string | undefined;
+    if (dto.last_frame) {
+      lastFrameUrl = await this.uploadBase64ImagePublic(
+        dto.last_frame,
+        dto.last_frame_mime_type ?? 'image/jpeg',
+        generation.id,
+      );
+    }
+
+    await this.prisma.generationInputImage.createMany({
+      data: [
+        {
+          generationId: generation.id,
+          role: GenerationImageRole.FIRST_FRAME,
+          mimeType: dto.first_frame_mime_type ?? 'image/jpeg',
+          order: 0,
+          url: firstFrameUrl,
+        },
+        ...(lastFrameUrl
+          ? [
+              {
+                generationId: generation.id,
+                role: GenerationImageRole.LAST_FRAME,
+                mimeType: dto.last_frame_mime_type ?? 'image/jpeg',
+                order: 1,
+                url: lastFrameUrl,
+              },
+            ]
+          : []),
+      ],
+    });
+
+    await this.debitCredits(userId, creditsRequired, generation.id, type, resolution);
+
+    await this.generationQueue.add(GenerationJobName.MINIMAX_H3_IMAGE_TO_VIDEO, {
+      generationId: generation.id,
+      userId,
+      creditsConsumed: creditsRequired,
+      prompt: dto.prompt,
+      resolution,
+      durationSeconds: dto.duration_seconds,
+      imageUrl: firstFrameUrl,
+      lastImageUrl: lastFrameUrl,
+      generateAudio: true,
+    } satisfies MinimaxH3ImageToVideoJobData);
+
+    return {
+      id: generation.id,
+      status: GenerationStatus.PROCESSING,
+      creditsConsumed: creditsRequired,
+    };
+  }
+
+  async generateMinimaxH3ReferenceToVideo(
+    userId: string,
+    dto: GenerateMinimaxH3ReferenceToVideoDto,
+  ): Promise<CreateGenerationResponseDto> {
+    const type = GenerationType.REFERENCE_VIDEO;
+    const model = 'wavespeed-minimax-h3';
+    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const resolution = dto.resolution ?? Resolution.RES_480P;
+
+    const hasReferenceImages = (dto.reference_images?.length ?? 0) > 0;
+    const hasReferenceVideos = (dto.reference_videos?.length ?? 0) > 0;
+    const hasReferenceAudios = (dto.reference_audios?.length ?? 0) > 0;
+    if (!hasReferenceImages && !hasReferenceVideos && !hasReferenceAudios) {
+      throw new BadRequestException(
+        'MiniMax H3 reference-to-video requer ao menos uma referência (imagem, vídeo ou áudio).',
+      );
+    }
+
+    await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
+
+    const creditsRequired = await this.plansService.calculateGenerationCost(
+      type,
+      resolution,
+      dto.duration_seconds,
+      true,
+      1,
+      modelVariant,
+    );
+
+    await this.checkConcurrentLimit(userId);
+    await this.ensureSufficientBalance(userId, creditsRequired);
+
+    const generation = await this.prisma.generation.create({
+      data: {
+        userId,
+        type,
+        status: GenerationStatus.PROCESSING,
+        prompt: dto.prompt,
+        modelUsed: model,
+        resolution,
+        durationSeconds: dto.duration_seconds,
+        hasAudio: true,
+        aspectRatio: dto.aspect_ratio,
+        creditsConsumed: creditsRequired,
+        parameters: { provider: 'wavespeed', mode: 'reference' },
+      },
+    });
+
+    let referenceImageUrls: string[] | undefined;
+    let referenceVideoUrls: string[] | undefined;
+    let referenceAudioUrls: string[] | undefined;
+
+    if (hasReferenceImages && dto.reference_images) {
+      referenceImageUrls = await Promise.all(
+        dto.reference_images.map((img) =>
+          this.uploadBase64ImagePublic(
+            img.base64,
+            img.mime_type ?? 'image/jpeg',
+            generation.id,
+          ),
+        ),
+      );
+      await this.prisma.generationInputImage.createMany({
+        data: dto.reference_images.map((img, i) => ({
+          generationId: generation.id,
+          role: GenerationImageRole.REFERENCE,
+          mimeType: img.mime_type ?? 'image/jpeg',
+          order: i,
+          url: referenceImageUrls![i],
+        })),
+      });
+    }
+
+    if (hasReferenceVideos && dto.reference_videos) {
+      referenceVideoUrls = await Promise.all(
+        dto.reference_videos.map((vid) =>
+          this.uploadBase64ImagePublic(
+            vid.base64,
+            vid.mime_type ?? 'video/mp4',
+            generation.id,
+          ),
+        ),
+      );
+    }
+
+    if (hasReferenceAudios && dto.reference_audios) {
+      referenceAudioUrls = await Promise.all(
+        dto.reference_audios.map((aud) =>
+          this.uploadBase64ImagePublic(
+            aud.base64,
+            aud.mime_type ?? 'audio/mpeg',
+            generation.id,
+          ),
+        ),
+      );
+    }
+
+    await this.debitCredits(userId, creditsRequired, generation.id, type, resolution);
+
+    await this.generationQueue.add(
+      GenerationJobName.MINIMAX_H3_REFERENCE_TO_VIDEO,
+      {
+        generationId: generation.id,
+        userId,
+        creditsConsumed: creditsRequired,
+        prompt: dto.prompt,
+        resolution,
+        durationSeconds: dto.duration_seconds,
+        aspectRatio: dto.aspect_ratio,
+        referenceImageUrls,
+        referenceVideoUrls,
+        referenceAudioUrls,
+        generateAudio: true,
+      } satisfies MinimaxH3ReferenceToVideoJobData,
     );
 
     return {

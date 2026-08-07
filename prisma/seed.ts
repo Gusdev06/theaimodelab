@@ -423,6 +423,16 @@ async function main() {
     { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 335, isPerSecond: true },
     { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 835, isPerSecond: true },
 
+    // WaveSpeed MiniMax H3 (WAVESPEED_MINIMAX_H3) — modelo geral, áudio nativo sempre incluso, 5-15s, cobrado por segundo.
+    // Custo real WaveSpeed US$0,04/s (480p) e US$0,08/s (768p). Fórmula do projeto créditos = custo_USD × 3333 → 135 / 270 cr/s.
+    // RES_720P representa o tier 768p (evita migração do enum). Mesmos 3 modos: text/image/reference to video.
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_480P', hasAudio: true, modelVariant: 'WAVESPEED_MINIMAX_H3', creditsPerUnit: 135, isPerSecond: true },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'WAVESPEED_MINIMAX_H3', creditsPerUnit: 270, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: true, modelVariant: 'WAVESPEED_MINIMAX_H3', creditsPerUnit: 135, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'WAVESPEED_MINIMAX_H3', creditsPerUnit: 270, isPerSecond: true },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_480P', hasAudio: true, modelVariant: 'WAVESPEED_MINIMAX_H3', creditsPerUnit: 135, isPerSecond: true },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'WAVESPEED_MINIMAX_H3', creditsPerUnit: 270, isPerSecond: true },
+
     // Seedream Lite (SEEDREAM_LITE) — KIE API — 100cr basic (2K) / 135cr high (3K), T2I e I2I
     // Custo de provedor não documentado → bump proporcional +67% (v4→v5) para acompanhar as demais famílias.
     { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'SEEDREAM_LITE', creditsPerUnit: 100, isPerSecond: false },
@@ -636,6 +646,7 @@ async function main() {
     { slug: 'comfydeploy-wan', label: 'Wan (ComfyDeploy)', provider: 'COMFYDEPLOY' as const, modelVariant: 'COMFYDEPLOY_WAN', sortOrder: 8 },
     { slug: 'wavespeed-ltx-spicy', label: 'LTX 2.3 Spicy ( NSFW )', provider: 'WAVESPEED' as const, modelVariant: 'WAVESPEED_LTX_SPICY', sortOrder: 9 },
     { slug: 'wavespeed-seedance-spicy', label: 'Seedance 2.0 Fast Spicy ( NSFW )', provider: 'WAVESPEED' as const, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', sortOrder: 10 },
+    { slug: 'wavespeed-minimax-h3', label: 'MiniMax H3', provider: 'WAVESPEED' as const, modelVariant: 'WAVESPEED_MINIMAX_H3', sortOrder: 11 },
     {
       slug: 'avatar-video',
       label: 'Vídeo com avatar (HeyGen)',
