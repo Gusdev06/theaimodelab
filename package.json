@@ -24,7 +24,8 @@
     "recovery:export:portals": "ts-node scripts/recover-failed-payments.ts --export --with-portal-urls",
     "recovery:preview": "ts-node scripts/preview-recovery-emails.ts",
     "recovery:coupon": "ts-node scripts/create-recovery-coupon.ts",
-    "recovery:send": "ts-node scripts/send-recovery-campaign.ts"
+    "recovery:send": "ts-node scripts/send-recovery-campaign.ts",
+    "announce:minimax": "ts-node scripts/announce-minimax-h3.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",

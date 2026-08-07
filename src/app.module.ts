@@ -44,6 +44,7 @@ import { VoicesModule } from './voices/voices.module';
 import { InworldVoicesModule } from './inworld-voices/inworld-voices.module';
 import { AdminEmailsModule } from './admin-emails/admin-emails.module';
 import { ResendWebhooksModule } from './resend-webhooks/resend-webhooks.module';
+import { EmailPreferencesModule } from './email-preferences/email-preferences.module';
 import { AvatarsModule } from './avatars/avatars.module';
 import { UnlimitedModule } from './unlimited/unlimited.module';
 import { WorkspacesModule } from './workspaces/workspaces.module';
@@ -132,6 +133,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
     NotificationsModule,
     AdminEmailsModule,
     ResendWebhooksModule,
+    EmailPreferencesModule,
     AvatarsModule,
     UnlimitedModule,
     MetaModule,

@@ -30,6 +30,7 @@ model User {
   currency                String                    @default("BRL")
   locale                  String                    @default("pt-BR")
   timezone                String?
+  marketingOptOut         Boolean                   @default(false) @map("marketing_opt_out")
   unlimitedModeImage      Boolean                   @default(false) @map("unlimited_mode_image")
   unlimitedModeVideo      Boolean                   @default(false) @map("unlimited_mode_video")
   fbclid                  String?
