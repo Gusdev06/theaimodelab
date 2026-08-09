@@ -1,24 +1,41 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as sharp from 'sharp';
 import { UploadsService } from '../../uploads/uploads.service';
 import { GenerationResult } from './theaimodelab.provider';
 import { ContentSafetyError } from '../errors/content-safety.error';
 
-// Seedream V5.0 Pro na WaveSpeed. Sem imagem de referência usamos o endpoint
-// text-to-image; com imagem(ns), o endpoint de edição (image-to-image).
-const WS_MODEL_T2I = 'bytedance/seedream-v5.0-pro';
-const WS_MODEL_EDIT = 'bytedance/seedream-v5.0-pro/edit';
+// Seedream V5.0 Pro na KIE (api.kie.ai). Sem imagem de referência usamos o
+// modelo text-to-image; com imagem(ns), o modelo image-to-image (edição).
+// Reutiliza a mesma conta/credenciais da KIE (NANO_BANANA_*), como o
+// SeedreamLiteProvider — não há env própria.
+const KIE_MODEL_T2I = 'seedream/5-pro-text-to-image';
+const KIE_MODEL_I2I = 'seedream/5-pro-image-to-image';
 
-// WaveSpeed só cobra por dois tiers: 1k (barato) e 2k (caro). Não há mais 4K.
-const RESOLUTION_MAP: Record<string, '1k' | '2k'> = {
-  RES_1K: '1k',
-  RES_2K: '2k',
-  RES_4K: '2k', // legado -> tier máximo disponível
+// KIE Seedream Pro: `quality` basic → 1K, high → 2K (não há 4K).
+const QUALITY_MAP: Record<string, 'basic' | 'high'> = {
+  RES_1K: 'basic',
+  RES_2K: 'high',
+  RES_4K: 'high', // legado -> tier máximo disponível
 };
 
-function mapResolution(resolution?: string): '1k' | '2k' {
-  return (resolution && RESOLUTION_MAP[resolution]) || '2k';
-}
+// Códigos de fail retornados pela KIE que indicam moderação de conteúdo.
+const SEEDREAM_SAFETY_FAIL_CODES = new Set(['430']);
+
+// Proporções suportadas pela KIE Seedream Pro. O valor numérico é usado para
+// casar com a proporção da imagem de entrada quando o request não especifica
+// aspect (antigo `match_input_image` da WaveSpeed).
+const SUPPORTED_ASPECTS: { label: string; ratio: number }[] = [
+  { label: '1:1', ratio: 1 },
+  { label: '4:3', ratio: 4 / 3 },
+  { label: '3:4', ratio: 3 / 4 },
+  { label: '16:9', ratio: 16 / 9 },
+  { label: '9:16', ratio: 9 / 16 },
+  { label: '3:2', ratio: 3 / 2 },
+  { label: '2:3', ratio: 2 / 3 },
+  { label: '21:9', ratio: 21 / 9 },
+];
+const SUPPORTED_ASPECT_LABELS = new Set(SUPPORTED_ASPECTS.map((a) => a.label));
 
 const SAFETY_INSTRUCTION =
   'The subject is fully clothed in complete, opaque everyday attire that covers the chest, torso, ' +
@@ -26,8 +43,8 @@ const SAFETY_INSTRUCTION =
   'fashion-forward outfits are allowed when the prompt asks for them, as long as the chest, nipples, ' +
   'groin, and buttocks remain fully covered by opaque fabric.';
 
-// Limite defensivo de tamanho do prompt.
-const MAX_PROMPT_LENGTH = 4000;
+// Limite defensivo de tamanho do prompt (KIE Seedream Pro aceita até 5000 chars).
+const MAX_PROMPT_LENGTH = 5000;
 
 function applySafetyWrapper(prompt: string): string {
   const separator = '\n\n';
@@ -67,22 +84,32 @@ export interface SeedreamImageInput {
   modelUsedTag?: string;
 }
 
-interface CreatePredictionResponse {
-  data?: { id?: string };
-  id?: string;
-  code?: number;
-  message?: string;
+interface CreateTaskResponse {
+  code: number;
+  msg: string;
+  data: { taskId: string } | null;
 }
 
-interface PredictionResultResponse {
-  code?: number;
-  message?: string;
-  data?: {
-    id: string;
-    status: 'created' | 'processing' | 'completed' | 'failed';
-    outputs?: string[];
-    error?: string;
-  };
+interface RecordInfoResponse {
+  code: number;
+  msg: string;
+  data: {
+    taskId: string;
+    model: string;
+    state: 'waiting' | 'queuing' | 'generating' | 'success' | 'fail';
+    param?: string;
+    resultJson?: string;
+    failCode?: string;
+    failMsg?: string;
+    costTime?: number;
+    completeTime?: number;
+    createTime?: number;
+    updateTime?: number;
+  } | null;
+}
+
+interface ResultJsonPayload {
+  resultUrls?: string[];
 }
 
 @Injectable()
@@ -96,26 +123,28 @@ export class SeedreamProvider {
     private readonly uploadsService: UploadsService,
   ) {
     this.baseUrl = this.configService.get<string>(
-      'WAVESPEED_BASE_URL',
-      'https://api.wavespeed.ai',
+      'NANO_BANANA_BASE_URL',
+      'https://api.kie.ai',
     );
-    this.apiKey = (this.configService.get<string>('WAVESPEED_API_KEY', '') ?? '').trim();
+    this.apiKey = (
+      this.configService.get<string>('NANO_BANANA_API_KEY', '') ?? ''
+    ).trim();
     if (!this.apiKey) {
       this.logger.warn(
-        'WAVESPEED_API_KEY is not set. Image generation will fail with a 401 from the provider.',
+        'NANO_BANANA_API_KEY (KIE) is not set. Image generation will fail with a 401 from the provider.',
       );
     }
   }
 
   async generateImage(input: SeedreamImageInput): Promise<GenerationResult> {
     if (!this.apiKey) {
-      this.logger.error('WAVESPEED_API_KEY is not configured.');
+      this.logger.error('NANO_BANANA_API_KEY (KIE) is not configured.');
       throw new Error(USER_ERRORS.configMissing);
     }
 
-    const resolution = mapResolution(input.resolution);
+    const quality = QUALITY_MAP[input.resolution] ?? 'high';
     const hasImages = !!input.imageUrls?.length;
-    const model = hasImages ? WS_MODEL_EDIT : WS_MODEL_T2I;
+    const model = hasImages ? KIE_MODEL_I2I : KIE_MODEL_T2I;
 
     // Prompt: undress (skipSafetyWrapper) passa cru; o resto ganha o wrapper que
     // mantém o personagem vestido.
@@ -123,32 +152,35 @@ export class SeedreamProvider {
       ? input.prompt.trim().slice(0, MAX_PROMPT_LENGTH)
       : applySafetyWrapper(input.prompt);
 
-    // `match_input_image` não existe na WaveSpeed: omitimos o campo e a API casa
-    // com a 1ª imagem. Sem imagem, default 1:1.
-    const requestedAspect = hasImages
-      ? (input.aspectRatio ?? 'match_input_image')
-      : (input.aspectRatio ?? '1:1');
-
-    const body: Record<string, unknown> = {
-      prompt: finalPrompt,
-      resolution,
-      output_format: 'jpeg',
-      enable_base64_output: false,
-      enable_sync_mode: false,
-    };
-    if (hasImages) body.images = input.imageUrls;
-    if (requestedAspect && requestedAspect !== 'match_input_image') {
-      body.aspect_ratio = requestedAspect;
-    }
+    // KIE exige aspect_ratio fixo (não tem `match_input_image`). Quando o request
+    // não define, derivamos da proporção da 1ª imagem de entrada.
+    const aspectRatio = await this.resolveAspectRatio(input);
 
     this.logger.log(
-      `Creating prediction: model=${model} resolution=${resolution} aspectRatio=${requestedAspect} imageUrls=${input.imageUrls?.length ?? 0} skipSafety=${!!input.skipSafetyWrapper} prompt="${input.prompt.slice(0, 120)}"`,
+      `[SEEDREAM_PRO] mode=${hasImages ? 'image-to-image' : 'text-to-image'} quality=${quality} aspectRatio=${aspectRatio} images=${input.imageUrls?.length ?? 0} skipSafety=${!!input.skipSafetyWrapper} prompt="${input.prompt.slice(0, 120)}"`,
     );
 
-    const predictionId = await this.createPrediction(model, body);
-    this.logger.log(`Seedream prediction created: ${predictionId}`);
+    const body = {
+      model,
+      input: {
+        prompt: finalPrompt,
+        aspect_ratio: aspectRatio,
+        quality,
+        output_format: 'jpeg',
+        // Este é o provider "sem-censura" (undress / face-swap unlocked /
+        // fallback de segurança) — nunca bloqueamos no checker da KIE.
+        nsfw_checker: false,
+        ...(hasImages ? { image_urls: input.imageUrls } : {}),
+      },
+    };
 
-    const resultUrls = await this.pollPrediction(predictionId);
+    const taskId = await this.submitTask(body);
+    this.logger.log(`[SEEDREAM_PRO] Task submitted: ${taskId}`);
+
+    const resultUrls = await this.pollTaskStatus(taskId);
+    this.logger.log(
+      `[SEEDREAM_PRO] Task ${taskId} completed — resultUrls=${resultUrls.length}`,
+    );
 
     const outputUrls: string[] = [];
     for (let i = 0; i < resultUrls.length; i++) {
@@ -164,20 +196,83 @@ export class SeedreamProvider {
     return { outputUrls, modelUsed: input.modelUsedTag ?? 'sem-censura' };
   }
 
-  private async createPrediction(
-    model: string,
-    body: Record<string, unknown>,
+  /**
+   * Resolve o `aspect_ratio` para um dos valores suportados pela KIE. Se o
+   * request especifica uma proporção válida, usa direto; caso contrário (vazio
+   * ou `match_input_image`), casa com a proporção da 1ª imagem de entrada.
+   */
+  private async resolveAspectRatio(
+    input: SeedreamImageInput,
   ): Promise<string> {
-    // Retry once em erros transientes (WaveSpeed às vezes devolve 401/429/5xx em
-    // chamadas concorrentes; um pequeno delay recupera).
+    const requested = input.aspectRatio?.trim();
+
+    if (requested && requested !== 'match_input_image') {
+      if (SUPPORTED_ASPECT_LABELS.has(requested)) return requested;
+      const parsed = this.parseRatio(requested);
+      if (parsed) return this.nearestAspect(parsed);
+      return '1:1';
+    }
+
+    // Sem aspect explícito: deriva da imagem de entrada (preserva o comportamento
+    // `match_input_image` da WaveSpeed, essencial no undress/face-swap).
+    const firstUrl = input.imageUrls?.[0];
+    if (firstUrl) {
+      try {
+        const ratio = await this.readImageAspect(firstUrl);
+        if (ratio) return this.nearestAspect(ratio);
+      } catch (error) {
+        this.logger.warn(
+          `[SEEDREAM_PRO] Could not read input image dimensions, defaulting to 1:1: ${(error as Error).message}`,
+        );
+      }
+    }
+    return '1:1';
+  }
+
+  private async readImageAspect(url: string): Promise<number | null> {
+    const response = await this.fetchWithTimeout(url, {}, 30_000);
+    if (!response.ok) return null;
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const meta = await sharp(buffer).metadata();
+    if (!meta.width || !meta.height) return null;
+    return meta.width / meta.height;
+  }
+
+  private nearestAspect(ratio: number): string {
+    let best = SUPPORTED_ASPECTS[0];
+    let bestDiff = Infinity;
+    for (const aspect of SUPPORTED_ASPECTS) {
+      // Diferença em escala logarítmica → mais perceptualmente correta.
+      const diff = Math.abs(Math.log(aspect.ratio) - Math.log(ratio));
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = aspect;
+      }
+    }
+    return best.label;
+  }
+
+  private parseRatio(value: string): number | null {
+    const match = value.match(/^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/);
+    if (!match) return null;
+    const w = parseFloat(match[1]);
+    const h = parseFloat(match[2]);
+    if (!w || !h) return null;
+    return w / h;
+  }
+
+  private async submitTask(body: Record<string, unknown>): Promise<string> {
+    const url = `${this.baseUrl}/api/v1/jobs/createTask`;
+
+    // Retry once em erros transientes (429/5xx).
     const maxAttempts = 2;
-    const transientStatuses = new Set([401, 408, 429, 500, 502, 503, 504]);
+    const transientStatuses = new Set([408, 429, 500, 502, 503, 504]);
     let lastErrorText = '';
     let lastStatus = 0;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const response = await this.fetchWithTimeout(
-        `${this.baseUrl}/api/v3/${model}`,
+        url,
         {
           method: 'POST',
           headers: this.headers(),
@@ -187,27 +282,28 @@ export class SeedreamProvider {
       );
 
       if (response.ok) {
-        const data = (await response.json()) as CreatePredictionResponse;
-        const predictionId = data.data?.id ?? data.id;
-        if (!predictionId) {
-          this.logger.error(
-            `WaveSpeed createPrediction missing id in response: ${JSON.stringify(data)}`,
-          );
-          throw new Error(USER_ERRORS.startFailed);
+        const data = (await response.json()) as CreateTaskResponse;
+        if (data.code === 200 && data.data?.taskId) {
+          return data.data.taskId;
         }
-        return predictionId;
+        // Moderação de conteúdo devolvida no corpo -> ContentSafetyError.
+        const safetyError = ContentSafetyError.fromErrorMessage(data.msg);
+        if (safetyError) throw safetyError;
+        this.logger.error(
+          `[SEEDREAM_PRO] createTask failed: ${data.msg} (code ${data.code})`,
+        );
+        throw new Error(USER_ERRORS.startFailed);
       }
 
       lastStatus = response.status;
       lastErrorText = await response.text();
 
-      // Moderação de conteúdo -> ContentSafetyError (aciona o fallback do processor).
       const safetyError = ContentSafetyError.fromErrorMessage(lastErrorText);
       if (safetyError) throw safetyError;
 
       if (attempt < maxAttempts && transientStatuses.has(response.status)) {
         this.logger.warn(
-          `[WAVESPEED_RETRY] createPrediction attempt=${attempt}/${maxAttempts} status=${response.status} body=${lastErrorText.slice(0, 200)}`,
+          `[SEEDREAM_PRO_RETRY] createTask attempt=${attempt}/${maxAttempts} status=${response.status} body=${lastErrorText.slice(0, 200)}`,
         );
         await new Promise((resolve) => setTimeout(resolve, 2_000));
         continue;
@@ -216,17 +312,16 @@ export class SeedreamProvider {
     }
 
     this.logger.error(
-      `WaveSpeed createPrediction failed status=${lastStatus} body=${lastErrorText}`,
+      `[SEEDREAM_PRO] createTask failed status=${lastStatus} body=${lastErrorText}`,
     );
     throw new Error(USER_ERRORS.startFailed);
   }
 
-  private async pollPrediction(
-    predictionId: string,
+  private async pollTaskStatus(
+    taskId: string,
     maxAttempts = 120,
-    intervalMs = 3_000,
+    intervalMs = 4_000,
   ): Promise<string[]> {
-    const getUrl = `${this.baseUrl}/api/v3/predictions/${predictionId}/result`;
     const maxNetworkRetries = 5;
     let networkFailures = 0;
 
@@ -235,17 +330,19 @@ export class SeedreamProvider {
         await new Promise((resolve) => setTimeout(resolve, intervalMs));
       }
 
+      const url = `${this.baseUrl}/api/v1/jobs/recordInfo?taskId=${taskId}`;
       let response: Response;
       try {
         response = await this.fetchWithTimeout(
-          getUrl,
+          url,
           { headers: this.headers() },
           30_000,
         );
+        networkFailures = 0;
       } catch (error) {
         networkFailures++;
         this.logger.warn(
-          `Poll fetch failed (${networkFailures}/${maxNetworkRetries}): ${(error as Error).message}`,
+          `[SEEDREAM_PRO POLL] Fetch failed (${networkFailures}/${maxNetworkRetries}): ${(error as Error).message}`,
         );
         if (networkFailures >= maxNetworkRetries) {
           throw new Error(USER_ERRORS.statusCheckFailed);
@@ -257,7 +354,7 @@ export class SeedreamProvider {
         networkFailures++;
         const errorText = await response.text();
         this.logger.warn(
-          `Poll HTTP error ${response.status} (${networkFailures}/${maxNetworkRetries}): ${errorText}`,
+          `[SEEDREAM_PRO POLL] HTTP error ${response.status} (${networkFailures}/${maxNetworkRetries}): ${errorText}`,
         );
         if (networkFailures >= maxNetworkRetries) {
           const safetyError = ContentSafetyError.fromErrorMessage(errorText);
@@ -268,34 +365,61 @@ export class SeedreamProvider {
       }
 
       networkFailures = 0;
-      const payload = (await response.json()) as PredictionResultResponse;
-      const data = payload.data;
-      if (!data) {
-        this.logger.error(
-          `WaveSpeed result empty payload for predictionId=${predictionId}`,
+      const data = (await response.json()) as RecordInfoResponse;
+
+      if (!data.data) {
+        this.logger.debug(
+          `[SEEDREAM_PRO POLL] No data in response (attempt ${attempt + 1}/${maxAttempts})`,
         );
-        throw new Error(USER_ERRORS.statusCheckFailed);
+        continue;
       }
 
-      if (data.status === 'completed') {
-        const output = data.outputs ?? [];
-        if (!output.length) {
-          throw new Error(USER_ERRORS.noOutput);
+      const { state } = data.data;
+
+      if (state === 'waiting' || state === 'queuing' || state === 'generating') {
+        this.logger.debug(
+          `[SEEDREAM_PRO POLL] state=${state} (attempt ${attempt + 1}/${maxAttempts})`,
+        );
+        continue;
+      }
+
+      if (state === 'fail') {
+        const failMsg = data.data.failMsg ?? data.msg ?? 'unknown error';
+        const failCode = data.data.failCode ?? '';
+        const fullMessage = `${failMsg}${failCode ? ` (${failCode})` : ''}`;
+
+        if (
+          SEEDREAM_SAFETY_FAIL_CODES.has(failCode) ||
+          ContentSafetyError.fromErrorMessage(failMsg)
+        ) {
+          throw new ContentSafetyError(fullMessage, failCode || undefined);
         }
-        return output;
-      }
 
-      if (data.status === 'failed') {
-        const errorStr = data.error ?? 'unknown error';
-        const safetyError = ContentSafetyError.fromErrorMessage(errorStr);
-        if (safetyError) throw safetyError;
-        this.logger.error(`Prediction failed: ${errorStr}`);
+        this.logger.error(`[SEEDREAM_PRO] Prediction failed: ${fullMessage}`);
         throw new Error(USER_ERRORS.generationFailed);
       }
 
-      this.logger.debug(
-        `WaveSpeed prediction ${predictionId} ${data.status} (attempt ${attempt + 1}/${maxAttempts})`,
-      );
+      if (state === 'success') {
+        if (!data.data.resultJson) {
+          throw new Error(USER_ERRORS.noOutput);
+        }
+
+        let payload: ResultJsonPayload;
+        try {
+          payload = JSON.parse(data.data.resultJson) as ResultJsonPayload;
+        } catch (err) {
+          this.logger.error(
+            `[SEEDREAM_PRO] Failed to parse resultJson: ${(err as Error).message}`,
+          );
+          throw new Error(USER_ERRORS.generationFailed);
+        }
+
+        const urls = payload.resultUrls ?? [];
+        if (!urls.length) {
+          throw new Error(USER_ERRORS.noOutput);
+        }
+        return urls;
+      }
     }
 
     throw new Error(USER_ERRORS.timeout);
@@ -314,14 +438,14 @@ export class SeedreamProvider {
         if (attempt > 0) {
           await new Promise((resolve) => setTimeout(resolve, 2_000));
           this.logger.warn(
-            `Retrying downloadAndUpload (${attempt + 1}/${maxRetries}) for ${generationId}`,
+            `[SEEDREAM_PRO] Retrying downloadAndUpload (${attempt + 1}/${maxRetries}) for ${generationId}`,
           );
         }
 
         const response = await this.fetchWithTimeout(sourceUrl, {}, 60_000);
         if (!response.ok) {
           this.logger.error(
-            `Download failed (${response.status}): ${sourceUrl}`,
+            `[SEEDREAM_PRO] Download failed (${response.status}): ${sourceUrl}`,
           );
           throw new Error(USER_ERRORS.downloadFailed);
         }
