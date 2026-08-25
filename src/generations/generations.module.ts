@@ -4,6 +4,7 @@ import { GenerationsController } from './generations.controller';
 import { GenerationsService } from './generations.service';
 import { GenerationEventsService } from './generation-events.service';
 import { GenerationProcessor } from './queue/generation.processor';
+import { OnboardingModule } from '../onboarding/onboarding.module';
 import { UnlimitedProcessor } from './queue/unlimited.processor';
 import {
   GENERATION_QUEUE,
@@ -40,6 +41,7 @@ import { VoicesModule } from '../voices/voices.module';
     PlansModule,
     UploadsModule,
     PromptEnhancerModule,
+    OnboardingModule,
     ModelsModule,
     VoicesModule,
     BullModule.registerQueue({

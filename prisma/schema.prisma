@@ -75,6 +75,7 @@ model User {
   voiceProfiles           VoiceProfile[]
   weeklyClaims            WeeklyClaim[]
   workspaces              Workspace[]
+  onboardingProfile       UserOnboardingProfile?
 
   @@index([email])
   @@index([oauthProvider, oauthProviderId])
@@ -214,6 +215,52 @@ model MarketingLead {
   @@index([utmCampaign])
   @@index([createdAt])
   @@map("marketing_leads")
+}
+
+/// Perfil de onboarding: respostas do quiz pós-signup + segmento derivado.
+/// Campos são String (não enum) de propósito: as perguntas do quiz mudam com
+/// teste A/B, e trocar opção não pode exigir migration.
+model UserOnboardingProfile {
+  id     String @id @default(cuid())
+  userId String @unique @map("user_id")
+
+  // Respostas — uma coluna por pergunta para ser filtrável sem operar JSON.
+  // Nullable porque o perfil é salvo de forma incremental a cada pergunta.
+  role         String? // solo_creator | ofm_operator | agency | telegram_bot
+  platform     String? // onlyfans | fanvue | telegram | instagram | not_launched
+  modelStatus  String? @map("model_status") // needs_first | has_one | has_many
+  contentMix   String? @map("content_mix") // photos | mixed | video_heavy
+  weeklyVolume String? @map("weekly_volume") // under_20 | from_20_to_60 | from_60_to_150 | over_150
+
+  /// Snapshot cru das respostas — à prova de perguntas novas que ainda não têm coluna.
+  answers Json?
+
+  // Derivados, congelados no momento da conclusão.
+  segment                 String? // identity | volume | scale | factory
+  recommendedPlan         String? @map("recommended_plan") // creator | pro | advanced | studio
+  estimatedMonthlyCredits Int?    @map("estimated_monthly_credits")
+
+  // Funil — permite medir drop-off por pergunta e retomar de onde parou.
+  lastStepReached Int       @default(0) @map("last_step_reached")
+  startedAt       DateTime  @default(now()) @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+
+  /// Quando o Starter Kit de gerações grátis foi concedido. Garante concessão única.
+  starterKitGrantedAt DateTime? @map("starter_kit_granted_at")
+
+  /// Primeira geração concluída — o evento de ativação.
+  activatedAt DateTime? @map("activated_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([segment])
+  @@index([recommendedPlan])
+  @@index([completedAt])
+  @@index([activatedAt])
+  @@map("user_onboarding_profiles")
 }
 
 model Subscription {

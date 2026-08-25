@@ -39,6 +39,7 @@ import { ModelsModule } from './models/models.module';
 import { PendingGrantsModule } from './pending-grants/pending-grants.module';
 import { FeedbackModule } from './feedback/feedback.module';
 import { RewardsModule } from './rewards/rewards.module';
+import { OnboardingModule } from './onboarding/onboarding.module';
 import { AnnouncementsModule } from './announcements/announcements.module';
 import { VoicesModule } from './voices/voices.module';
 import { InworldVoicesModule } from './inworld-voices/inworld-voices.module';
@@ -125,6 +126,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
     PendingGrantsModule,
     FeedbackModule,
     RewardsModule,
+    OnboardingModule,
     AnnouncementsModule,
     VoicesModule,
     InworldVoicesModule,

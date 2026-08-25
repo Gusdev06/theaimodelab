@@ -31,6 +31,7 @@ import { GptImageProvider } from '../providers/gpt-image.provider';
 import { DeepDeepProvider } from '../providers/deepdeep.provider';
 import { WavespeedAudioProvider } from '../providers/wavespeed-audio.provider';
 import { GenerationEventsService } from '../generation-events.service';
+import { OnboardingService } from '../../onboarding/onboarding.service';
 import { PromptEnhancerService } from '../../prompt-enhancer/prompt-enhancer.service';
 import { ContentSafetyError } from '../errors/content-safety.error';
 
@@ -114,6 +115,7 @@ export class GenerationProcessor extends WorkerHost {
     private readonly wavespeedAudioProvider: WavespeedAudioProvider,
     private readonly generationEvents: GenerationEventsService,
     private readonly promptEnhancer: PromptEnhancerService,
+    private readonly onboarding: OnboardingService,
   ) {
     super();
   }
@@ -1776,6 +1778,10 @@ export class GenerationProcessor extends WorkerHost {
         processingTimeMs,
       },
     });
+
+    // Ativação do onboarding: primeira geração concluída. Fire-and-forget —
+    // markActivated engole os próprios erros para nunca derrubar a entrega.
+    void this.onboarding.markActivated(updatedGeneration.userId);
 
     this.logger.log(
       `Generation ${generationId} completed in ${processingTimeMs}ms — ${result.outputUrls.length} output(s)`,
