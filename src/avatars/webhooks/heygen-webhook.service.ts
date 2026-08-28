@@ -6,6 +6,7 @@ import { CreditsService } from '../../credits/credits.service';
 import { UploadsService } from '../../uploads/uploads.service';
 import { HeyGenProvider } from '../providers/heygen.provider';
 import { AvatarsService } from '../avatars.service';
+import { classifyGenerationFailure } from '../../generations/errors/failure-reason';
 import { AvatarEventsService } from '../avatar-events.service';
 import { actualAvatarVideoCost } from '../avatars.constants';
 
@@ -266,14 +267,17 @@ export class HeyGenWebhookService {
         event.event_data.error?.message ??
         event.event_data.msg ??
         'A HeyGen retornou o vídeo com falha.';
-      const errorCode = event.event_data.error?.code ?? null;
+      // o código da HeyGen fica no log; em `error_code` vai o nosso vocabulário,
+      // que é o que o front usa pra dizer ao usuário o motivo real da falha
+      const heygenCode = event.event_data.error?.code ?? null;
+      const errorCode = classifyGenerationFailure(errorMessage);
 
       await this.prisma.generation.update({
         where: { id: generation.id },
         data: {
           status: GenerationStatus.FAILED,
           errorMessage: errorMessage.slice(0, 500),
-          errorCode: errorCode?.slice(0, 100),
+          errorCode,
           completedAt: new Date(),
         },
       });
@@ -285,7 +289,7 @@ export class HeyGenWebhookService {
           );
         });
       this.logger.warn(
-        `[heygen-webhook] video failed gen=${generation.id} error="${errorMessage}"`,
+        `[heygen-webhook] video failed gen=${generation.id} code=${errorCode} heygenCode=${heygenCode ?? '-'} error="${errorMessage}"`,
       );
       return;
     }
