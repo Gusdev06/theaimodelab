@@ -10,6 +10,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreditsService } from '../../credits/credits.service';
 import { UploadsService } from '../../uploads/uploads.service';
+import { classifyGenerationFailure } from '../../generations/errors/failure-reason';
 import { HeyGenProvider } from '../providers/heygen.provider';
 import { AvatarEventsService } from '../avatar-events.service';
 import { WavespeedAudioProvider } from '../../generations/providers/wavespeed-audio.provider';
@@ -408,6 +409,8 @@ export class AvatarProcessor extends WorkerHost {
       data: {
         status: GenerationStatus.FAILED,
         errorMessage: errorMessage.slice(0, 500),
+        // mesmo vocabulário de motivo do fluxo normal de geração
+        errorCode: classifyGenerationFailure(errorMessage),
         completedAt: new Date(),
       },
     });

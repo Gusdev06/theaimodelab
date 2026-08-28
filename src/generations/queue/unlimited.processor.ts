@@ -6,6 +6,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { GenerationEventsService } from '../generation-events.service';
 import { UnlimitedService } from '../../unlimited/unlimited.service';
 import { ContentSafetyError } from '../errors/content-safety.error';
+import {
+  classifyGenerationFailure,
+  GenerationFailureCode,
+  rawFailureText,
+} from '../errors/failure-reason';
 import { GenerationProcessor } from './generation.processor';
 import { GENERATION_UNLIMITED_QUEUE } from './generation-queue.constants';
 
@@ -106,12 +111,15 @@ export class UnlimitedProcessor extends WorkerHost {
     }
 
     const isSafetyError = error instanceof ContentSafetyError;
-    const errorCode = isSafetyError
-      ? 'CONTENT_SAFETY_BLOCKED'
-      : 'GENERATION_FAILED';
-    const userMessage = isSafetyError
-      ? 'A imagem ou texto enviado viola nossas diretrizes de conteúdo. Tente reformular seu prompt ou use outra imagem.'
-      : error.message;
+    // mesma classificação do fluxo normal — o front mostra o motivo pelo código
+    const errorCode = classifyGenerationFailure(
+      rawFailureText(error),
+      isSafetyError,
+    );
+    const userMessage =
+      errorCode === GenerationFailureCode.CONTENT_SAFETY_BLOCKED
+        ? 'A imagem ou texto enviado viola nossas diretrizes de conteúdo. Tente reformular seu prompt ou use outra imagem.'
+        : error.message;
 
     await this.prisma.generation.update({
       where: { id: generationId },

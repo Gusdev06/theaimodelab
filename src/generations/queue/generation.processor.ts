@@ -33,6 +33,11 @@ import { WavespeedAudioProvider } from '../providers/wavespeed-audio.provider';
 import { GenerationEventsService } from '../generation-events.service';
 import { PromptEnhancerService } from '../../prompt-enhancer/prompt-enhancer.service';
 import { ContentSafetyError } from '../errors/content-safety.error';
+import {
+  classifyGenerationFailure,
+  GenerationFailureCode,
+  rawFailureText,
+} from '../errors/failure-reason';
 
 import {
   GenerationStatus,
@@ -1839,11 +1844,16 @@ export class GenerationProcessor extends WorkerHost {
     }
 
     const isSafetyError = this.isSafetyRelatedError(error);
-    const errorCode = isSafetyError
-      ? 'CONTENT_SAFETY_BLOCKED'
-      : 'GENERATION_FAILED';
+    // classifica a mensagem CRUA do provedor num código estável — é ele que o
+    // front usa pra dizer ao usuário o motivo real da falha
+    const errorCode = classifyGenerationFailure(
+      rawFailureText(error),
+      isSafetyError,
+    );
+    const isContentBlock =
+      errorCode === GenerationFailureCode.CONTENT_SAFETY_BLOCKED;
 
-    const userMessage = isSafetyError
+    const userMessage = isContentBlock
       ? 'A imagem ou texto enviado viola nossas diretrizes de conteúdo. Tente reformular seu prompt ou use outra imagem.'
       : error.message;
 

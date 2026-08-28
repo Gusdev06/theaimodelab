@@ -4,6 +4,7 @@ import * as sharp from 'sharp';
 import { UploadsService } from '../../uploads/uploads.service';
 import { GenerationResult } from './theaimodelab.provider';
 import { ContentSafetyError } from '../errors/content-safety.error';
+import { ProviderFailureError } from '../errors/failure-reason';
 
 // Seedream V5.0 Pro na KIE (api.kie.ai). Sem imagem de referência usamos o
 // modelo text-to-image; com imagem(ns), o modelo image-to-image (edição).
@@ -396,7 +397,8 @@ export class SeedreamProvider {
         }
 
         this.logger.error(`[SEEDREAM_PRO] Prediction failed: ${fullMessage}`);
-        throw new Error(USER_ERRORS.generationFailed);
+        // texto amigável pro usuário, motivo técnico preservado pra classificação
+        throw new ProviderFailureError(USER_ERRORS.generationFailed, fullMessage);
       }
 
       if (state === 'success') {

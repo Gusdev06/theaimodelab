@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { UploadsService } from '../../uploads/uploads.service';
 import { GenerationResult } from './theaimodelab.provider';
+import { ProviderFailureError } from '../errors/failure-reason';
 
 /**
  * WaveSpeed — LTX 2.3 Spicy (image-to-video, NSFW).
@@ -342,8 +343,9 @@ export class WavespeedVideoProvider {
       this.logger.error(
         `WaveSpeed ${model} createPrediction failed status=${response.status} body=${errorText.slice(0, 300)}`,
       );
-      throw new Error(
+      throw new ProviderFailureError(
         'Não foi possível gerar o vídeo agora. Tente novamente em alguns instantes.',
+        `${response.status} ${errorText.slice(0, 300)}`,
       );
     }
 
@@ -377,8 +379,9 @@ export class WavespeedVideoProvider {
         this.logger.error(
           `WaveSpeed LTX result failed status=${response.status} predictionId=${predictionId} body=${errorText.slice(0, 200)}`,
         );
-        throw new Error(
+        throw new ProviderFailureError(
           'Não foi possível gerar o vídeo agora. Tente novamente em alguns instantes.',
+          `${response.status} ${errorText.slice(0, 200)}`,
         );
       }
 
