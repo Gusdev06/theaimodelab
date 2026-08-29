@@ -1,7 +1,13 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { FreeGenerationType, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  isEligibleForOnboarding,
   ONBOARDING_STARTER_KIT,
   ONBOARDING_TOTAL_STEPS,
   recommendPlan,
@@ -50,6 +56,8 @@ export class OnboardingService {
     userId: string,
     dto: SaveOnboardingProgressDto,
   ): Promise<OnboardingProfileResponseDto> {
+    await this.assertEligible(userId);
+
     const { step, ...answers } = dto;
     const data = this.stripUndefined(answers);
 
@@ -80,6 +88,8 @@ export class OnboardingService {
     userId: string,
     dto: CompleteOnboardingQuizDto,
   ): Promise<OnboardingProfileResponseDto> {
+    await this.assertEligible(userId);
+
     const answers: OnboardingAnswers = {
       role: dto.role,
       platform: dto.platform,
@@ -169,6 +179,26 @@ export class OnboardingService {
       this.logger.warn(
         `[ONBOARDING_ACTIVATION_FAILED] user=${userId}: ${String(err)}`,
       );
+    }
+  }
+
+  /**
+   * Barra a base anterior ao lançamento. O portão no front usa o mesmo corte,
+   * então na prática ninguém cai aqui — o guard existe para o Starter Kit não
+   * ser resgatável por quem chamar o endpoint na mão.
+   */
+  private async assertEligible(userId: string): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { createdAt: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Usuário não encontrado');
+    }
+
+    if (!isEligibleForOnboarding(user.createdAt)) {
+      throw new ForbiddenException('ONBOARDING_NOT_ELIGIBLE');
     }
   }
 

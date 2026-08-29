@@ -1,5 +1,7 @@
 import {
+  ONBOARDING_ELIGIBILITY_CUTOFF,
   ONBOARDING_STARTER_KIT,
+  isEligibleForOnboarding,
   estimateMonthlyCredits,
   recommendPlan,
   resolveFirstRun,
@@ -121,5 +123,23 @@ describe('ONBOARDING_STARTER_KIT', () => {
     expect(ONBOARDING_STARTER_KIT.NB2).toBeGreaterThan(0);
     expect(ONBOARDING_STARTER_KIT.SEM_CENSURA).toBeGreaterThan(0);
     expect(ONBOARDING_STARTER_KIT.THEAIMODELAB_FAST).toBeGreaterThan(0);
+  });
+});
+
+describe('isEligibleForOnboarding', () => {
+  it('libera quem se cadastrou no exato instante do corte', () => {
+    expect(isEligibleForOnboarding(new Date(ONBOARDING_ELIGIBILITY_CUTOFF))).toBe(
+      true,
+    );
+  });
+
+  it('libera quem se cadastrou depois do corte', () => {
+    const depois = new Date(ONBOARDING_ELIGIBILITY_CUTOFF.getTime() + 1000);
+    expect(isEligibleForOnboarding(depois)).toBe(true);
+  });
+
+  it('barra a base anterior ao lançamento', () => {
+    const antes = new Date(ONBOARDING_ELIGIBILITY_CUTOFF.getTime() - 1000);
+    expect(isEligibleForOnboarding(antes)).toBe(false);
   });
 });

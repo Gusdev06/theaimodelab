@@ -10,6 +10,23 @@ import { FreeGenerationType } from '@prisma/client';
 export const ONBOARDING_QUIZ_VERSION = 'v1';
 export const ONBOARDING_TOTAL_STEPS = 5;
 
+/**
+ * Corte de elegibilidade: o quiz (e o Starter Kit que ele concede) só valem
+ * para contas criadas a partir desta data. A base que já existia não é
+ * interrompida por cinco perguntas nem ganha gerações grátis retroativas —
+ * decisão do Gusta em 2026-08-29, na subida para produção.
+ *
+ * O front espelha este valor em `web/lib/onboarding.ts`. Mudou aqui, muda lá.
+ */
+export const ONBOARDING_ELIGIBILITY_CUTOFF = new Date(
+  '2026-08-29T00:00:00.000Z',
+);
+
+/** Contas anteriores ao corte não veem o quiz nem recebem o Starter Kit. */
+export function isEligibleForOnboarding(userCreatedAt: Date): boolean {
+  return userCreatedAt.getTime() >= ONBOARDING_ELIGIBILITY_CUTOFF.getTime();
+}
+
 export const ONBOARDING_ROLES = [
   'solo_creator',
   'ofm_operator',
