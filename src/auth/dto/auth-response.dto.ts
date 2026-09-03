@@ -22,6 +22,12 @@ export class UserResponseDto {
   @ApiProperty()
   hasCompletedOnboarding: boolean;
 
+  @ApiProperty({ required: false, nullable: true })
+  termsAcceptedAt?: Date | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  termsVersion?: string | null;
+
   @ApiProperty()
   createdAt: Date;
 }

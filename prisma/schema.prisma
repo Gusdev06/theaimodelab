@@ -46,6 +46,10 @@ model User {
   utmTerm                 String?                   @map("utm_term")
   asaasCustomerId         String?                   @unique @map("asaas_customer_id")
   taxId                   String?                   @map("tax_id")
+  /// Aceite explícito do termo de uso do produto (18+, responsabilidade, acesso ao conteúdo).
+  /// Versão permite reapresentar o termo quando o texto mudar — ver users/terms.constants.ts.
+  termsAcceptedAt         DateTime?                 @map("terms_accepted_at")
+  termsVersion            String?                   @map("terms_version")
   affiliateEarnings       AffiliateEarning[]        @relation("referred_user_earnings")
   affiliate               Affiliate?
   communityLikes          CommunityPostLike[]

@@ -274,6 +274,8 @@ export class AuthService {
       role: user.role,
       emailVerified: user.emailVerified,
       hasCompletedOnboarding: user.hasCompletedOnboarding,
+      termsAcceptedAt: user.termsAcceptedAt,
+      termsVersion: user.termsVersion,
       createdAt: user.createdAt,
     };
   }

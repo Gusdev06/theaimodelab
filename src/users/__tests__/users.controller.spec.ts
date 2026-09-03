@@ -16,6 +16,8 @@ const mockProfile: UserProfileResponseDto = {
   role: 'USER',
   emailVerified: false,
   hasCompletedOnboarding: false,
+  termsAcceptedAt: null,
+  termsVersion: null,
   createdAt: now,
   country: null,
   locale: 'pt-BR',

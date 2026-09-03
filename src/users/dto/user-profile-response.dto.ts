@@ -33,6 +33,10 @@ export class UserProfileResponseDto {
   @ApiProperty() emailVerified: boolean;
   @ApiProperty() createdAt: Date;
   @ApiProperty() hasCompletedOnboarding: boolean;
+  @ApiPropertyOptional({ description: "Quando o usuário aceitou o termo de uso do app. Null = ainda não aceitou." })
+  termsAcceptedAt: Date | null;
+  @ApiPropertyOptional({ description: "Versão do termo aceita (ex: 2026-09-03)." })
+  termsVersion: string | null;
   @ApiPropertyOptional() country: string | null;
   @ApiProperty() locale: string;
   @ApiProperty() currency: string;
