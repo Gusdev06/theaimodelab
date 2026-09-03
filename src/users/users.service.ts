@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserProfileResponseDto } from './dto/user-profile-response.dto';
+import { CURRENT_TERMS_VERSION } from './terms.constants';
 
 function maskTaxId(taxId: string | null): string | null {
   if (!taxId) return null;
@@ -45,6 +46,8 @@ export class UsersService {
       emailVerified: user.emailVerified,
       createdAt: user.createdAt,
       hasCompletedOnboarding: user.hasCompletedOnboarding,
+      termsAcceptedAt: user.termsAcceptedAt,
+      termsVersion: user.termsVersion,
       country: user.country,
       locale: user.locale,
       currency: user.currency,
@@ -108,6 +111,30 @@ export class UsersService {
         ...(dto.timezone !== undefined && { timezone: dto.timezone }),
       },
     });
+
+    return this.getProfile(userId);
+  }
+
+  /**
+   * Registra o aceite explícito do termo de uso do app (18+, responsabilidade
+   * pelo conteúdo, acesso da plataforma ao que é gerado). Idempotente na
+   * versão vigente: aceitou de novo, mantém a data original.
+   */
+  async acceptTerms(userId: string): Promise<UserProfileResponseDto> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId, isActive: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Usuário não encontrado');
+    }
+
+    if (user.termsVersion !== CURRENT_TERMS_VERSION) {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { termsAcceptedAt: new Date(), termsVersion: CURRENT_TERMS_VERSION },
+      });
+    }
 
     return this.getProfile(userId);
   }

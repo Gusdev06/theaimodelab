@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Patch,
+  Post,
   Delete,
   Body,
   HttpCode,
@@ -69,6 +70,21 @@ export class UsersController {
     @CurrentUser('sub') userId: string,
   ): Promise<UserProfileResponseDto> {
     return this.usersService.completeOnboarding(userId);
+  }
+
+  @Post('me/terms')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Aceitar o termo de uso do app (18+, responsabilidade, acesso ao conteúdo)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Aceite registrado (ou já vigente)',
+    type: UserProfileResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Não autenticado' })
+  async acceptTerms(
+    @CurrentUser('sub') userId: string,
+  ): Promise<UserProfileResponseDto> {
+    return this.usersService.acceptTerms(userId);
   }
 
   @Delete('me')
