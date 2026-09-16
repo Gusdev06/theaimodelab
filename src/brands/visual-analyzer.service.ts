@@ -8,6 +8,7 @@ import {
   ChatPart,
   TheaimodelabChatClient,
 } from '../prompt-enhancer/theaimodelab-chat.client';
+import { fitImageForVision } from '../common/utils/vision-image';
 
 const SYSTEM_PROMPT = `Você é um Visual Brand Analyzer. Sua função é receber UMA OU MAIS imagens de referência (logo, fotos de produto, anúncios de exemplo, materiais de identidade visual) e devolver um JSON único que sintetize a identidade visual da marca + observações por imagem.
 
@@ -174,17 +175,12 @@ export class VisualAnalyzerService {
           message: `Tipo não suportado (${contentType || 'desconhecido'}): ${url}`,
         });
       }
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length > 5 * 1024 * 1024) {
-        throw new BadRequestException({
-          code: 'FILE_TOO_LARGE',
-          message: `Imagem excede 5MB: ${url}`,
-        });
-      }
+      // Sem teto de tamanho: imagem grande é reduzida antes de ir pro modelo.
+      const fitted = await fitImageForVision(Buffer.from(await res.arrayBuffer()), contentType);
       return {
         inline_data: {
-          base64: buf.toString('base64'),
-          mime_type: contentType,
+          base64: fitted.buffer.toString('base64'),
+          mime_type: fitted.mimeType as MediaType,
         },
       };
     } finally {

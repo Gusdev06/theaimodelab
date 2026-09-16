@@ -8,6 +8,7 @@ import { CreditsService } from '../credits/credits.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreditTransactionType } from '@prisma/client';
 import { TheaimodelabChatClient, ChatPart } from '../prompt-enhancer/theaimodelab-chat.client';
+import { fitImageForVision } from '../common/utils/vision-image';
 
 const CREDIT_COST = 5;
 
@@ -216,16 +217,14 @@ export class PromptAgentService {
           message: 'Formato de imagem inválido. Use JPEG, PNG ou WebP em base64.',
         });
       }
-      const mime_type = match[1] as MediaType;
-      const data = match[3];
-      const sizeBytes = (data.length * 3) / 4;
-      if (sizeBytes > 5 * 1024 * 1024) {
-        throw new BadRequestException({
-          code: 'FILE_TOO_LARGE',
-          message: 'Imagem excede 5MB.',
-        });
-      }
-      return { inline_data: { base64: data, mime_type } };
+      // Sem teto de tamanho: imagem grande é reduzida antes de ir pro modelo.
+      const fitted = await fitImageForVision(Buffer.from(match[3], 'base64'), match[1]);
+      return {
+        inline_data: {
+          base64: fitted.buffer.toString('base64'),
+          mime_type: fitted.mimeType as MediaType,
+        },
+      };
     }
     if (/^https?:\/\//i.test(image)) {
       const fetched = await this.fetchImageAsBase64(image);
@@ -259,14 +258,8 @@ export class PromptAgentService {
           message: `Tipo de imagem não suportado: ${mime || 'desconhecido'}.`,
         });
       }
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length > 5 * 1024 * 1024) {
-        throw new BadRequestException({
-          code: 'FILE_TOO_LARGE',
-          message: 'Imagem excede 5MB.',
-        });
-      }
-      return { base64: buf.toString('base64'), mime_type: mime as MediaType };
+      const fitted = await fitImageForVision(Buffer.from(await res.arrayBuffer()), mime);
+      return { base64: fitted.buffer.toString('base64'), mime_type: fitted.mimeType as MediaType };
     } finally {
       clearTimeout(timeout);
     }
