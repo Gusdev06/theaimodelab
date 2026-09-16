@@ -11,6 +11,7 @@ export const VOICE_PROFILE_QUOTAS: Record<string, number> = {
   pro: 12,
   advanced: 15,
   studio: 15,
+  agency: 20,
 };
 
 export const FREE_PLAN_VOICE_QUOTA = VOICE_PROFILE_QUOTAS.free;

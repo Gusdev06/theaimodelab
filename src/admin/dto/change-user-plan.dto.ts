@@ -5,7 +5,7 @@ export class ChangeUserPlanDto {
   @ApiProperty({
     description: 'Slug do plano desejado',
     example: 'pro',
-    enum: ['free', 'starter', 'creator', 'pro', 'studio'],
+    enum: ['free', 'ultra-basic', 'starter', 'basic', 'creator', 'pro', 'advanced', 'studio', 'agency'],
   })
   @IsString()
   @IsNotEmpty()

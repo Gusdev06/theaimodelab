@@ -13,6 +13,8 @@ export class PlanResponseDto {
   @ApiProperty() hasWatermark: boolean;
   @ApiPropertyOptional() galleryRetentionDays: number | null;
   @ApiProperty() hasApiAccess: boolean;
+  @ApiProperty({ description: 'Posição na vitrine e ordem de upgrade (plans.sort_order)' })
+  sortOrder: number;
   @ApiPropertyOptional({ description: 'Link de checkout da assinatura mensal (Perfect Pay)' })
   checkoutUrl?: string | null;
 }

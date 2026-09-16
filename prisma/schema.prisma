@@ -100,6 +100,9 @@ model Plan {
   galleryRetentionDays     Int?           @map("gallery_retention_days")
   hasApiAccess             Boolean        @default(false) @map("has_api_access")
   isActive                 Boolean        @default(true) @map("is_active")
+  /// Aparece na vitrine (GET /plans em qualquer moeda). false = plano vivo só pra quem
+  /// já assina (renovação, webhook e upgrade continuam funcionando), oculto pra novos.
+  isPublic                 Boolean        @default(true) @map("is_public")
   sortOrder                Int            @default(0) @map("sort_order")
   stripePriceId            String?        @map("stripe_price_id")
   perfectpayPlanCode       String?        @map("perfectpay_plan_code")

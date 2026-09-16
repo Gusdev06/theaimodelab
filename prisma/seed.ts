@@ -23,6 +23,13 @@ const UNLIMITED_MODELS = {
     { modelVariant: 'NB2', resolutions: ['RES_1K'] },
     { modelVariant: 'NBP', resolutions: ['RES_1K'] },
   ],
+  // Agency (2026-09-16): tudo do Studio + NB2 em 2K.
+  agency: [
+    { modelVariant: 'THEAIMODELAB_FAST', resolutions: ['RES_720P', 'RES_1080P'] },
+    { modelVariant: 'THEAIMODELAB_QUALITY', resolutions: ['RES_720P', 'RES_1080P'] },
+    { modelVariant: 'NB2', resolutions: ['RES_1K', 'RES_2K'] },
+    { modelVariant: 'NBP', resolutions: ['RES_1K'] },
+  ],
 } as const;
 
 // Stripe Price IDs — lidos do .env (dev usa test IDs, prod usa live IDs)
@@ -52,6 +59,9 @@ const STRIPE = {
   planCreatorEur: process.env.STRIPE_PRICE_PLAN_CREATOR_EUR ?? '',
   planProEur: process.env.STRIPE_PRICE_PLAN_PRO_EUR ?? '',
   planStudioEur: process.env.STRIPE_PRICE_PLAN_STUDIO_EUR ?? '',
+  // ── Agency (2026-09-16) — sem Stripe; USD vem do fallback do controller / plan_prices ──
+  planAgencyUsd: process.env.STRIPE_PRICE_PLAN_AGENCY_USD ?? '',
+  planAgencyEur: process.env.STRIPE_PRICE_PLAN_AGENCY_EUR ?? '',
   // ── Legacy products (inactive) ──
   priceStarter: process.env.STRIPE_PRICE_STARTER ?? '',
   pricePro: process.env.STRIPE_PRICE_PRO ?? '',
@@ -87,6 +97,7 @@ const CHECKOUT = {
   pro: process.env.CHECKOUT_URL_PRO ?? 'https://checkout.centerpag.com/pay/PPU38CQDTOD',
   advanced: process.env.CHECKOUT_URL_ADVANCED ?? 'https://checkout.centerpag.com/pay/PPU38CQDTOH',
   studio: process.env.CHECKOUT_URL_STUDIO ?? 'https://checkout.centerpag.com/pay/PPU38CQDTOA',
+  agency: process.env.CHECKOUT_URL_AGENCY ?? 'https://checkout.centerpag.com/pay/PPU38CQG710',
 };
 
 // ── Cakto (gateway BRL, Brasil) — assinatura recorrente ──
@@ -102,6 +113,9 @@ const CAKTO_OFFERS: Record<string, string> = {
   pro: process.env.CAKTO_OFFER_PRO ?? '372vqec',
   advanced: process.env.CAKTO_OFFER_ADVANCED ?? 'ooy9qkc',
   studio: process.env.CAKTO_OFFER_STUDIO ?? '3a7idye',
+  // Agency: oferta ainda não criada na Cakto — sem env, a linha BRL não ganha checkoutUrl
+  // e o plano não aparece na vitrine BRL até o link existir.
+  ...(process.env.CAKTO_OFFER_AGENCY ? { agency: process.env.CAKTO_OFFER_AGENCY } : {}),
 };
 const caktoCheckoutUrl = (offer: string) => `https://pay.cakto.com.br/${offer}`;
 
@@ -117,6 +131,7 @@ const PERFECTPAY = {
   pro: process.env.PERFECTPAY_PLAN_PRO ?? 'PPLQQPTQS', // Plan Pro ($39,90)
   advanced: process.env.PERFECTPAY_PLAN_ADVANCED ?? 'PPLQQPTQV', // Plan Advanced ($54,90)
   studio: process.env.PERFECTPAY_PLAN_STUDIO ?? 'PPLQQPTQQ', // Plan Studio ($79,90)
+  agency: process.env.PERFECTPAY_PLAN_AGENCY ?? 'PPLQQQG9V', // Plan Agency ($199,90) — code do postback (16/09)
 };
 
 // ── Pacotes de crédito avulsos (top-up) — checkout de PAGAMENTO ÚNICO na Perfect Pay ──
@@ -175,13 +190,18 @@ async function main() {
 
   const planData = [
     // ── PLANOS MENSAIS ATIVOS (assinatura recorrente via Perfect Pay, 2026-07) ──
-    // Monetização é 100% assinatura mensal. Estes 4 são os únicos planos expostos
-    // em GET /api/v1/plans. checkoutUrl = link recorrente Perfect Pay (front redireciona);
+    // Monetização é 100% assinatura mensal. Estes 5 são os planos ativos; a vitrine
+    // (GET /api/v1/plans) mostra só os isPublic (Pro/Advanced/Studio/Agency). checkoutUrl = link recorrente Perfect Pay (front redireciona);
     // perfectpayPlanCode = casa o postback do webhook com o plano.
-    { slug: 'creator', update: { name: 'Creator', priceCents: 8990, creditsPerMonth: 12000, maxConcurrentGenerations: 3, hasWatermark: false, galleryRetentionDays: 180, hasApiAccess: false, isActive: true, sortOrder: 4, stripePriceId: STRIPE.planCreator, avatar_clone_enabled: true, avatar_clone_limit: 2, unlimitedPriority: 4, unlimitedModels: UNLIMITED_MODELS.creator, perfectpayPlanCode: PERFECTPAY.creator, checkoutUrl: CHECKOUT.creator }, create: { slug: 'creator', name: 'Creator', priceCents: 8990, creditsPerMonth: 12000, maxConcurrentGenerations: 3, hasWatermark: false, galleryRetentionDays: 180, hasApiAccess: false, sortOrder: 4, stripePriceId: STRIPE.planCreator, avatar_clone_enabled: true, avatar_clone_limit: 2, unlimitedPriority: 4, unlimitedModels: UNLIMITED_MODELS.creator, perfectpayPlanCode: PERFECTPAY.creator, checkoutUrl: CHECKOUT.creator } },
+    // Creator: vivo (renovação/webhook/upgrade) mas FORA da vitrine desde 2026-09-16 — entrada é o Pro.
+    { slug: 'creator', update: { name: 'Creator', priceCents: 8990, creditsPerMonth: 12000, maxConcurrentGenerations: 3, hasWatermark: false, galleryRetentionDays: 180, hasApiAccess: false, isActive: true, isPublic: false, sortOrder: 4, stripePriceId: STRIPE.planCreator, avatar_clone_enabled: true, avatar_clone_limit: 2, unlimitedPriority: 4, unlimitedModels: UNLIMITED_MODELS.creator, perfectpayPlanCode: PERFECTPAY.creator, checkoutUrl: CHECKOUT.creator }, create: { slug: 'creator', name: 'Creator', priceCents: 8990, creditsPerMonth: 12000, maxConcurrentGenerations: 3, hasWatermark: false, galleryRetentionDays: 180, hasApiAccess: false, isPublic: false, sortOrder: 4, stripePriceId: STRIPE.planCreator, avatar_clone_enabled: true, avatar_clone_limit: 2, unlimitedPriority: 4, unlimitedModels: UNLIMITED_MODELS.creator, perfectpayPlanCode: PERFECTPAY.creator, checkoutUrl: CHECKOUT.creator } },
     { slug: 'pro', update: { name: 'Pro', priceCents: 17990, creditsPerMonth: 30000, maxConcurrentGenerations: 5, hasWatermark: false, galleryRetentionDays: 365, hasApiAccess: false, isActive: true, sortOrder: 5, stripePriceId: STRIPE.planPro, avatar_clone_enabled: true, avatar_clone_limit: 5, unlimitedPriority: 3, unlimitedModels: UNLIMITED_MODELS.pro, perfectpayPlanCode: PERFECTPAY.pro, checkoutUrl: CHECKOUT.pro }, create: { slug: 'pro', name: 'Pro', priceCents: 17990, creditsPerMonth: 30000, maxConcurrentGenerations: 5, hasWatermark: false, galleryRetentionDays: 365, hasApiAccess: false, sortOrder: 5, stripePriceId: STRIPE.planPro, avatar_clone_enabled: true, avatar_clone_limit: 5, unlimitedPriority: 3, unlimitedModels: UNLIMITED_MODELS.pro, perfectpayPlanCode: PERFECTPAY.pro, checkoutUrl: CHECKOUT.pro } },
     { slug: 'advanced', update: { name: 'Advanced', priceCents: 24990, creditsPerMonth: 50000, maxConcurrentGenerations: 10, hasWatermark: false, galleryRetentionDays: null as number | null, hasApiAccess: true, isActive: true, sortOrder: 6, stripePriceId: STRIPE.planAdvanced, avatar_clone_enabled: true, avatar_clone_limit: 8, unlimitedPriority: 2, unlimitedModels: UNLIMITED_MODELS.advanced, perfectpayPlanCode: PERFECTPAY.advanced, checkoutUrl: CHECKOUT.advanced }, create: { slug: 'advanced', name: 'Advanced', priceCents: 24990, creditsPerMonth: 50000, maxConcurrentGenerations: 10, hasWatermark: false, galleryRetentionDays: null as number | null, hasApiAccess: true, sortOrder: 6, stripePriceId: STRIPE.planAdvanced, avatar_clone_enabled: true, avatar_clone_limit: 8, unlimitedPriority: 2, unlimitedModels: UNLIMITED_MODELS.advanced, perfectpayPlanCode: PERFECTPAY.advanced, checkoutUrl: CHECKOUT.advanced } },
     { slug: 'studio', update: { name: 'Studio', priceCents: 36990, creditsPerMonth: 80000, maxConcurrentGenerations: 10, hasWatermark: false, galleryRetentionDays: 365, hasApiAccess: true, isActive: true, sortOrder: 7, stripePriceId: STRIPE.planStudio, avatar_clone_enabled: true, avatar_clone_limit: 10, unlimitedPriority: 1, unlimitedModels: UNLIMITED_MODELS.studio, perfectpayPlanCode: PERFECTPAY.studio, checkoutUrl: CHECKOUT.studio }, create: { slug: 'studio', name: 'Studio', priceCents: 36990, creditsPerMonth: 80000, maxConcurrentGenerations: 10, hasWatermark: false, galleryRetentionDays: 365, hasApiAccess: true, sortOrder: 7, stripePriceId: STRIPE.planStudio, avatar_clone_enabled: true, avatar_clone_limit: 10, unlimitedPriority: 1, unlimitedModels: UNLIMITED_MODELS.studio, perfectpayPlanCode: PERFECTPAY.studio, checkoutUrl: CHECKOUT.studio } },
+    // Agency (2026-09-16): tier acima do Studio pro operador de vídeo/agência de OFM.
+    // Mesmo preço por crédito do Studio (US$ 1,00/1k) — o valor é capacidade, fila
+    // (prioridade 0 = passa na frente de todo mundo), concorrência e galeria ilimitada.
+    { slug: 'agency', update: { name: 'Agency', priceCents: 89990, creditsPerMonth: 200000, maxConcurrentGenerations: 20, hasWatermark: false, galleryRetentionDays: null as number | null, hasApiAccess: true, isActive: true, isPublic: true, sortOrder: 8, stripePriceId: STRIPE.planAgencyUsd, avatar_clone_enabled: true, avatar_clone_limit: 20, unlimitedPriority: 0, unlimitedModels: UNLIMITED_MODELS.agency, perfectpayPlanCode: PERFECTPAY.agency, checkoutUrl: CHECKOUT.agency }, create: { slug: 'agency', name: 'Agency', priceCents: 89990, creditsPerMonth: 200000, maxConcurrentGenerations: 20, hasWatermark: false, galleryRetentionDays: null as number | null, hasApiAccess: true, isPublic: true, sortOrder: 8, stripePriceId: STRIPE.planAgencyUsd, avatar_clone_enabled: true, avatar_clone_limit: 20, unlimitedPriority: 0, unlimitedModels: UNLIMITED_MODELS.agency, perfectpayPlanCode: PERFECTPAY.agency, checkoutUrl: CHECKOUT.agency } },
     // ── PLANOS DESATIVADOS (grandfathering — não expostos em /plans) ──
     // Mantidos no banco para assinantes legados; isActive:false os oculta da vitrine.
     // Sem plano Free: novos usuários precisam assinar para gerar.
@@ -230,16 +250,19 @@ async function main() {
     { slug: 'creator', currency: 'BRL', priceCents: 8990, stripePriceId: STRIPE.planCreator },
     { slug: 'pro', currency: 'BRL', priceCents: 17990, stripePriceId: STRIPE.planPro },
     { slug: 'studio', currency: 'BRL', priceCents: 36990, stripePriceId: STRIPE.planStudio },
+    { slug: 'agency', currency: 'BRL', priceCents: 89990, stripePriceId: '' },
     // USD
     { slug: 'starter', currency: 'USD', priceCents: 990, stripePriceId: STRIPE.planStarterUsd },
     { slug: 'creator', currency: 'USD', priceCents: 1990, stripePriceId: STRIPE.planCreatorUsd },
     { slug: 'pro', currency: 'USD', priceCents: 3990, stripePriceId: STRIPE.planProUsd },
     { slug: 'studio', currency: 'USD', priceCents: 7990, stripePriceId: STRIPE.planStudioUsd },
+    { slug: 'agency', currency: 'USD', priceCents: 19990, stripePriceId: STRIPE.planAgencyUsd },
     // EUR
     { slug: 'starter', currency: 'EUR', priceCents: 890, stripePriceId: STRIPE.planStarterEur },
     { slug: 'creator', currency: 'EUR', priceCents: 1890, stripePriceId: STRIPE.planCreatorEur },
     { slug: 'pro', currency: 'EUR', priceCents: 3790, stripePriceId: STRIPE.planProEur },
     { slug: 'studio', currency: 'EUR', priceCents: 7490, stripePriceId: STRIPE.planStudioEur },
+    { slug: 'agency', currency: 'EUR', priceCents: 18990, stripePriceId: STRIPE.planAgencyEur },
   ];
 
   const plansBySlug = new Map(plans.map((p) => [p.slug, p]));

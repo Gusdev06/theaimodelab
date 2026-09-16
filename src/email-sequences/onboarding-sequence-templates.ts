@@ -134,7 +134,7 @@ El primer paso toma menos de 2 minutos: elige un plan, entra al workspace y gene
 
 Não precisa de experiência com IA, edição ou design. A plataforma faz o trabalho pesado.
 
-O plano Creator ($19,90/mês) te dá 12.000 créditos — dá pra gerar **mais de 130 fotos por mês**, ou misturar fotos e vídeos.
+O plano Pro ($39,90/mês) te dá 30.000 créditos — dá pra gerar **mais de 220 fotos por mês**, ou misturar fotos e vídeos.
 
 [Quero minha modelo pronta hoje →](${appUrl}/checkout)
 
@@ -152,7 +152,7 @@ O plano Creator ($19,90/mês) te dá 12.000 créditos — dá pra gerar **mais d
 
 No experience with AI, editing or design required. The platform does the heavy lifting.
 
-The Creator plan ($19.90/mo) gives you 12,000 credits — enough for **over 130 photos a month**, or a mix of photos and videos.
+The Pro plan ($39.90/mo) gives you 30,000 credits — enough for **over 220 photos a month**, or a mix of photos and videos.
 
 [I want my model ready today →](${appUrl}/checkout)
 
@@ -170,7 +170,7 @@ The Creator plan ($19.90/mo) gives you 12,000 credits — enough for **over 130 
 
 No necesitas experiencia con IA, edición ni diseño. La plataforma hace el trabajo pesado.
 
-El plan Creator ($19.90/mes) te da 12,000 créditos — alcanza para **más de 130 fotos al mes**, o una mezcla de fotos y videos.
+El plan Pro ($39.90/mes) te da 30,000 créditos — alcanza para **más de 220 fotos al mes**, o una mezcla de fotos y videos.
 
 [Quiero mi modelo lista hoy →](${appUrl}/checkout)
 
@@ -249,7 +249,7 @@ Una persona. Un rostro. Contenido infinito.
 
 Tudo isso com a mesma persona, o mesmo rosto, sem fotógrafo, sem equipe e sem depender de modelo real.
 
-No plano Creator, 12.000 créditos/mês sustentam essa esteira: por exemplo, **~100 fotos + 5 vídeos por mês** — conteúdo novo todo dia, por menos de $0,70/dia.
+No plano Pro, 30.000 créditos/mês sustentam essa esteira: por exemplo, **~150 fotos + 5 vídeos por mês** — conteúdo novo todo dia, por cerca de $1,30/dia.
 
 [Montar minha esteira →](${appUrl}/checkout)
 
@@ -266,7 +266,7 @@ No plano Creator, 12.000 créditos/mês sustentam essa esteira: por exemplo, **~
 
 All of it with the same persona, the same face — no photographer, no team, no dependence on a real model.
 
-On the Creator plan, 12,000 credits/month sustain that pipeline: for example, **~100 photos + 5 videos per month** — fresh content every day for under $0.70/day.
+On the Pro plan, 30,000 credits/month sustain that pipeline: for example, **~150 photos + 5 videos per month** — fresh content every day for about $1.30/day.
 
 [Build my pipeline →](${appUrl}/checkout)
 
@@ -283,7 +283,7 @@ On the Creator plan, 12,000 credits/month sustain that pipeline: for example, **
 
 Todo con la misma persona, el mismo rostro, sin fotógrafo, sin equipo y sin depender de una modelo real.
 
-En el plan Creator, 12,000 créditos/mes sostienen ese pipeline: por ejemplo, **~100 fotos + 5 videos al mes** — contenido nuevo cada día por menos de $0.70/día.
+En el plan Pro, 30,000 créditos/mes sostienen ese pipeline: por ejemplo, **~150 fotos + 5 videos al mes** — contenido nuevo cada día por cerca de $1.30/día.
 
 [Armar mi pipeline →](${appUrl}/checkout)
 
@@ -364,14 +364,14 @@ Sin permanencia — cancela cuando quieras, directo en la plataforma. Y los cré
 
 Produzir com a AI Model Lab:
 
-- $19,90/mês
-- 130+ fotos ou uma esteira de fotos + vídeos
+- $39,90/mês
+- 220+ fotos ou uma esteira de fotos + vídeos
 - A modelo nunca cancela, nunca atrasa, nunca sai do projeto
 - E o rosto é **seu ativo** — ninguém pode levar embora
 
 Não é sobre gastar menos. É sobre ter uma operação que **escala sem depender de ninguém**.
 
-[Começar por $19,90/mês →](${appUrl}/checkout)
+[Começar por $39,90/mês →](${appUrl}/checkout)
 
 — Equipe AI Model Lab`,
       },
@@ -385,14 +385,14 @@ Não é sobre gastar menos. É sobre ter uma operação que **escala sem depende
 
 Producing with AI Model Lab:
 
-- $19.90/mo
-- 130+ photos, or a pipeline of photos + videos
+- $39.90/mo
+- 220+ photos, or a pipeline of photos + videos
 - Your model never cancels, never shows up late, never quits the project
 - And the face is **your asset** — nobody can take it away
 
 It's not about spending less. It's about running an operation that **scales without depending on anyone**.
 
-[Start for $19.90/mo →](${appUrl}/checkout)
+[Start for $39.90/mo →](${appUrl}/checkout)
 
 — The AI Model Lab team`,
       },
@@ -406,14 +406,14 @@ It's not about spending less. It's about running an operation that **scales with
 
 Producir con AI Model Lab:
 
-- $19.90/mes
-- 130+ fotos, o un pipeline de fotos + videos
+- $39.90/mes
+- 220+ fotos, o un pipeline de fotos + videos
 - Tu modelo nunca cancela, nunca llega tarde, nunca abandona el proyecto
 - Y el rostro es **tu activo** — nadie te lo puede quitar
 
 No se trata de gastar menos. Se trata de tener una operación que **escala sin depender de nadie**.
 
-[Empezar por $19.90/mes →](${appUrl}/checkout)
+[Empezar por $39.90/mes →](${appUrl}/checkout)
 
 — Equipo AI Model Lab`,
       },

@@ -55,9 +55,15 @@ export class PlansService {
     return record;
   }
 
+  /**
+   * Vitrine USD: planos ativos, públicos e com link de checkout. `isPublic:false`
+   * (ex.: Creator desde 2026-09-16) esconde da vitrine sem desativar — assinante
+   * antigo segue renovando. Sem checkoutUrl (ex.: Agency antes do link da Perfect
+   * Pay existir) o plano também fica de fora, igual à regra da vitrine BRL.
+   */
   async findAllPlans() {
     const plans = await this.prisma.plan.findMany({
-      where: { isActive: true },
+      where: { isActive: true, isPublic: true, checkoutUrl: { not: null } },
       orderBy: { sortOrder: 'asc' },
     });
     return plans.map((p) => this.overridePriceId(p, PLAN_PRICE_ENV));
@@ -68,10 +74,11 @@ export class PlansService {
    * MOEDA: expõe todo plano com um PlanPrice BRL ativo e link de checkout Cakto —
    * o que inclui tiers legados (ultra-basic/starter/basic) que ficam isActive:false
    * globalmente mas são vendidos na Cakto. Preço e checkoutUrl vêm da linha BRL.
+   * `Plan.isPublic:false` esconde aqui também (vale pras duas moedas).
    */
   async findBrlPublicPlans(): Promise<PlanResponseDto[]> {
     const prices = await this.prisma.planPrice.findMany({
-      where: { currency: 'BRL', isActive: true, checkoutUrl: { not: null } },
+      where: { currency: 'BRL', isActive: true, checkoutUrl: { not: null }, plan: { isPublic: true } },
       include: { plan: true },
     });
     return prices
@@ -89,6 +96,7 @@ export class PlansService {
         hasWatermark: pp.plan.hasWatermark,
         galleryRetentionDays: pp.plan.galleryRetentionDays,
         hasApiAccess: pp.plan.hasApiAccess,
+        sortOrder: pp.plan.sortOrder,
         checkoutUrl: pp.checkoutUrl,
       }));
   }

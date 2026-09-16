@@ -22,7 +22,13 @@ import { t } from '../common/i18n/t';
 import { MetaConversionsService, MetaRequestContext } from '../meta/meta-conversions.service';
 import { MetaEventContextDto } from '../meta/meta-event-context.dto';
 
-const PLAN_ORDER = ['free', 'ultra-basic', 'starter', 'basic', 'creator', 'pro', 'advanced', 'studio'];
+/**
+ * Ordem de upgrade/downgrade = `plans.sort_order` (o admin edita em /admin/planos).
+ * Antes era uma lista fixa de slugs aqui, que ignorava plano criado pelo admin.
+ * Retorna -1 pra plano sem sortOrder, mantendo o contrato dos `indexOf` antigos.
+ */
+const planRank = (plan: { sortOrder?: number | null } | null | undefined): number =>
+  plan && typeof plan.sortOrder === 'number' ? plan.sortOrder : -1;
 
 @Injectable()
 export class SubscriptionsService {
@@ -168,8 +174,8 @@ export class SubscriptionsService {
     let discountAmountCents = 0;
 
     if (current) {
-      const currentIdx = PLAN_ORDER.indexOf(current.plan.slug);
-      const newIdx = PLAN_ORDER.indexOf(newPlan.slug);
+      const currentIdx = planRank(current.plan);
+      const newIdx = planRank(newPlan);
 
       if (currentIdx === -1 || newIdx === -1) {
         throw new BadRequestException(
@@ -242,8 +248,8 @@ export class SubscriptionsService {
 
     const newPlan = await this.plansService.findPlanBySlug(planSlug);
 
-    const currentIdx = PLAN_ORDER.indexOf(current.plan.slug);
-    const newIdx = PLAN_ORDER.indexOf(newPlan.slug);
+    const currentIdx = planRank(current.plan);
+    const newIdx = planRank(newPlan);
 
     if (currentIdx === -1 || newIdx === -1) {
       throw new BadRequestException(
@@ -732,8 +738,8 @@ export class SubscriptionsService {
     let immediateValueCents: number | undefined;
 
     if (existing) {
-      const currentIdx = PLAN_ORDER.indexOf(existing.plan.slug);
-      const newIdx = PLAN_ORDER.indexOf(plan.slug);
+      const currentIdx = planRank(existing.plan);
+      const newIdx = planRank(plan);
 
       // Caso 1: TRIALING PIX Auto abandonada → limpa e segue criando nova
       const isStalePixAuto =

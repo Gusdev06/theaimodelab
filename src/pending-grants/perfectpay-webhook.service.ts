@@ -388,17 +388,29 @@ export class PerfectpayWebhookService {
   }
 
   /**
-   * Classifica o evento do postback em uma ação:
-   *  - 'paid'       → 2 (approved) ou 4 (completed): cria/renova assinatura.
-   *  - 'refund'     → 6 (estornado) ou detalhe de reembolso: revoga imediatamente.
-   *  - 'chargeback' → 7 (disputa/chargeback): revoga imediatamente.
-   *  - 'canceled'   → assinatura cancelada (recorrência interrompida): acesso até fim do período.
-   *  - 'ignore'     → pending e demais status.
+   * Classifica o evento do postback em uma ação. A verdade é `sale_status_enum_key`
+   * (validado com 396 postbacks reais em 2026-09-08):
+   *   approved / completed → 'paid'
+   *   refunded (enum 7)    → 'refund'      revoga imediatamente
+   *   charged_back (enum 9)→ 'chargeback'  revoga imediatamente
+   *   rejected (5) / cancelled (6) / expired (13) / pending / in_mediation → cobrança
+   *     recusada ou pendente. NÃO é reembolso: a Perfect Pay ainda vai tentar de novo.
+   *     Só vira 'canceled' (acesso até o fim do período) quando a própria assinatura
+   *     foi encerrada: `subscription.status_event` = subscription_expired (retentativas
+   *     esgotadas) ou subscription_canceled, ou `subscription.status` cancelled/inactive.
+   *
+   * Bug antigo: enum 6 era lido como "estornado" e revogava na hora — mas 6 é
+   * "cancelled" (cartão recusado). 57 clientes só em setembro/2026 perderam acesso
+   * numa recusa que a PP ainda estava retentando.
    */
   private classifyEvent(
     payload: any,
   ): 'paid' | 'refund' | 'chargeback' | 'canceled' | 'superseded' | 'ignore' {
     const status = payload?.sale_status_enum;
+    const key =
+      typeof payload?.sale_status_enum_key === 'string'
+        ? payload.sale_status_enum_key.toLowerCase()
+        : '';
     const detail =
       typeof payload?.sale_status_detail === 'string'
         ? payload.sale_status_detail.toLowerCase()
@@ -409,11 +421,15 @@ export class PerfectpayWebhookService {
         : typeof payload?.subscription_status === 'string'
           ? payload.subscription_status.toLowerCase()
           : '';
+    const subEvent =
+      typeof payload?.subscription?.status_event === 'string'
+        ? payload.subscription.status_event.toLowerCase()
+        : '';
 
-    if (status === 7 || /charge.?back|dispute|reclam/.test(detail)) {
+    if (key === 'charged_back' || status === 9 || /charge.?back|dispute/.test(detail)) {
       return 'chargeback';
     }
-    if (status === 6 || /refund|estorn|reembol|devolv/.test(detail)) {
+    if (key === 'refunded' || status === 7 || /^(refund|estorn|reembol|devolv)/.test(detail)) {
       return 'refund';
     }
     // Auto-cancelamento nativo da PerfectPay quando o cliente adquire outro plano do
@@ -423,12 +439,22 @@ export class PerfectpayWebhookService {
     if (detail === 'new_subscription_purchased') {
       return 'superseded';
     }
-    if (/cancel/.test(detail) || /cancel|inactive|expired/.test(subStatus)) {
+    if (
+      subEvent === 'subscription_canceled' ||
+      subEvent === 'subscription_expired' ||
+      /cancel|inactive|expired/.test(subStatus)
+    ) {
       return 'canceled';
     }
-    if (status === 2 || status === 4 || detail === 'approved' || detail === 'completed') {
+    const paid =
+      key === 'approved' ||
+      key === 'completed' ||
+      (!key && (status === 2 || status === 10 || detail === 'approved' || detail === 'completed'));
+    if (paid) {
       return 'paid';
     }
+    // rejected / cancelled / expired / pending / in_mediation: recusa ou pendência,
+    // a PP retenta sozinha; o cron expira a assinatura se todas falharem.
     return 'ignore';
   }
 

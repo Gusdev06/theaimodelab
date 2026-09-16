@@ -12,6 +12,7 @@ const USD_PRICE_CENTS_FALLBACK: Record<string, number> = {
   pro: 3990,
   advanced: 5490,
   studio: 7990,
+  agency: 19990,
 };
 
 @ApiTags('plans')
@@ -30,7 +31,8 @@ export class PlansController {
     // Duas vitrines por moeda:
     //  - BRL (Brasil, /pt-br): assinatura via Cakto. Expõe os 7 tiers com PlanPrice
     //    BRL ativo + link de checkout Cakto (inclui os legados ultra-basic/starter/basic).
-    //  - USD (default, /en e /es): assinatura via Perfect Pay, os 4 planos ativos.
+    //  - USD (default, /en e /es): assinatura via Perfect Pay, os planos ativos e
+    //    públicos (Pro/Advanced/Studio/Agency; Creator é isPublic:false desde 2026-09-16).
     const requestedCurrency =
       typeof currencyQuery === 'string' && currencyQuery.trim().toUpperCase() === 'BRL'
         ? 'BRL'
@@ -68,6 +70,7 @@ export class PlansController {
           hasWatermark: p.hasWatermark,
           galleryRetentionDays: p.galleryRetentionDays,
           hasApiAccess: p.hasApiAccess,
+          sortOrder: p.sortOrder,
           checkoutUrl: p.checkoutUrl ?? null,
         };
       }),
