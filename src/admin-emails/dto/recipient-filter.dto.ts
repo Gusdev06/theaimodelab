@@ -3,10 +3,10 @@ import {
   IsBoolean,
   IsEmail,
   IsEnum,
-  IsIn,
   IsObject,
   IsOptional,
   IsString,
+  Matches,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -37,10 +37,10 @@ export class RecipientFilterDto {
   @IsEmail()
   email?: string;
 
-  @ApiPropertyOptional({ description: "ALL: só usuários desse locale ('en' | 'pt-BR' | 'es')", example: 'pt-BR' })
+  @ApiPropertyOptional({ description: "ALL: idioma dos destinatários — casa pelo prefixo ('en' = en-US, 'pt' = pt-BR, 'es' = es-ES)", example: 'pt-BR' })
   @IsOptional()
   @IsString()
-  @IsIn(['en', 'pt-BR', 'es'])
+  @Matches(/^[a-zA-Z]{2}(-[a-zA-Z]{2})?$/, { message: 'locale deve ser xx ou xx-YY' })
   locale?: string;
 
   @ApiPropertyOptional({ description: 'ALL: inclui usuários sem e-mail verificado', default: false })

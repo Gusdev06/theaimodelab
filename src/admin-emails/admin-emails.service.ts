@@ -44,7 +44,7 @@ export interface RecipientFilter {
   planSlug?: string;
   emails?: string[];
   email?: string;
-  /** ALL: só usuários desse locale ('en' | 'pt-BR' | 'es'). Sem filtro = todos. */
+  /** ALL: só usuários desse idioma — casa pelo prefixo de 2 letras ('en' pega en-US, 'pt' pega pt-BR, 'es' pega es-ES). */
   locale?: string;
   /** ALL: inclui quem nunca confirmou o e-mail (padrão: só verificados). */
   includeUnverified?: boolean;
@@ -102,7 +102,10 @@ export class AdminEmailsService {
           where: {
             isActive: true,
             ...(filter?.includeUnverified ? {} : { emailVerified: true }),
-            ...(filter?.locale ? { locale: filter.locale } : {}),
+            // A base tem en-US / pt-BR / es-ES: filtra pelo idioma (2 letras), não pela região.
+            ...(filter?.locale
+              ? { locale: { startsWith: filter.locale.slice(0, 2), mode: 'insensitive' as const } }
+              : {}),
           },
           select: {
             id: true,
