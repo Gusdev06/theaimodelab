@@ -101,11 +101,13 @@ const CHECKOUT = {
 };
 
 // ── Preços dos planos ANUAIS (centavos) — 7 meses pelo preço de 12 (decisão 2026-09-16) ──
-const ANNUAL_PLANS: Record<string, { usd: number; brl: number; eur: number }> = {
-  pro: { usd: 27900, brl: 129700, eur: 26500 }, // mensal 39,90 / 179,90 / 37,90
-  advanced: { usd: 37900, brl: 179700, eur: 37900 }, // 54,90 / 249,90 / 54,90
-  studio: { usd: 55900, brl: 269700, eur: 52400 }, // 79,90 / 369,90 / 74,90
-  agency: { usd: 139900, brl: 629700, eur: 132900 }, // 199,90 / 899,90 / 189,90
+// checkout/ppCode = recorrência anual na Perfect Pay (criadas pelo Gusta em 16/09;
+// ppCode é o plan.code do POSTBACK). Cakto (BRL) entra pelo /admin/planos.
+const ANNUAL_PLANS: Record<string, { usd: number; brl: number; eur: number; checkout: string; ppCode: string }> = {
+  pro: { usd: 27900, brl: 129700, eur: 26500, checkout: 'https://checkout.centerpag.com/pay/PPU38CQG711', ppCode: 'PPLQQQGA0' }, // mensal 39,90 / 179,90 / 37,90
+  advanced: { usd: 37900, brl: 179700, eur: 37900, checkout: 'https://checkout.centerpag.com/pay/PPU38CQG712', ppCode: 'PPLQQQGA1' }, // 54,90 / 249,90 / 54,90
+  studio: { usd: 55900, brl: 269700, eur: 52400, checkout: 'https://checkout.centerpag.com/pay/PPU38CQG713', ppCode: 'PPLQQQGA2' }, // 79,90 / 369,90 / 74,90
+  agency: { usd: 139900, brl: 629700, eur: 132900, checkout: 'https://checkout.centerpag.com/pay/PPU38CQG714', ppCode: 'PPLQQQGA3' }, // 199,90 / 899,90 / 189,90
 };
 
 // ── Cakto (gateway BRL, Brasil) — assinatura recorrente ──
@@ -247,8 +249,8 @@ async function main() {
       avatar_clone_limit: src.avatar_clone_limit as number,
       unlimitedPriority: src.unlimitedPriority as number,
       unlimitedModels: src.unlimitedModels,
-      perfectpayPlanCode: process.env[`PERFECTPAY_PLAN_${envKey}_ANUAL`] ?? null,
-      checkoutUrl: process.env[`CHECKOUT_URL_${envKey}_ANUAL`] ?? null,
+      perfectpayPlanCode: process.env[`PERFECTPAY_PLAN_${envKey}_ANUAL`] ?? annual.ppCode,
+      checkoutUrl: process.env[`CHECKOUT_URL_${envKey}_ANUAL`] ?? annual.checkout,
     };
     planData.push({ slug: `${base}-anual`, update: shared, create: { slug: `${base}-anual`, ...shared } } as any);
   }
