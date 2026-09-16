@@ -100,6 +100,14 @@ const CHECKOUT = {
   agency: process.env.CHECKOUT_URL_AGENCY ?? 'https://checkout.centerpag.com/pay/PPU38CQG710',
 };
 
+// ── Preços dos planos ANUAIS (centavos) — 7 meses pelo preço de 12 (decisão 2026-09-16) ──
+const ANNUAL_PLANS: Record<string, { usd: number; brl: number; eur: number }> = {
+  pro: { usd: 27900, brl: 129700, eur: 26500 }, // mensal 39,90 / 179,90 / 37,90
+  advanced: { usd: 37900, brl: 179700, eur: 37900 }, // 54,90 / 249,90 / 54,90
+  studio: { usd: 55900, brl: 269700, eur: 52400 }, // 79,90 / 369,90 / 74,90
+  agency: { usd: 139900, brl: 629700, eur: 132900 }, // 199,90 / 899,90 / 189,90
+};
+
 // ── Cakto (gateway BRL, Brasil) — assinatura recorrente ──
 // Produto único "THE AI MODEL LAB" (id d954f7b1-…); cada plano é uma OFERTA cujo
 // short-code é o segmento do link pay.cakto.com.br/<offer>. Esse offer code casa a
@@ -212,6 +220,39 @@ async function main() {
     { slug: 'business', update: { isActive: false, sortOrder: 99 }, create: { slug: 'business', name: 'Business', priceCents: 24990, creditsPerMonth: 10000, maxConcurrentGenerations: 10, hasWatermark: false, galleryRetentionDays: null as number | null, hasApiAccess: true, sortOrder: 99, isActive: false, stripePriceId: STRIPE.priceBusiness } },
   ];
 
+  // ── PLANOS ANUAIS (2026-09-16): 7 meses pelo preço de 12 (~42% off) ──
+  // Mesmo slug + "-anual", billingInterval 'year', basePlanSlug = mensal irmão,
+  // limites/ilimitado iguais ao mensal, créditos mensais (cron AnnualCreditsRefill).
+  // Links de checkout entram pelo /admin/planos (ou env CHECKOUT_URL_<PLANO>_ANUAL,
+  // PERFECTPAY_PLAN_<PLANO>_ANUAL, CAKTO_OFFER_<PLANO>_ANUAL).
+  for (const [base, annual] of Object.entries(ANNUAL_PLANS)) {
+    const monthly = planData.find((p) => p.slug === base);
+    if (!monthly) continue;
+    const src = monthly.create as Record<string, unknown>;
+    const envKey = base.toUpperCase();
+    const shared = {
+      name: src.name as string,
+      priceCents: annual.brl,
+      creditsPerMonth: src.creditsPerMonth as number,
+      maxConcurrentGenerations: src.maxConcurrentGenerations as number,
+      hasWatermark: src.hasWatermark as boolean,
+      galleryRetentionDays: src.galleryRetentionDays as number | null,
+      hasApiAccess: src.hasApiAccess as boolean,
+      isActive: true,
+      isPublic: true,
+      billingInterval: 'year',
+      basePlanSlug: base,
+      sortOrder: src.sortOrder as number,
+      avatar_clone_enabled: src.avatar_clone_enabled as boolean,
+      avatar_clone_limit: src.avatar_clone_limit as number,
+      unlimitedPriority: src.unlimitedPriority as number,
+      unlimitedModels: src.unlimitedModels,
+      perfectpayPlanCode: process.env[`PERFECTPAY_PLAN_${envKey}_ANUAL`] ?? null,
+      checkoutUrl: process.env[`CHECKOUT_URL_${envKey}_ANUAL`] ?? null,
+    };
+    planData.push({ slug: `${base}-anual`, update: shared, create: { slug: `${base}-anual`, ...shared } } as any);
+  }
+
   const plans: Plan[] = [];
   for (const plan of planData) {
     plans.push(
@@ -264,6 +305,16 @@ async function main() {
     { slug: 'studio', currency: 'EUR', priceCents: 7490, stripePriceId: STRIPE.planStudioEur },
     { slug: 'agency', currency: 'EUR', priceCents: 18990, stripePriceId: STRIPE.planAgencyEur },
   ];
+  for (const [base, annual] of Object.entries(ANNUAL_PLANS)) {
+    // Sem Stripe: USD/EUR entram com stripePriceId vazio (o loop abaixo aceita pra anuais).
+    planPriceData.push(
+      { slug: `${base}-anual`, currency: 'USD', priceCents: annual.usd, stripePriceId: '' },
+      { slug: `${base}-anual`, currency: 'BRL', priceCents: annual.brl, stripePriceId: '' },
+      { slug: `${base}-anual`, currency: 'EUR', priceCents: annual.eur, stripePriceId: '' },
+    );
+    const offer = process.env[`CAKTO_OFFER_${base.toUpperCase()}_ANUAL`];
+    if (offer) CAKTO_OFFERS[`${base}-anual`] = offer;
+  }
 
   const plansBySlug = new Map(plans.map((p) => [p.slug, p]));
   let planPriceCount = 0;
@@ -274,7 +325,9 @@ async function main() {
     // BRL é cobrado pela Cakto (checkout externo, sem Stripe). Para essas linhas o
     // que habilita o preço é ter uma oferta Cakto, não um stripePriceId.
     const caktoOffer = pp.currency === 'BRL' ? CAKTO_OFFERS[pp.slug] : undefined;
-    if (!pp.stripePriceId && !caktoOffer) continue;
+    // Anuais (e o Agency) não têm Stripe: a linha existe pra vitrine mesmo sem price id.
+    const isAnnual = pp.slug.endsWith('-anual') || pp.slug === 'agency';
+    if (!pp.stripePriceId && !caktoOffer && !isAnnual) continue;
 
     const checkoutUrl = caktoOffer ? caktoCheckoutUrl(caktoOffer) : null;
 

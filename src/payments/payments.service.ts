@@ -282,6 +282,11 @@ export class PaymentsService {
       throw new NotFoundException(`Plano "${planId}" não encontrado`);
     }
 
+    // Anual: a cobrança cobre 12 meses, mas os créditos são mensais — o ciclo do
+    // creditBalance fica em 1 mês e o cron AnnualCreditsRefillService recarrega a
+    // cada virada até o fim da assinatura.
+    const periodMonths = plan.billingInterval === 'year' ? 12 : 1;
+
     let created = false;
     let skipped = false;
 
@@ -323,7 +328,7 @@ export class PaymentsService {
         const base =
           activeSub.currentPeriodEnd > now ? activeSub.currentPeriodEnd : now;
         const periodEnd = new Date(base);
-        periodEnd.setMonth(periodEnd.getMonth() + 1);
+        periodEnd.setMonth(periodEnd.getMonth() + periodMonths);
         subscription = await tx.subscription.update({
           where: { id: activeSub.id },
           data: {
@@ -347,7 +352,7 @@ export class PaymentsService {
           data: { status: 'CANCELED', cancelAtPeriodEnd: false },
         });
         const periodEnd = new Date(now);
-        periodEnd.setMonth(periodEnd.getMonth() + 1);
+        periodEnd.setMonth(periodEnd.getMonth() + periodMonths);
         subscription = await tx.subscription.create({
           data: {
             userId,
@@ -365,6 +370,9 @@ export class PaymentsService {
       }
 
       // Reset dos créditos do plano (não acumulam). bonusCreditsRemaining é preservado no update.
+      // No anual o ciclo de crédito é de 1 mês (não o período de 12 da assinatura).
+      const creditPeriodEnd =
+        periodMonths === 1 ? subscription.currentPeriodEnd : (() => { const d = new Date(now); d.setMonth(d.getMonth() + 1); return d; })();
       await tx.creditBalance.upsert({
         where: { userId },
         create: {
@@ -373,13 +381,13 @@ export class PaymentsService {
           bonusCreditsRemaining: 0,
           planCreditsUsed: 0,
           periodStart: now,
-          periodEnd: subscription.currentPeriodEnd,
+          periodEnd: creditPeriodEnd,
         },
         update: {
           planCreditsRemaining: plan.creditsPerMonth,
           planCreditsUsed: 0,
           periodStart: now,
-          periodEnd: subscription.currentPeriodEnd,
+          periodEnd: creditPeriodEnd,
         },
       });
 

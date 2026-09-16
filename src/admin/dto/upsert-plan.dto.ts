@@ -131,6 +131,18 @@ export class UpsertPlanDto {
   @IsInt()
   sortOrder?: number;
 
+  @ApiPropertyOptional({ enum: ['month', 'year'], description: "Anual = cobrança 1x/ano, 12 meses, créditos liberados mês a mês" })
+  @IsOptional()
+  @IsIn(['month', 'year'])
+  billingInterval?: 'month' | 'year';
+
+  @ApiPropertyOptional({ nullable: true, description: 'Nos anuais: slug do plano mensal irmão (pareia na vitrine e herda o visual)' })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsString()
+  @MaxLength(40)
+  basePlanSlug?: string | null;
+
   @ApiPropertyOptional({ nullable: true, description: 'Link recorrente da Perfect Pay (vitrine USD/EUR)' })
   @IsOptional()
   @ValidateIf((_, v) => v !== null)

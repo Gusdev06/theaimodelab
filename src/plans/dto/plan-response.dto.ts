@@ -15,6 +15,10 @@ export class PlanResponseDto {
   @ApiProperty() hasApiAccess: boolean;
   @ApiProperty({ description: 'Posição na vitrine e ordem de upgrade (plans.sort_order)' })
   sortOrder: number;
+  @ApiProperty({ example: 'month', description: "'month' ou 'year' (anual: 12 meses, créditos mensais)" })
+  billingInterval: string;
+  @ApiPropertyOptional({ description: 'Nos anuais: slug do plano mensal irmão' })
+  basePlanSlug?: string | null;
   @ApiPropertyOptional({ description: 'Link de checkout da assinatura mensal (Perfect Pay)' })
   checkoutUrl?: string | null;
 }

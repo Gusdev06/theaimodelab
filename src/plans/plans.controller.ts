@@ -71,6 +71,8 @@ export class PlansController {
           galleryRetentionDays: p.galleryRetentionDays,
           hasApiAccess: p.hasApiAccess,
           sortOrder: p.sortOrder,
+          billingInterval: p.billingInterval,
+          basePlanSlug: p.basePlanSlug ?? null,
           checkoutUrl: p.checkoutUrl ?? null,
         };
       }),

@@ -97,6 +97,8 @@ export class PlansService {
         galleryRetentionDays: pp.plan.galleryRetentionDays,
         hasApiAccess: pp.plan.hasApiAccess,
         sortOrder: pp.plan.sortOrder,
+        billingInterval: pp.plan.billingInterval,
+        basePlanSlug: pp.plan.basePlanSlug ?? null,
         checkoutUrl: pp.checkoutUrl,
       }));
   }

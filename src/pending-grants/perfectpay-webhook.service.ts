@@ -324,9 +324,20 @@ export class PerfectpayWebhookService {
       select: { id: true, slug: true, name: true },
     });
 
-    const match = activePlans.find((p) =>
-      new RegExp(`\\b${p.slug.toLowerCase()}\\b`).test(planName),
-    );
+    // Slug mais longo primeiro e hífen ≡ espaço: "Plan Pro Anual" tem que casar
+    // "pro-anual", não "pro" (o mensal). Nome com "anual/annual/yearly" nunca cai
+    // num plano mensal.
+    const normalizedName = planName.replace(/[-_]/g, ' ');
+    const looksAnnual = /\b(anual|annual|yearly|ano)\b/.test(normalizedName);
+    const match = activePlans
+      .slice()
+      .sort((a, b) => b.slug.length - a.slug.length)
+      .find((p) => {
+        const slugWords = p.slug.toLowerCase().replace(/-/g, ' ');
+        if (!new RegExp(`\\b${slugWords}\\b`).test(normalizedName)) return false;
+        const planIsAnnual = /\b(anual|annual|yearly)\b/.test(slugWords);
+        return looksAnnual === planIsAnnual;
+      });
 
     if (match) {
       this.logger.warn(

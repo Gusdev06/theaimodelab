@@ -64,6 +64,7 @@ export class AdminPlansService {
 
     const { prices, ...fields } = dto;
     const data = this.toPlanData(fields);
+    await this.assertBasePlan(data.basePlanSlug ?? null, dto.slug);
 
     const plan = await this.prisma.plan.create({
       data: {
@@ -88,6 +89,7 @@ export class AdminPlansService {
 
     const { prices, slug: _slug, ...fields } = dto;
     const data = this.toPlanData(fields);
+    if (data.basePlanSlug !== undefined) await this.assertBasePlan(data.basePlanSlug ?? null, plan.slug);
 
     const updated = await this.prisma.plan.update({ where: { id }, data });
     if (prices?.length) await this.upsertPrices(id, updated.caktoOfferCode, prices);
@@ -135,6 +137,15 @@ export class AdminPlansService {
     return { ...plan, subscriptions: { active, total } };
   }
 
+  /** basePlanSlug precisa apontar pra um plano mensal existente, e nunca pra ele mesmo. */
+  private async assertBasePlan(baseSlug: string | null, ownSlug: string | undefined) {
+    if (!baseSlug) return;
+    if (baseSlug === ownSlug) throw new BadRequestException('basePlanSlug não pode ser o próprio plano');
+    const base = await this.prisma.plan.findUnique({ where: { slug: baseSlug }, select: { billingInterval: true } });
+    if (!base) throw new BadRequestException(`Plano mensal irmão "${baseSlug}" não existe`);
+    if (base.billingInterval !== 'month') throw new BadRequestException(`"${baseSlug}" não é um plano mensal`);
+  }
+
   /** Converte o DTO (camelCase) pros campos do Prisma (alguns são snake_case no schema). */
   private toPlanData(dto: Omit<UpsertPlanDto, 'prices' | 'slug'>): PlanFields {
     const data: PlanFields = {};
@@ -152,6 +163,8 @@ export class AdminPlansService {
     if (dto.isActive !== undefined) data.isActive = dto.isActive;
     if (dto.isPublic !== undefined) data.isPublic = dto.isPublic;
     if (dto.sortOrder !== undefined) data.sortOrder = dto.sortOrder;
+    if (dto.billingInterval !== undefined) data.billingInterval = dto.billingInterval;
+    if (dto.basePlanSlug !== undefined) data.basePlanSlug = emptyToNull(dto.basePlanSlug);
     if (dto.checkoutUrl !== undefined) data.checkoutUrl = emptyToNull(dto.checkoutUrl);
     if (dto.perfectpayPlanCode !== undefined) data.perfectpayPlanCode = emptyToNull(dto.perfectpayPlanCode);
     if (dto.caktoOfferCode !== undefined) {

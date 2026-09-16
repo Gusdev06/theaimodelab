@@ -8,6 +8,7 @@ import { PixAutoBillingService } from './pix-auto-billing.service';
 import { PerfectpaySubscriptionExpiryService } from './perfectpay-subscription-expiry.service';
 import { OnboardingSequenceService } from './onboarding-sequence.service';
 import { LifecycleEmailsService } from './lifecycle-emails.service';
+import { AnnualCreditsRefillService } from './annual-credits-refill.service';
 import { CronLoggerService } from './cron-logger.service';
 import { UploadsModule } from '../uploads/uploads.module';
 import { EmailModule } from '../email/email.module';
@@ -27,6 +28,7 @@ import { SettingsModule } from '../settings/settings.module';
     PerfectpaySubscriptionExpiryService,
     OnboardingSequenceService,
     LifecycleEmailsService,
+    AnnualCreditsRefillService,
   ],
   exports: [CronLoggerService],
 })
