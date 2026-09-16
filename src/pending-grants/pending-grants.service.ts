@@ -27,6 +27,7 @@ export const PERFECTPAY_COURSE_BUNDLE: FreeGenerationBundle = {
   NB2: 2,
   NB_PRO: 2,
   GPT_IMAGE_2: 2,
+  GPT_IMAGE_2_5: 2,
   SEEDREAM_LITE: 2,
   // Imagem premium
   GROK_IMAGINE: 2,

@@ -283,7 +283,7 @@ export class GenerationProcessor extends WorkerHost {
       return;
     }
 
-    if (data.model === 'gpt-image-2') {
+    if (data.model === 'gpt-image-2' || data.model === 'gpt-image-2-5') {
       let imageUrls: string[] | undefined;
       if (data.hasInputImages) {
         const inputImages = await this.prisma.generationInputImage.findMany({
@@ -302,6 +302,7 @@ export class GenerationProcessor extends WorkerHost {
           resolution: data.resolution,
           aspectRatio: data.aspectRatio,
           imageUrls,
+          family: data.model,
         });
         await this.completeGeneration(data.generationId, result, startTime);
       } catch (error) {
@@ -311,7 +312,7 @@ export class GenerationProcessor extends WorkerHost {
             data.prompt,
             data.aspectRatio,
             error,
-            'processImage:gpt-image-2',
+            `processImage:${data.model}`,
           );
           await this.completeGeneration(data.generationId, result, startTime);
           return;
@@ -455,7 +456,7 @@ export class GenerationProcessor extends WorkerHost {
       return;
     }
 
-    if (data.model === 'gpt-image-2') {
+    if (data.model === 'gpt-image-2' || data.model === 'gpt-image-2-5') {
       let imageUrls: string[] | undefined;
       if (data.hasInputImages) {
         const inputImages = await this.prisma.generationInputImage.findMany({
@@ -474,6 +475,7 @@ export class GenerationProcessor extends WorkerHost {
           resolution: data.resolution,
           aspectRatio: data.aspectRatio,
           imageUrls,
+          family: data.model,
         });
         await this.completeGeneration(data.generationId, result, startTime);
       } catch (error) {
@@ -483,7 +485,7 @@ export class GenerationProcessor extends WorkerHost {
             data.prompt,
             data.aspectRatio,
             error,
-            'processImageWithFallback:gpt-image-2',
+            `processImageWithFallback:${data.model}`,
           );
           await this.completeGeneration(data.generationId, result, startTime);
           return;
@@ -1186,22 +1188,26 @@ export class GenerationProcessor extends WorkerHost {
     }
   }
 
-  // ─── Bytedance Seedance 2.0 ────────────────────────────────
+  // ─── Bytedance Seedance 2.0 / 2.5 ──────────────────────────
 
   private async processSeedanceVideo(data: SeedanceVideoJobData): Promise<void> {
     const startTime = Date.now();
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[SEEDANCE_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} refImages=${data.referenceImageUrls?.length ?? 0} refVideos=${data.referenceVideoUrls?.length ?? 0} refAudios=${data.referenceAudioUrls?.length ?? 0} audio=${data.generateAudio} prompt="${data.prompt}"`,
+      `[SEEDANCE_VIDEO] ${data.generationId} model=${data.modelId ?? 'bytedance/seedance-2'} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} refImages=${data.referenceImageUrls?.length ?? 0} refVideos=${data.referenceVideoUrls?.length ?? 0} refAudios=${data.referenceAudioUrls?.length ?? 0} firstFrame=${!!data.firstFrameUrl} lastFrame=${!!data.lastFrameUrl} audio=${data.generateAudio} prompt="${data.prompt}"`,
     );
 
     const buildInput = (prompt: string) => ({
       id: data.generationId,
       prompt,
+      modelId: data.modelId,
       referenceImageUrls: data.referenceImageUrls,
       referenceVideoUrls: data.referenceVideoUrls,
       referenceAudioUrls: data.referenceAudioUrls,
+      firstFrameUrl: data.firstFrameUrl,
+      lastFrameUrl: data.lastFrameUrl,
+      webSearch: data.webSearch,
       resolution: data.resolution,
       durationSeconds: data.durationSeconds,
       aspectRatio: data.aspectRatio,

@@ -50,7 +50,10 @@ import { GenerateVeoKieReferenceToVideoDto } from './dto/videos/generate-veo-kie
 import { GenerateGrokImagineImageToVideoDto } from './dto/videos/generate-grok-imagine-image-to-video.dto';
 import { GenerateGrokImagineTextToVideoDto } from './dto/videos/generate-grok-imagine-text-to-video.dto';
 import { GenerateGeminiOmniVideoDto } from './dto/videos/generate-gemini-omni-video.dto';
-import { GenerateSeedanceVideoDto } from './dto/videos/generate-seedance-video.dto';
+import {
+  GenerateSeedanceVideoDto,
+  SEEDANCE_MAX_DURATION,
+} from './dto/videos/generate-seedance-video.dto';
 import { GenerateKlingImageToVideoDto } from './dto/videos/generate-kling-image-to-video.dto';
 import { GenerateComfyDeployImageToVideoDto } from './dto/videos/generate-comfydeploy-image-to-video.dto';
 import { GenerateWavespeedImageToVideoDto } from './dto/videos/generate-wavespeed-image-to-video.dto';
@@ -81,8 +84,9 @@ function getModelVariant(model: string | undefined | null): string | null {
     'nano-banana-2': 'NB2',
     // Sem censura
     'sem-censura': 'SEM_CENSURA',
-    // GPT Image 2 (Kie API)
+    // GPT Image 2 / 2.5 Flare (Kie API) — mesmo provider, families diferentes
     'gpt-image-2': 'GPT_IMAGE_2',
+    'gpt-image-2-5': 'GPT_IMAGE_2_5',
     // The AI Model Lab provider (video)
     'theaimodelab-fast': 'THEAIMODELAB_FAST',
     'theaimodelab-quality': 'THEAIMODELAB_QUALITY',
@@ -95,8 +99,9 @@ function getModelVariant(model: string | undefined | null): string | null {
     'grok-imagine': 'GROK_IMAGINE',
     // KIE API (Gemini Omni Video)
     'gemini-omni-video': 'GEMINI_OMNI',
-    // KIE API (Bytedance Seedance 2.0)
+    // KIE API (Bytedance Seedance 2.0 / 2.5)
     'bytedance-seedance-2': 'SEEDANCE_2',
+    'bytedance-seedance-2-5': 'SEEDANCE_2_5',
     // KIE API (Kling V3 Turbo — image-to-video)
     'kling-v3-turbo': 'KLING_V3_TURBO',
     // ComfyDeploy (WanImageToVideo — NSFW/legacy)
@@ -437,6 +442,21 @@ export class GenerationsService {
       if (dto.aspect_ratio === '1:1' && dto.resolution === Resolution.RES_4K) {
         throw new BadRequestException(
           'GPT Image 2 não suporta 4K com proporção 1:1. Use 2K ou outra proporção.',
+        );
+      }
+    }
+
+    // GPT Image 2.5 (Flare): a KIE só restringe 27:16, 16:27, 9:8 e 8:9 a 1K.
+    // O DTO ainda não expõe essas proporções, então a checagem é preventiva.
+    if (dto.model === 'gpt-image-2-5') {
+      const oneKOnly = ['27:16', '16:27', '9:8', '8:9'];
+      if (
+        dto.aspect_ratio &&
+        oneKOnly.includes(dto.aspect_ratio) &&
+        dto.resolution !== Resolution.RES_1K
+      ) {
+        throw new BadRequestException(
+          `GPT Image 2.5 só suporta a proporção ${dto.aspect_ratio} em 1K.`,
         );
       }
     }
@@ -2455,28 +2475,60 @@ CRITICAL REQUIREMENTS:
     };
   }
 
-  // ─── Bytedance Seedance 2.0 ────────────────────────────────
+  // ─── Bytedance Seedance 2.0 / 2.5 ──────────────────────────
+  // Mesmo endpoint e mesmo provider; `dto.model` escolhe o modelo KIE.
+  // A variante de cobrança é derivada do modelo (SEEDANCE_2 / SEEDANCE_2_5),
+  // nunca do `model_variant` do cliente — evita cobrar 2.5 como 2.0.
 
   async generateSeedanceVideo(
     userId: string,
     dto: GenerateSeedanceVideoDto,
   ): Promise<CreateGenerationResponseDto> {
-    const model = 'bytedance-seedance-2';
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const dtoModel = dto.model ?? 'seedance-2';
+    const isV25 = dtoModel === 'seedance-2-5';
+    const model = isV25 ? 'bytedance-seedance-2-5' : 'bytedance-seedance-2';
+    const kieModelId = isV25
+      ? ('bytedance/seedance-2-5' as const)
+      : ('bytedance/seedance-2' as const);
+    const modelVariant = getModelVariant(model);
+
+    const maxDuration = SEEDANCE_MAX_DURATION[dtoModel];
+    if (dto.duration_seconds > maxDuration) {
+      throw new BadRequestException(
+        `duration_seconds máximo para ${dtoModel} é ${maxDuration}s.`,
+      );
+    }
+    if (!isV25) {
+      if (dto.aspect_ratio === 'adaptive') {
+        throw new BadRequestException(
+          'aspect_ratio "adaptive" só é aceito no Seedance 2.5 (model: "seedance-2-5").',
+        );
+      }
+      if (dto.first_frame || dto.last_frame || dto.web_search !== undefined) {
+        throw new BadRequestException(
+          'first_frame, last_frame e web_search só são aceitos no Seedance 2.5 (model: "seedance-2-5").',
+        );
+      }
+    }
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
 
     const hasReferenceImages = (dto.reference_images?.length ?? 0) > 0;
     const hasReferenceVideo = !!dto.reference_video;
     const hasReferenceAudio = !!dto.reference_audio;
+    const hasFirstFrame = isV25 && !!dto.first_frame;
+    const hasLastFrame = isV25 && !!dto.last_frame;
     // Áudio sozinho NÃO ativa pricing "with video" — só o vídeo de referência ativa.
     const hasVideoInput = hasReferenceVideo;
 
-    // Tipo derivado: qualquer ref → REFERENCE_VIDEO, else TEXT_TO_VIDEO.
+    // Tipo derivado: first/last frame → IMAGE_TO_VIDEO; qualquer ref → REFERENCE_VIDEO;
+    // senão TEXT_TO_VIDEO. O custo não depende do tipo (tabela por variante em plans.service).
     const type: GenerationType =
-      hasReferenceImages || hasReferenceVideo || hasReferenceAudio
-        ? GenerationType.REFERENCE_VIDEO
-        : GenerationType.TEXT_TO_VIDEO;
+      hasFirstFrame || hasLastFrame
+        ? GenerationType.IMAGE_TO_VIDEO
+        : hasReferenceImages || hasReferenceVideo || hasReferenceAudio
+          ? GenerationType.REFERENCE_VIDEO
+          : GenerationType.TEXT_TO_VIDEO;
 
     const freeGenType = await this.resolveFreeGenForRequest(
       userId,
@@ -2515,13 +2567,20 @@ CRITICAL REQUIREMENTS:
         aspectRatio: dto.aspect_ratio,
         creditsConsumed: creditsRequired,
         usedFreeGeneration: isFreeGeneration,
-        parameters: { provider: 'kie', hasVideoInput },
+        parameters: {
+          provider: 'kie',
+          model: kieModelId,
+          hasVideoInput,
+          ...(isV25 && dto.web_search !== undefined && { webSearch: dto.web_search }),
+        },
       },
     });
 
     let referenceImageUrls: string[] | undefined;
     let referenceVideoUrls: string[] | undefined;
     let referenceAudioUrls: string[] | undefined;
+    let firstFrameUrl: string | undefined;
+    let lastFrameUrl: string | undefined;
 
     if (hasReferenceImages && dto.reference_images) {
       referenceImageUrls = await Promise.all(
@@ -2562,6 +2621,40 @@ CRITICAL REQUIREMENTS:
       referenceAudioUrls = [audioUrl];
     }
 
+    // Seedance 2.5: keyframes (first/last frame).
+    if (hasFirstFrame && dto.first_frame) {
+      firstFrameUrl = await this.uploadBase64ImagePublic(
+        dto.first_frame.base64,
+        dto.first_frame.mime_type ?? 'image/jpeg',
+        generation.id,
+      );
+      await this.prisma.generationInputImage.create({
+        data: {
+          generationId: generation.id,
+          role: GenerationImageRole.FIRST_FRAME,
+          mimeType: dto.first_frame.mime_type ?? 'image/jpeg',
+          order: 0,
+          url: firstFrameUrl,
+        },
+      });
+    }
+    if (hasLastFrame && dto.last_frame) {
+      lastFrameUrl = await this.uploadBase64ImagePublic(
+        dto.last_frame.base64,
+        dto.last_frame.mime_type ?? 'image/jpeg',
+        generation.id,
+      );
+      await this.prisma.generationInputImage.create({
+        data: {
+          generationId: generation.id,
+          role: GenerationImageRole.LAST_FRAME,
+          mimeType: dto.last_frame.mime_type ?? 'image/jpeg',
+          order: 1,
+          url: lastFrameUrl,
+        },
+      });
+    }
+
     if (isFreeGeneration && freeGenType) {
       await this.creditsService.consumeFreeGeneration(
         userId,
@@ -2584,12 +2677,16 @@ CRITICAL REQUIREMENTS:
       creditsConsumed: creditsRequired,
       usedFreeGeneration: isFreeGeneration,
       prompt: dto.prompt,
+      modelId: kieModelId,
       resolution: dto.resolution,
       durationSeconds: dto.duration_seconds,
       aspectRatio: dto.aspect_ratio,
       referenceImageUrls,
       referenceVideoUrls,
       referenceAudioUrls,
+      firstFrameUrl,
+      lastFrameUrl,
+      webSearch: isV25 ? dto.web_search : undefined,
       generateAudio: dto.generate_audio ?? false,
       hasVideoInput,
     } satisfies SeedanceVideoJobData);

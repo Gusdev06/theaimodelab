@@ -12,12 +12,24 @@ const RESOLUTION_MAP: Record<string, string> = {
   RES_1080P: '1080p',
 };
 
+/** Modelos KIE atendidos por este provider (mesma API createTask/recordInfo). */
+export type SeedanceModelId = 'bytedance/seedance-2' | 'bytedance/seedance-2-5';
+
+export const SEEDANCE_DEFAULT_MODEL_ID: SeedanceModelId = 'bytedance/seedance-2';
+
 export interface SeedanceVideoInput {
   id: string;
   prompt: string;
+  /** Modelo KIE a chamar. Default: 'bytedance/seedance-2'. */
+  modelId?: SeedanceModelId;
   referenceImageUrls?: string[];
   referenceVideoUrls?: string[];
   referenceAudioUrls?: string[];
+  /** Só Seedance 2.5: primeiro/último frame (image-to-video com keyframes). */
+  firstFrameUrl?: string;
+  lastFrameUrl?: string;
+  /** Só Seedance 2.5: busca web para enriquecer o prompt. */
+  webSearch?: boolean;
   resolution: string;
   durationSeconds: number;
   aspectRatio?: string;
@@ -70,13 +82,15 @@ export class BytedanceSeedanceProvider {
   }
 
   async generateVideo(input: SeedanceVideoInput): Promise<GenerationResult> {
+    const modelId = input.modelId ?? SEEDANCE_DEFAULT_MODEL_ID;
+    const isV25 = modelId === 'bytedance/seedance-2-5';
     const resolution = RESOLUTION_MAP[input.resolution] ?? '720p';
     const hasReferenceImages = (input.referenceImageUrls?.length ?? 0) > 0;
     const hasReferenceVideos = (input.referenceVideoUrls?.length ?? 0) > 0;
     const hasReferenceAudios = (input.referenceAudioUrls?.length ?? 0) > 0;
 
     this.logger.log(
-      `[SEEDANCE] resolution=${resolution} duration=${input.durationSeconds}s aspectRatio=${input.aspectRatio ?? '16:9'} refImages=${input.referenceImageUrls?.length ?? 0} refVideos=${input.referenceVideoUrls?.length ?? 0} refAudios=${input.referenceAudioUrls?.length ?? 0} audio=${input.generateAudio ?? false}`,
+      `[SEEDANCE] model=${modelId} resolution=${resolution} duration=${input.durationSeconds}s aspectRatio=${input.aspectRatio ?? '16:9'} refImages=${input.referenceImageUrls?.length ?? 0} refVideos=${input.referenceVideoUrls?.length ?? 0} refAudios=${input.referenceAudioUrls?.length ?? 0} firstFrame=${!!input.firstFrameUrl} lastFrame=${!!input.lastFrameUrl} audio=${input.generateAudio ?? false}`,
     );
 
     const seedanceInput: Record<string, unknown> = {
@@ -100,8 +114,23 @@ export class BytedanceSeedanceProvider {
       seedanceInput.reference_audio_urls = input.referenceAudioUrls;
     }
 
+    // Campos exclusivos do Seedance 2.5 (doc KIE): first/last frame, web_search,
+    // output_format. Sempre mp4 — downloadAndUpload salva como video/mp4.
+    if (isV25) {
+      if (input.firstFrameUrl) {
+        seedanceInput.first_frame_url = input.firstFrameUrl;
+      }
+      if (input.lastFrameUrl) {
+        seedanceInput.last_frame_url = input.lastFrameUrl;
+      }
+      if (input.webSearch !== undefined) {
+        seedanceInput.web_search = input.webSearch;
+      }
+      seedanceInput.output_format = 'mp4';
+    }
+
     const body = {
-      model: 'bytedance/seedance-2',
+      model: modelId,
       input: seedanceInput,
     };
 
@@ -123,7 +152,7 @@ export class BytedanceSeedanceProvider {
       throw new Error('Seedance returned no video results.');
     }
 
-    return { outputUrls, modelUsed: 'bytedance/seedance-2' };
+    return { outputUrls, modelUsed: modelId };
   }
 
   private async submitTask(body: Record<string, unknown>): Promise<string> {

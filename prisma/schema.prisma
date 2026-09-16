@@ -1192,6 +1192,8 @@ enum FreeGenerationType {
   KLING_V3_TURBO
   COMFYDEPLOY_WAN
   MOTION_CONTROL
+  GPT_IMAGE_2_5
+  SEEDANCE_2_5
 }
 
 enum VideoProjectStatus {

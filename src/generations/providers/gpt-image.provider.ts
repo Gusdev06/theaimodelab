@@ -10,8 +10,29 @@ const RESOLUTION_MAP: Record<string, string> = {
   RES_4K: '4K',
 };
 
-const GPT_IMAGE_MODEL_T2I = 'gpt-image-2-text-to-image';
-const GPT_IMAGE_MODEL_I2I = 'gpt-image-2-image-to-image';
+/**
+ * Família do GPT Image na KIE. Mesma API (createTask/recordInfo), só muda o
+ * model id — 'gpt-image-2' (padrão, retrocompatível) ou 'gpt-image-2-5' (Flare).
+ */
+export type GptImageFamily = 'gpt-image-2' | 'gpt-image-2-5';
+
+const GPT_IMAGE_MODELS: Record<
+  GptImageFamily,
+  { t2i: string; i2i: string; label: string; logTag: string }
+> = {
+  'gpt-image-2': {
+    t2i: 'gpt-image-2-text-to-image',
+    i2i: 'gpt-image-2-image-to-image',
+    label: 'GPT Image 2',
+    logTag: 'GPT_IMAGE_2',
+  },
+  'gpt-image-2-5': {
+    t2i: 'gpt-image-2-5-flare-text-to-image',
+    i2i: 'gpt-image-2-5-flare-image-to-image',
+    label: 'GPT Image 2.5',
+    logTag: 'GPT_IMAGE_2_5',
+  },
+};
 
 export interface GptImageInput {
   id: string;
@@ -19,6 +40,7 @@ export interface GptImageInput {
   resolution: string;
   aspectRatio?: string;
   imageUrls?: string[]; // se presente → usa endpoint image-to-image
+  family?: GptImageFamily; // default 'gpt-image-2'
 }
 
 interface CreateTaskResponse {
@@ -65,7 +87,9 @@ export class GptImageProvider {
     const resolution = RESOLUTION_MAP[input.resolution] ?? '1K';
     const aspectRatio = input.aspectRatio ?? 'auto';
     const isImageToImage = !!input.imageUrls?.length;
-    const model = isImageToImage ? GPT_IMAGE_MODEL_I2I : GPT_IMAGE_MODEL_T2I;
+    const family: GptImageFamily = input.family ?? 'gpt-image-2';
+    const spec = GPT_IMAGE_MODELS[family];
+    const model = isImageToImage ? spec.i2i : spec.t2i;
 
     const body: Record<string, unknown> = {
       model,
@@ -78,7 +102,7 @@ export class GptImageProvider {
     };
 
     this.logger.log(
-      `[GPT_IMAGE_2] Creating task: model=${model} resolution=${resolution} aspectRatio=${aspectRatio} inputUrls=${input.imageUrls?.length ?? 0} prompt="${input.prompt}"`,
+      `[${spec.logTag}] Creating task: model=${model} resolution=${resolution} aspectRatio=${aspectRatio} inputUrls=${input.imageUrls?.length ?? 0} prompt="${input.prompt}"`,
     );
 
     const createResponse = await this.fetchWithTimeout(
@@ -96,7 +120,7 @@ export class GptImageProvider {
       const safetyError = ContentSafetyError.fromErrorMessage(errorText);
       if (safetyError) throw safetyError;
       throw new Error(
-        `GPT Image 2 createTask error (${createResponse.status}): ${errorText}`,
+        `${spec.label} createTask error (${createResponse.status}): ${errorText}`,
       );
     }
 
@@ -106,31 +130,39 @@ export class GptImageProvider {
       const safetyError = ContentSafetyError.fromErrorMessage(createData.msg);
       if (safetyError) throw safetyError;
       throw new Error(
-        `GPT Image 2 createTask failed: ${createData.msg} (code ${createData.code})`,
+        `${spec.label} createTask failed: ${createData.msg} (code ${createData.code})`,
       );
     }
 
     const taskId = createData.data.taskId;
-    this.logger.log(`[GPT_IMAGE_2] Task created: ${taskId}`);
+    this.logger.log(`[${spec.logTag}] Task created: ${taskId}`);
 
-    const resultUrls = await this.pollTaskStatus(taskId);
+    const resultUrls = await this.pollTaskStatus(taskId, spec);
 
     const outputUrls: string[] = [];
     for (let i = 0; i < resultUrls.length; i++) {
-      const url = await this.downloadAndUpload(resultUrls[i], input.id, i);
+      const url = await this.downloadAndUpload(
+        resultUrls[i],
+        input.id,
+        i,
+        spec,
+      );
       outputUrls.push(url);
     }
 
     if (!outputUrls.length) {
-      throw new Error('GPT Image 2 returned no images.');
+      throw new Error(`${spec.label} returned no images.`);
     }
 
-    this.logger.log(`[GPT_IMAGE_2] ${outputUrls.length} image(s) uploaded to S3`);
-    return { outputUrls, modelUsed: 'gpt-image-2' };
+    this.logger.log(
+      `[${spec.logTag}] ${outputUrls.length} image(s) uploaded to S3`,
+    );
+    return { outputUrls, modelUsed: family };
   }
 
   private async pollTaskStatus(
     taskId: string,
+    spec: (typeof GPT_IMAGE_MODELS)[GptImageFamily],
     maxAttempts = 120,
     intervalMs = 5_000,
   ): Promise<string[]> {
@@ -152,7 +184,7 @@ export class GptImageProvider {
       } catch (error) {
         networkFailures++;
         this.logger.warn(
-          `[GPT_IMAGE_2] Poll fetch failed (${networkFailures}/${maxNetworkRetries}): ${(error as Error).message}`,
+          `[${spec.logTag}] Poll fetch failed (${networkFailures}/${maxNetworkRetries}): ${(error as Error).message}`,
         );
         if (networkFailures >= maxNetworkRetries) throw error;
         continue;
@@ -162,11 +194,11 @@ export class GptImageProvider {
         networkFailures++;
         const errorText = await response.text();
         this.logger.warn(
-          `[GPT_IMAGE_2] Poll HTTP ${response.status} (${networkFailures}/${maxNetworkRetries}): ${errorText}`,
+          `[${spec.logTag}] Poll HTTP ${response.status} (${networkFailures}/${maxNetworkRetries}): ${errorText}`,
         );
         if (networkFailures >= maxNetworkRetries) {
           throw new Error(
-            `GPT Image 2 recordInfo error (${response.status}): ${errorText}`,
+            `${spec.label} recordInfo error (${response.status}): ${errorText}`,
           );
         }
         continue;
@@ -177,7 +209,7 @@ export class GptImageProvider {
 
       if (data.data.state === 'waiting') {
         this.logger.debug(
-          `[GPT_IMAGE_2] Still processing... (attempt ${attempt + 1}/${maxAttempts})`,
+          `[${spec.logTag}] Still processing... (attempt ${attempt + 1}/${maxAttempts})`,
         );
         continue;
       }
@@ -187,30 +219,35 @@ export class GptImageProvider {
           data.data.failMsg ?? data.data.failCode ?? 'unknown error';
         const safetyError = ContentSafetyError.fromErrorMessage(failMsg);
         if (safetyError) throw safetyError;
-        throw new Error(`GPT Image 2 generation failed: ${failMsg}`);
+        throw new Error(`${spec.label} generation failed: ${failMsg}`);
       }
 
       if (data.data.state === 'success') {
         if (!data.data.resultJson) {
-          throw new Error('GPT Image 2 succeeded but returned no resultJson.');
+          throw new Error(
+            `${spec.label} succeeded but returned no resultJson.`,
+          );
         }
         const result = JSON.parse(data.data.resultJson) as {
           resultUrls?: string[];
         };
         if (!result.resultUrls?.length) {
-          throw new Error('GPT Image 2 succeeded but returned no image URLs.');
+          throw new Error(
+            `${spec.label} succeeded but returned no image URLs.`,
+          );
         }
         return result.resultUrls;
       }
     }
 
-    throw new Error('GPT Image 2 generation timed out.');
+    throw new Error(`${spec.label} generation timed out.`);
   }
 
   private async downloadAndUpload(
     sourceUrl: string,
     generationId: string,
     index: number,
+    spec: (typeof GPT_IMAGE_MODELS)[GptImageFamily],
   ): Promise<string> {
     const maxRetries = 3;
     let lastError: Error | undefined;
@@ -220,14 +257,14 @@ export class GptImageProvider {
         if (attempt > 0) {
           await new Promise((resolve) => setTimeout(resolve, 2_000));
           this.logger.warn(
-            `[GPT_IMAGE_2] Retrying download (${attempt + 1}/${maxRetries}) for ${generationId}`,
+            `[${spec.logTag}] Retrying download (${attempt + 1}/${maxRetries}) for ${generationId}`,
           );
         }
 
         const response = await this.fetchWithTimeout(sourceUrl, {}, 60_000);
         if (!response.ok) {
           throw new Error(
-            `Failed to download image from GPT Image 2 (${response.status}): ${sourceUrl}`,
+            `Failed to download image from ${spec.label} (${response.status}): ${sourceUrl}`,
           );
         }
         const buffer = Buffer.from(await response.arrayBuffer());

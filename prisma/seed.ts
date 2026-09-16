@@ -376,6 +376,13 @@ async function main() {
     { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 135, isPerSecond: false },
     { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 200, isPerSecond: false },
     { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'GPT_IMAGE_2', creditsPerUnit: 300, isPerSecond: false },
+    // GPT Image 2.5 Flare (KIE, 2026-09-16) — KIE cobra US$ 0,03 / 0,05 / 0,08 (1K/2K/4K); créditos = custo × 3333.
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'GPT_IMAGE_2_5', creditsPerUnit: 100, isPerSecond: false },
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'GPT_IMAGE_2_5', creditsPerUnit: 170, isPerSecond: false },
+    { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'GPT_IMAGE_2_5', creditsPerUnit: 270, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'GPT_IMAGE_2_5', creditsPerUnit: 100, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'GPT_IMAGE_2_5', creditsPerUnit: 170, isPerSecond: false },
+    { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'GPT_IMAGE_2_5', creditsPerUnit: 270, isPerSecond: false },
 
     // Images - Nano Banana Pro (NBP) — v5 pricing (~70% margem)
     { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 300, isPerSecond: false },
@@ -714,6 +721,7 @@ async function main() {
 
   const videoModels = [
     { slug: 'gemini-omni-video', label: 'Gemini Omni', provider: 'KIE' as const, modelVariant: 'GEMINI_OMNI', sortOrder: 0 },
+    { slug: 'bytedance-seedance-2-5', label: 'Seedance 2.5', provider: 'KIE' as const, modelVariant: 'SEEDANCE_2_5', sortOrder: 0 },
     { slug: 'bytedance-seedance-2', label: 'Seedance 2', provider: 'KIE' as const, modelVariant: 'SEEDANCE_2', sortOrder: 1 },
     { slug: 'grok-imagine', label: 'Grok Imagine', provider: 'KIE' as const, modelVariant: 'GROK_IMAGINE', sortOrder: 2 },
     { slug: 'theaimodelab-quality', label: 'Veo 3.1 Quality', provider: 'THEAIMODELAB' as const, modelVariant: 'THEAIMODELAB_QUALITY', sortOrder: 3 },

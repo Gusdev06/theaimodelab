@@ -290,7 +290,7 @@ export class GenerationsController {
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
   @ApiOperation({
     summary:
-      'Gera vídeo via Bytedance Seedance 2.0 (Kie) — 480p/720p/1080p, duração 4-15s, image-to-video ou multimodal-reference',
+      'Gera vídeo via Bytedance Seedance 2.0 ou 2.5 (Kie) — campo "model": "seedance-2" (default, 4-15s) | "seedance-2-5" (4-30s, aspect "adaptive", first/last frame). 480p/720p/1080p, image-to-video ou multimodal-reference',
   })
   @ApiResponse({ status: 201, type: CreateGenerationResponseDto })
   async seedanceVideo(

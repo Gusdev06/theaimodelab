@@ -184,6 +184,9 @@ export class PlansService {
     if (modelVariant === 'SEEDANCE_2') {
       return PlansService.calculateSeedanceCost(resolution, durationSeconds, hasVideoInput);
     }
+    if (modelVariant === 'SEEDANCE_2_5') {
+      return PlansService.calculateSeedance25Cost(resolution, durationSeconds, hasVideoInput);
+    }
 
     const cost = await this.getCreditCost(generationType, resolution, hasAudio, modelVariant);
 
@@ -256,6 +259,36 @@ export class PlansService {
     RES_720P:   415,
     RES_1080P: 1040,
   };
+
+  // Seedance 2.5 (KIE, 2026-09-16) — tabela pública da KIE: sem vídeo 480p $0,14/s ·
+  // 720p $0,315/s · 1080p $0,57/s; com vídeo $0,085 / $0,19 / $0,3425. Créditos = custo × 3333.
+  private static readonly SEEDANCE_25_PRICING_NO_VIDEO: Record<string, number> = {
+    RES_480P: 470,
+    RES_720P: 1050,
+    RES_1080P: 1900,
+  };
+  private static readonly SEEDANCE_25_PRICING_WITH_VIDEO: Record<string, number> = {
+    RES_480P: 285,
+    RES_720P: 635,
+    RES_1080P: 1140,
+  };
+
+  private static calculateSeedance25Cost(
+    resolution: string,
+    durationSeconds: number | undefined,
+    hasVideoInput: boolean,
+  ): number {
+    const pricing = hasVideoInput
+      ? PlansService.SEEDANCE_25_PRICING_WITH_VIDEO
+      : PlansService.SEEDANCE_25_PRICING_NO_VIDEO;
+    const perSecond = pricing[resolution];
+    if (!perSecond) {
+      throw new NotFoundException(
+        `Pricing Seedance 2.5 não encontrado para resolution=${resolution} (hasVideoInput=${hasVideoInput})`,
+      );
+    }
+    return perSecond * (durationSeconds ?? 5);
+  }
 
   private static calculateSeedanceCost(
     resolution: Resolution,

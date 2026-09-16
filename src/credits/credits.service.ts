@@ -40,6 +40,8 @@ const EMPTY_FREE_GENERATIONS: FreeGenerationsMap = {
   KLING_V3_TURBO: 0,
   COMFYDEPLOY_WAN: 0,
   MOTION_CONTROL: 0,
+  GPT_IMAGE_2_5: 0,
+  SEEDANCE_2_5: 0,
 };
 
 /**
@@ -62,6 +64,8 @@ const VARIANT_TO_FREE_TYPE: Record<string, FreeGenerationType> = {
   SEEDANCE_2: FreeGenerationType.SEEDANCE_2,
   KLING_V3_TURBO: FreeGenerationType.KLING_V3_TURBO,
   COMFYDEPLOY_WAN: FreeGenerationType.COMFYDEPLOY_WAN,
+  GPT_IMAGE_2_5: FreeGenerationType.GPT_IMAGE_2_5,
+  SEEDANCE_2_5: FreeGenerationType.SEEDANCE_2_5,
 };
 
 /**

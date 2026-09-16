@@ -41,6 +41,7 @@ export class GenerateImageDto {
       'gemini-3.1-flash-image-preview',
       'sem-censura',
       'gpt-image-2',
+      'gpt-image-2-5',
       'seedream-5-lite',
       'deepdeep',
     ],
@@ -51,6 +52,7 @@ export class GenerateImageDto {
     'gemini-3.1-flash-image-preview',
     'sem-censura',
     'gpt-image-2',
+    'gpt-image-2-5',
     'seedream-5-lite',
     'deepdeep',
   ])

@@ -44,6 +44,10 @@ export interface RecipientFilter {
   planSlug?: string;
   emails?: string[];
   email?: string;
+  /** ALL: só usuários desse locale ('en' | 'pt-BR' | 'es'). Sem filtro = todos. */
+  locale?: string;
+  /** ALL: inclui quem nunca confirmou o e-mail (padrão: só verificados). */
+  includeUnverified?: boolean;
 }
 
 export interface ResolvedRecipient {
@@ -92,8 +96,14 @@ export class AdminEmailsService {
   ): Promise<ResolvedRecipient[]> {
     switch (type) {
       case EmailBroadcastRecipientType.ALL: {
+        // "Todos" = conta ativa e e-mail verificado, salvo pedido explícito de incluir
+        // não verificados. Locale opcional pra mandar um broadcast por idioma.
         const users = await this.prisma.user.findMany({
-          where: { isActive: true, emailVerified: true },
+          where: {
+            isActive: true,
+            ...(filter?.includeUnverified ? {} : { emailVerified: true }),
+            ...(filter?.locale ? { locale: filter.locale } : {}),
+          },
           select: {
             id: true,
             email: true,

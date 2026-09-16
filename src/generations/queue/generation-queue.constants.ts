@@ -146,12 +146,18 @@ export interface OmniVideoJobData extends BaseJobData {
 
 export interface SeedanceVideoJobData extends BaseJobData {
   prompt: string;
+  /** Modelo KIE: 'bytedance/seedance-2' (default) ou 'bytedance/seedance-2-5'. */
+  modelId?: 'bytedance/seedance-2' | 'bytedance/seedance-2-5';
   resolution: string;
   durationSeconds: number;
   aspectRatio?: string;
   referenceImageUrls?: string[];
   referenceVideoUrls?: string[];
   referenceAudioUrls?: string[];
+  /** Só Seedance 2.5. */
+  firstFrameUrl?: string;
+  lastFrameUrl?: string;
+  webSearch?: boolean;
   generateAudio: boolean;
   hasVideoInput: boolean;
 }

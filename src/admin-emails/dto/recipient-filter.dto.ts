@@ -1,7 +1,9 @@
 import {
   IsArray,
+  IsBoolean,
   IsEmail,
   IsEnum,
+  IsIn,
   IsObject,
   IsOptional,
   IsString,
@@ -34,6 +36,17 @@ export class RecipientFilterDto {
   @IsOptional()
   @IsEmail()
   email?: string;
+
+  @ApiPropertyOptional({ description: "ALL: só usuários desse locale ('en' | 'pt-BR' | 'es')", example: 'pt-BR' })
+  @IsOptional()
+  @IsString()
+  @IsIn(['en', 'pt-BR', 'es'])
+  locale?: string;
+
+  @ApiPropertyOptional({ description: 'ALL: inclui usuários sem e-mail verificado', default: false })
+  @IsOptional()
+  @IsBoolean()
+  includeUnverified?: boolean;
 }
 
 export class RecipientSelectionDto {
