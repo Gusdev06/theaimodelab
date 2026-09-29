@@ -92,6 +92,12 @@ export class AdminController {
     return this.adminService.getHealthStats();
   }
 
+  @Get('stats/business-health')
+  @ApiOperation({ summary: 'Saúde do negócio: receita, vendas, renovações, cadastros e uso por dia/semana/mês' })
+  async getBusinessHealth() {
+    return this.adminService.getBusinessHealth();
+  }
+
   @Get('attribution')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
   @ApiOperation({ summary: 'Atribuição de cadastros por campanha/criativo (UTMs do cadastro)' })

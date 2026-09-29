@@ -48,6 +48,56 @@ const REAL_PAYMENTS_CTE = Prisma.sql`real_payments AS (
     AND pay.provider IN ('perfectpay', 'cakto', 'stripe')
 )`;
 
+/** Pagamentos reais sem as cópias do webhook duplicado (mesmo provider + external_payment_id). */
+const DEDUP_PAYMENTS_CTE = Prisma.sql`hp AS (
+  SELECT DISTINCT ON (pay.provider, COALESCE(pay.external_payment_id, pay.id))
+         pay.id, pay.user_id, pay.type, pay.amount_cents, pay.subscription_id, pay.provider, pay.created_at,
+         CASE WHEN UPPER(pay.currency) = 'USD' THEN 'USD' ELSE 'BRL' END AS cur
+  FROM payments pay
+  WHERE pay.status = 'COMPLETED'
+    AND pay.provider IN ('perfectpay', 'cakto', 'stripe')
+  ORDER BY pay.provider, COALESCE(pay.external_payment_id, pay.id), pay.created_at
+)`;
+
+/** created_at é timestamp sem fuso gravado em UTC; converte para o relógio de São Paulo. */
+const SP_TS = Prisma.raw(`((created_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/Sao_Paulo')`);
+
+export interface BusinessHealthPeriod {
+  period: string;
+  usdCents: number;
+  brlCents: number;
+  subsUsdCents: number;
+  subsBrlCents: number;
+  newSubs: number;
+  renewals: number;
+  creditSales: number;
+  payingCustomers: number;
+  signups: number;
+  activeGenerators: number;
+}
+
+export interface BusinessHealthResponse {
+  generatedAt: string;
+  timezone: string;
+  fxUsdBrl: number;
+  days: BusinessHealthPeriod[];
+  weeks: BusinessHealthPeriod[];
+  months: (BusinessHealthPeriod & {
+    churnUsdPct: number | null;
+    churnBrlPct: number | null;
+    conversionPct: number | null;
+  })[];
+  renewalsNext30d: { provider: string; currency: 'USD' | 'BRL'; subs: number; totalCents: number }[];
+  gateways: {
+    provider: string;
+    lastWebhookAt: string | null;
+    lastPaymentAt: string | null;
+    webhooks24h: number;
+    errors24h: number;
+  }[];
+  duplicatePayments7d: number;
+}
+
 const PAID_SUBS_CTE = Prisma.sql`paid_subs AS (
   SELECT s.id, s.user_id, s.plan_id, s.status, s.updated_at, s.payment_provider
   FROM subscriptions s
@@ -1616,6 +1666,200 @@ export class AdminService {
         .slice(0, 10),
       alerts,
     };
+  }
+
+  // ============================================
+  // SAÚDE DO NEGÓCIO (hoje / dias / semanas / meses)
+  // ============================================
+
+  /**
+   * Receita, vendas novas x renovações, cadastros e uso agrupados por dia, semana e mês
+   * (fuso America/Sao_Paulo). Pagamentos deduplicados por (provider, external_payment_id):
+   * o webhook já gravou o mesmo pagamento 2x, e a leitura não pode depender da limpeza.
+   */
+  async getBusinessHealth(): Promise<BusinessHealthResponse> {
+    const [fxUsdBrl, days, weeks, months, churn, conversion, renewals, gateways, duplicates] =
+      await Promise.all([
+        this.getFxUsdBrl(),
+        this.getHealthPeriods('day', 13),
+        this.getHealthPeriods('week', 11),
+        this.getHealthPeriods('month', null),
+        this.prisma.$queryRaw<{ mes: string; cur: string; base: bigint; retidos: bigint }[]>`
+          WITH ${DEDUP_PAYMENTS_CTE},
+          m AS (
+            SELECT DISTINCT user_id, cur, date_trunc('month', ${SP_TS}) AS mes
+            FROM hp WHERE type = 'SUBSCRIPTION'
+          )
+          SELECT to_char(a.mes + interval '1 month', 'YYYY-MM') AS mes, a.cur,
+                 COUNT(*)::bigint AS base, COUNT(b.user_id)::bigint AS retidos
+          FROM m a
+          LEFT JOIN m b ON b.user_id = a.user_id AND b.cur = a.cur AND b.mes = a.mes + interval '1 month'
+          GROUP BY 1, 2
+        `,
+        this.prisma.$queryRaw<{ mes: string; cadastros: bigint; pagantes: bigint }[]>`
+          WITH ${DEDUP_PAYMENTS_CTE}, paid AS (SELECT DISTINCT user_id FROM hp)
+          SELECT to_char(date_trunc('month', (u.created_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/Sao_Paulo'), 'YYYY-MM') AS mes,
+                 COUNT(*)::bigint AS cadastros, COUNT(paid.user_id)::bigint AS pagantes
+          FROM users u LEFT JOIN paid ON paid.user_id = u.id
+          GROUP BY 1
+        `,
+        this.prisma.$queryRaw<{ provider: string; cur: string; subs: bigint; total: bigint }[]>`
+          WITH ${DEDUP_PAYMENTS_CTE},
+          lastpay AS (
+            SELECT DISTINCT ON (subscription_id) subscription_id, amount_cents, cur
+            FROM hp WHERE type = 'SUBSCRIPTION' AND subscription_id IS NOT NULL
+            ORDER BY subscription_id, created_at DESC
+          )
+          SELECT s.payment_provider AS provider, lp.cur, COUNT(*)::bigint AS subs,
+                 COALESCE(SUM(lp.amount_cents), 0)::bigint AS total
+          FROM subscriptions s JOIN lastpay lp ON lp.subscription_id = s.id
+          WHERE s.status = 'ACTIVE' AND NOT s.cancel_at_period_end
+            AND s.current_period_end BETWEEN now() AND now() + interval '30 days'
+          GROUP BY 1, 2 ORDER BY 1
+        `,
+        this.prisma.$queryRaw<
+          { provider: string; last_webhook: Date | null; webhooks_24h: bigint; errors_24h: bigint }[]
+        >`
+          SELECT provider, MAX(created_at) AS last_webhook,
+                 COUNT(*) FILTER (WHERE created_at >= now() - interval '24 hours')::bigint AS webhooks_24h,
+                 COUNT(*) FILTER (WHERE created_at >= now() - interval '24 hours' AND error IS NOT NULL)::bigint AS errors_24h
+          FROM webhook_logs
+          WHERE created_at >= now() - interval '30 days'
+          GROUP BY 1 ORDER BY 1
+        `,
+        this.prisma.$queryRaw<{ n: bigint }[]>`
+          SELECT COUNT(*)::bigint AS n FROM (
+            SELECT provider, external_payment_id FROM payments
+            WHERE external_payment_id IS NOT NULL AND status = 'COMPLETED'
+              AND created_at >= now() - interval '7 days'
+            GROUP BY 1, 2 HAVING COUNT(*) > 1
+          ) d
+        `,
+      ]);
+
+    const lastPayments = await this.prisma.$queryRaw<{ provider: string; last_payment: Date }[]>`
+      SELECT provider, MAX(created_at) AS last_payment FROM payments
+      WHERE status = 'COMPLETED' AND provider IN ('perfectpay', 'cakto', 'stripe')
+      GROUP BY 1
+    `;
+
+    const churnPct = (mes: string, cur: string) => {
+      const r = churn.find((c) => c.mes === mes && c.cur === cur);
+      if (!r || Number(r.base) === 0) return null;
+      return Math.round(1000 * (1 - Number(r.retidos) / Number(r.base))) / 10;
+    };
+
+    return {
+      generatedAt: new Date().toISOString(),
+      timezone: 'America/Sao_Paulo',
+      fxUsdBrl,
+      days,
+      weeks,
+      months: months.map((m) => {
+        const conv = conversion.find((c) => c.mes === m.period);
+        const signups = conv ? Number(conv.cadastros) : 0;
+        return {
+          ...m,
+          churnUsdPct: churnPct(m.period, 'USD'),
+          churnBrlPct: churnPct(m.period, 'BRL'),
+          conversionPct: signups > 0 ? Math.round((10000 * Number(conv!.pagantes)) / signups) / 100 : null,
+        };
+      }),
+      renewalsNext30d: renewals.map((r) => ({
+        provider: r.provider,
+        currency: r.cur as 'USD' | 'BRL',
+        subs: Number(r.subs),
+        totalCents: Number(r.total),
+      })),
+      gateways: gateways.map((g) => ({
+        provider: g.provider,
+        lastWebhookAt: g.last_webhook?.toISOString() ?? null,
+        lastPaymentAt: lastPayments.find((p) => p.provider === g.provider)?.last_payment.toISOString() ?? null,
+        webhooks24h: Number(g.webhooks_24h),
+        errors24h: Number(g.errors_24h),
+      })),
+      duplicatePayments7d: Number(duplicates[0]?.n ?? 0),
+    };
+  }
+
+  /** Uma linha por dia/semana/mês desde `back` unidades atrás (null = desde o 1º pagamento). */
+  private async getHealthPeriods(
+    unit: 'day' | 'week' | 'month',
+    back: number | null,
+  ): Promise<BusinessHealthPeriod[]> {
+    const u = Prisma.raw(`'${unit}'`);
+    const step = Prisma.raw(`interval '1 ${unit}'`);
+    const start = back === null
+      ? Prisma.sql`(SELECT date_trunc(${u}, MIN(${SP_TS})) FROM hp)`
+      : Prisma.sql`date_trunc(${u}, now() AT TIME ZONE 'America/Sao_Paulo') - ${Prisma.raw(`interval '${back} ${unit}'`)}`;
+    const fmt = Prisma.raw(unit === 'month' ? `'YYYY-MM'` : `'YYYY-MM-DD'`);
+    const since = Prisma.sql`((SELECT b FROM bounds) AT TIME ZONE 'America/Sao_Paulo') AT TIME ZONE 'UTC'`;
+
+    const rows = await this.prisma.$queryRaw<
+      {
+        period: string; usd: bigint; brl: bigint; subs_usd: bigint; subs_brl: bigint;
+        new_subs: bigint; renewals: bigint; credit_sales: bigint; paying: bigint;
+        signups: bigint; generators: bigint;
+      }[]
+    >`
+      WITH ${DEDUP_PAYMENTS_CTE},
+      bounds AS (SELECT ${start} AS b),
+      r AS (
+        SELECT hp.*,
+               CASE WHEN type = 'SUBSCRIPTION' AND subscription_id IS NOT NULL
+                    THEN row_number() OVER (PARTITION BY subscription_id ORDER BY created_at) END AS rn
+        FROM hp
+      ),
+      pay AS (
+        SELECT date_trunc(${u}, ${SP_TS}) AS b,
+               COALESCE(SUM(amount_cents) FILTER (WHERE cur = 'USD'), 0)::bigint AS usd,
+               COALESCE(SUM(amount_cents) FILTER (WHERE cur = 'BRL'), 0)::bigint AS brl,
+               COALESCE(SUM(amount_cents) FILTER (WHERE cur = 'USD' AND type = 'SUBSCRIPTION'), 0)::bigint AS subs_usd,
+               COALESCE(SUM(amount_cents) FILTER (WHERE cur = 'BRL' AND type = 'SUBSCRIPTION'), 0)::bigint AS subs_brl,
+               COUNT(*) FILTER (WHERE rn = 1)::bigint AS new_subs,
+               COUNT(*) FILTER (WHERE rn > 1)::bigint AS renewals,
+               COUNT(*) FILTER (WHERE type = 'CREDIT_PURCHASE')::bigint AS credit_sales,
+               COUNT(DISTINCT user_id)::bigint AS paying
+        FROM r WHERE created_at >= ${since}
+        GROUP BY 1
+      ),
+      su AS (
+        SELECT date_trunc(${u}, ${SP_TS}) AS b, COUNT(*)::bigint AS n
+        FROM users WHERE created_at >= ${since} GROUP BY 1
+      ),
+      ge AS (
+        SELECT date_trunc(${u}, ${SP_TS}) AS b, COUNT(DISTINCT user_id)::bigint AS n
+        FROM generations WHERE status = 'COMPLETED' AND created_at >= ${since} GROUP BY 1
+      ),
+      series AS (
+        SELECT generate_series((SELECT b FROM bounds), date_trunc(${u}, now() AT TIME ZONE 'America/Sao_Paulo'), ${step}) AS b
+      )
+      SELECT to_char(series.b, ${fmt}) AS period,
+             COALESCE(pay.usd, 0)::bigint AS usd, COALESCE(pay.brl, 0)::bigint AS brl,
+             COALESCE(pay.subs_usd, 0)::bigint AS subs_usd, COALESCE(pay.subs_brl, 0)::bigint AS subs_brl,
+             COALESCE(pay.new_subs, 0)::bigint AS new_subs, COALESCE(pay.renewals, 0)::bigint AS renewals,
+             COALESCE(pay.credit_sales, 0)::bigint AS credit_sales, COALESCE(pay.paying, 0)::bigint AS paying,
+             COALESCE(su.n, 0)::bigint AS signups, COALESCE(ge.n, 0)::bigint AS generators
+      FROM series
+      LEFT JOIN pay ON pay.b = series.b
+      LEFT JOIN su ON su.b = series.b
+      LEFT JOIN ge ON ge.b = series.b
+      ORDER BY series.b
+    `;
+
+    return rows.map((r) => ({
+      period: r.period,
+      usdCents: Number(r.usd),
+      brlCents: Number(r.brl),
+      subsUsdCents: Number(r.subs_usd),
+      subsBrlCents: Number(r.subs_brl),
+      newSubs: Number(r.new_subs),
+      renewals: Number(r.renewals),
+      creditSales: Number(r.credit_sales),
+      payingCustomers: Number(r.paying),
+      signups: Number(r.signups),
+      activeGenerators: Number(r.generators),
+    }));
   }
 
   // ============================================
