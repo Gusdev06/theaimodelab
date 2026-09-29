@@ -12,7 +12,11 @@ import { PaginatedResponseDto } from '../common/dto/paginated-response.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { ListGenerationsQueryDto } from './dto/list-generations-query.dto';
 import { ListPromptTemplatesQueryDto } from './dto/list-prompt-templates-query.dto';
-import { AdminStatsResponseDto } from './dto/admin-stats-response.dto';
+import {
+  AdminStatsResponseDto,
+  FinancialStatsResponseDto,
+  UserStatsResponseDto,
+} from './dto/admin-stats-response.dto';
 import { CreatePromptSectionDto } from './dto/create-prompt-section.dto';
 import { UpdatePromptSectionDto } from './dto/update-prompt-section.dto';
 import { CreatePromptCategoryDto } from './dto/create-prompt-category.dto';
@@ -25,6 +29,33 @@ import { Logger } from '@nestjs/common';
 
 const PROMPT_THUMB_WIDTH = 400;
 const PROMPT_THUMB_HEIGHT = 500;
+
+/**
+ * Métricas do painel admin — regras em projects/theaimodelab/admin-metricas-CONTRATO.md.
+ *
+ * - Pagamento real: COMPLETED e provider perfectpay/cakto/stripe (admin/manual nunca é receita).
+ *   `cur` normaliza a moeda para 'USD' | 'BRL'.
+ * - Assinatura paga: plano ≠ free, payment_provider perfectpay/cakto/stripe e ≥ 1 pagamento
+ *   real ligado. "Ativa" adiciona status ACTIVE (feito em cada query).
+ */
+const DEFAULT_FX_USD_BRL = 5.4;
+
+const REAL_PAYMENTS_CTE = Prisma.sql`real_payments AS (
+  SELECT pay.*,
+         CASE WHEN UPPER(pay.currency) = 'USD' THEN 'USD' ELSE 'BRL' END AS cur
+  FROM payments pay
+  WHERE pay.status = 'COMPLETED'
+    AND pay.provider IN ('perfectpay', 'cakto', 'stripe')
+)`;
+
+const PAID_SUBS_CTE = Prisma.sql`paid_subs AS (
+  SELECT s.id, s.user_id, s.plan_id, s.status, s.updated_at, s.payment_provider
+  FROM subscriptions s
+  JOIN plans pl ON pl.id = s.plan_id
+  WHERE pl.slug <> 'free'
+    AND s.payment_provider IN ('perfectpay', 'cakto', 'stripe')
+    AND EXISTS (SELECT 1 FROM real_payments rp WHERE rp.subscription_id = s.id)
+)`;
 
 @Injectable()
 export class AdminService {
@@ -94,11 +125,43 @@ export class AdminService {
     );
   }
 
+  /** Câmbio USD→BRL de app_settings.fx_usd_brl; ausente/inválido → 5.40. */
+  private async getFxUsdBrl(): Promise<number> {
+    const row = await this.prisma.appSetting.findUnique({ where: { key: 'fx_usd_brl' } });
+    const fx = row ? parseFloat(row.value.replace(',', '.')) : NaN;
+    return Number.isFinite(fx) && fx > 0 ? fx : DEFAULT_FX_USD_BRL;
+  }
+
+  private consolidateBrl(usdCents: number, brlCents: number, fx: number): number {
+    return brlCents + Math.round(usdCents * fx);
+  }
+
+  /** Soma de pagamentos reais por moeda (desde `since`, ou histórico se null). */
+  private async getRealRevenue(since: Date | null): Promise<{ usdCents: number; brlCents: number }> {
+    const sinceFilter = since ? Prisma.sql`WHERE created_at >= ${since}` : Prisma.empty;
+    const rows = await this.prisma.$queryRaw<{ cur: string; total: bigint }[]>`
+      WITH ${REAL_PAYMENTS_CTE}
+      SELECT cur, COALESCE(SUM(amount_cents), 0)::bigint AS total
+      FROM real_payments
+      ${sinceFilter}
+      GROUP BY cur
+    `;
+    let usdCents = 0;
+    let brlCents = 0;
+    for (const r of rows) {
+      if (r.cur === 'USD') usdCents += Number(r.total);
+      else brlCents += Number(r.total);
+    }
+    return { usdCents, brlCents };
+  }
+
   async getStats(): Promise<AdminStatsResponseDto> {
     const [
       totalUsers,
-      activeSubscriptions,
-      revenueResult,
+      subsBreakdownRows,
+      revenueSplit,
+      fxUsdBrl,
+      payingCustomersRows,
       totalGenerations,
       pendingCount,
       processingCount,
@@ -107,13 +170,30 @@ export class AdminService {
       modelGroups,
     ] = await Promise.all([
       this.prisma.user.count(),
-      this.prisma.subscription.count({
-        where: { status: SubscriptionStatus.ACTIVE },
-      }),
-      this.prisma.payment.aggregate({
-        _sum: { amountCents: true },
-        where: { status: 'COMPLETED' },
-      }),
+      // Assinaturas ACTIVE por balde: pagas por provider, cortesia (admin) e free.
+      this.prisma.$queryRaw<{ bucket: string; count: bigint }[]>`
+        WITH ${REAL_PAYMENTS_CTE}, ${PAID_SUBS_CTE}
+        SELECT ps.payment_provider AS bucket, COUNT(*)::bigint AS count
+        FROM paid_subs ps
+        WHERE ps.status = 'ACTIVE'
+        GROUP BY ps.payment_provider
+        UNION ALL
+        SELECT 'courtesy' AS bucket, COUNT(*)::bigint AS count
+        FROM subscriptions s
+        JOIN plans pl ON pl.id = s.plan_id
+        WHERE s.status = 'ACTIVE' AND pl.slug <> 'free' AND s.payment_provider = 'admin'
+        UNION ALL
+        SELECT 'free' AS bucket, COUNT(*)::bigint AS count
+        FROM subscriptions s
+        JOIN plans pl ON pl.id = s.plan_id
+        WHERE s.status = 'ACTIVE' AND pl.slug = 'free'
+      `,
+      this.getRealRevenue(null),
+      this.getFxUsdBrl(),
+      this.prisma.$queryRaw<[{ count: bigint }]>`
+        WITH ${REAL_PAYMENTS_CTE}
+        SELECT COUNT(DISTINCT user_id)::bigint AS count FROM real_payments
+      `,
       this.prisma.generation.count(),
       this.prisma.generation.count({ where: { status: GenerationStatus.PENDING } }),
       this.prisma.generation.count({ where: { status: GenerationStatus.PROCESSING } }),
@@ -124,6 +204,21 @@ export class AdminService {
         _count: { _all: true },
       }),
     ]);
+
+    const subscriptionsBreakdown = { perfectpay: 0, cakto: 0, stripe: 0, courtesy: 0, free: 0 };
+    for (const r of subsBreakdownRows) {
+      if (r.bucket in subscriptionsBreakdown) {
+        subscriptionsBreakdown[r.bucket as keyof typeof subscriptionsBreakdown] += Number(r.count);
+      }
+    }
+    const activeSubscriptions =
+      subscriptionsBreakdown.perfectpay + subscriptionsBreakdown.cakto + subscriptionsBreakdown.stripe;
+    const revenue = {
+      usdCents: revenueSplit.usdCents,
+      brlCents: revenueSplit.brlCents,
+      consolidatedBrlCents: this.consolidateBrl(revenueSplit.usdCents, revenueSplit.brlCents, fxUsdBrl),
+      fxUsdBrl,
+    };
 
     let theaimodelabCount = 0;
     let kieCount = 0;
@@ -152,7 +247,10 @@ export class AdminService {
     return {
       totalUsers,
       activeSubscriptions,
-      totalRevenueCents: revenueResult._sum.amountCents ?? 0,
+      subscriptionsBreakdown,
+      totalRevenueCents: revenue.consolidatedBrlCents,
+      revenue,
+      payingCustomers: Number(payingCustomersRows[0]?.count ?? 0),
       totalGenerations,
       generationsByStatus: {
         pending: pendingCount,
@@ -702,83 +800,113 @@ export class AdminService {
     };
   }
 
-  async getFinancialStats(days: number) {
+  async getFinancialStats(days: number): Promise<FinancialStatsResponseDto> {
     const since = new Date();
     since.setDate(since.getDate() - days);
 
     const [
-      mrrResult,
+      fxUsdBrl,
+      mrrRows,
       dailyRevenue,
       revenueByPlan,
       boostSales,
-      totalUsers,
-      totalRevenueResult,
+      revenueSplit,
+      payingPeriodRows,
       apiCostRows,
     ] = await Promise.all([
-      // MRR: sum of active subscription plan prices
-      this.prisma.$queryRaw<[{ mrr_cents: number }]>`
-        SELECT COALESCE(SUM(p.price_cents), 0)::int AS mrr_cents
-        FROM subscriptions s
-        JOIN plans p ON p.id = s.plan_id
-        WHERE s.status = 'ACTIVE'
+      this.getFxUsdBrl(),
+
+      // MRR: último pagamento real de cada assinatura paga ativa, por moeda.
+      // Anual (billing_interval='year') entra ÷ 12. Recorrente = só quem tem ≥ 2 pagamentos reais.
+      this.prisma.$queryRaw<
+        { cur: string; subs: bigint; mrr: bigint; subs_rec: bigint; mrr_rec: bigint }[]
+      >`
+        WITH ${REAL_PAYMENTS_CTE}, ${PAID_SUBS_CTE},
+        active_mrr AS (
+          SELECT ps.id,
+                 last.cur,
+                 CASE WHEN pl.billing_interval = 'year'
+                      THEN last.amount_cents::numeric / 12
+                      ELSE last.amount_cents::numeric END AS monthly_cents,
+                 (SELECT COUNT(*) FROM real_payments rp WHERE rp.subscription_id = ps.id) AS pay_count
+          FROM paid_subs ps
+          JOIN plans pl ON pl.id = ps.plan_id
+          JOIN LATERAL (
+            SELECT rp.amount_cents, rp.cur
+            FROM real_payments rp
+            WHERE rp.subscription_id = ps.id
+            ORDER BY rp.created_at DESC, rp.id DESC
+            LIMIT 1
+          ) last ON TRUE
+          WHERE ps.status = 'ACTIVE'
+        )
+        SELECT cur,
+               COUNT(*)::bigint AS subs,
+               ROUND(COALESCE(SUM(monthly_cents), 0))::bigint AS mrr,
+               COUNT(*) FILTER (WHERE pay_count >= 2)::bigint AS subs_rec,
+               ROUND(COALESCE(SUM(monthly_cents) FILTER (WHERE pay_count >= 2), 0))::bigint AS mrr_rec
+        FROM active_mrr
+        GROUP BY cur
       `,
 
-      // Daily revenue in period
-      this.prisma.$queryRaw<{ date: string; revenue_cents: number }[]>`
+      // Receita diária real no período, por moeda
+      this.prisma.$queryRaw<{ date: Date; usd_cents: bigint; brl_cents: bigint }[]>`
+        WITH ${REAL_PAYMENTS_CTE}
         SELECT DATE_TRUNC('day', created_at)::date AS date,
-               COALESCE(SUM(amount_cents), 0)::int AS revenue_cents
-        FROM payments
-        WHERE status = 'COMPLETED'
-          AND created_at >= ${since}
+               COALESCE(SUM(amount_cents) FILTER (WHERE cur = 'USD'), 0)::bigint AS usd_cents,
+               COALESCE(SUM(amount_cents) FILTER (WHERE cur = 'BRL'), 0)::bigint AS brl_cents
+        FROM real_payments
+        WHERE created_at >= ${since}
         GROUP BY DATE_TRUNC('day', created_at)::date
         ORDER BY date ASC
       `,
 
-      // Revenue by plan
+      // Receita por plano e moeda (pagamentos reais de assinatura)
       this.prisma.$queryRaw<
-        { plan_name: string; plan_slug: string; revenue_cents: number; payment_count: number }[]
+        { plan_name: string; plan_slug: string; cur: string; revenue_cents: bigint; payment_count: bigint }[]
       >`
+        WITH ${REAL_PAYMENTS_CTE}
         SELECT pl.name AS plan_name,
                pl.slug AS plan_slug,
-               COALESCE(SUM(pay.amount_cents), 0)::int AS revenue_cents,
-               COUNT(pay.id)::int AS payment_count
-        FROM payments pay
-        JOIN subscriptions sub ON sub.id = pay.subscription_id
+               rp.cur,
+               COALESCE(SUM(rp.amount_cents), 0)::bigint AS revenue_cents,
+               COUNT(rp.id)::bigint AS payment_count
+        FROM real_payments rp
+        JOIN subscriptions sub ON sub.id = rp.subscription_id
         JOIN plans pl ON pl.id = sub.plan_id
-        WHERE pay.status = 'COMPLETED'
-          AND pay.type = 'SUBSCRIPTION'
-          AND pay.created_at >= ${since}
-        GROUP BY pl.slug, pl.name
+        WHERE rp.type = 'SUBSCRIPTION'
+          AND rp.created_at >= ${since}
+        GROUP BY pl.slug, pl.name, rp.cur
         ORDER BY revenue_cents DESC
       `,
 
-      // Boost (credit package) sales
+      // Boosts (pacotes de crédito) por moeda; priceCents = ticket médio pago
       this.prisma.$queryRaw<
-        { name: string; credits: number; price_cents: number; sold_count: number; total_revenue_cents: number }[]
+        { name: string; credits: number; cur: string; sold_count: bigint; total_revenue_cents: bigint }[]
       >`
+        WITH ${REAL_PAYMENTS_CTE}
         SELECT cp.name,
                cp.credits,
-               cp.price_cents,
-               COUNT(pay.id)::int AS sold_count,
-               COALESCE(SUM(pay.amount_cents), 0)::int AS total_revenue_cents
-        FROM payments pay
-        JOIN credit_packages cp ON cp.id = pay.credit_package_id
-        WHERE pay.status = 'COMPLETED'
-          AND pay.type = 'CREDIT_PURCHASE'
-          AND pay.created_at >= ${since}
-        GROUP BY cp.id, cp.name, cp.credits, cp.price_cents
+               rp.cur,
+               COUNT(rp.id)::bigint AS sold_count,
+               COALESCE(SUM(rp.amount_cents), 0)::bigint AS total_revenue_cents
+        FROM real_payments rp
+        JOIN credit_packages cp ON cp.id = rp.credit_package_id
+        WHERE rp.type = 'CREDIT_PURCHASE'
+          AND rp.created_at >= ${since}
+        GROUP BY cp.id, cp.name, cp.credits, rp.cur
         ORDER BY total_revenue_cents DESC
       `,
 
-      // Total users (for ARPU)
-      this.prisma.user.count(),
+      // Receita real no período, por moeda
+      this.getRealRevenue(since),
 
-      // Total revenue in period
-      this.prisma.$queryRaw<[{ total: number }]>`
-        SELECT COALESCE(SUM(amount_cents), 0)::int AS total
-        FROM payments
-        WHERE status = 'COMPLETED'
-          AND created_at >= ${since}
+      // Clientes que pagaram no período (base do ARPPU)
+      this.prisma.$queryRaw<[{ count: bigint }]>`
+        WITH ${REAL_PAYMENTS_CTE}
+        SELECT COUNT(DISTINCT user_id)::bigint AS count
+        FROM real_payments
+        WHERE created_at >= ${since}
       `,
 
       // API cost estimation: group completed generations by model+resolution
@@ -795,8 +923,33 @@ export class AdminService {
       `,
     ]);
 
-    const mrrCents = mrrResult[0]?.mrr_cents ?? 0;
-    const totalRevenueCents = totalRevenueResult[0]?.total ?? 0;
+    const toCurrency = (cur: string): 'USD' | 'BRL' => (cur === 'USD' ? 'USD' : 'BRL');
+
+    const contracted = { usdCents: 0, brlCents: 0, consolidatedBrlCents: 0, subsUsd: 0, subsBrl: 0 };
+    const recurring = { usdCents: 0, brlCents: 0, consolidatedBrlCents: 0, subsUsd: 0, subsBrl: 0 };
+    for (const r of mrrRows) {
+      if (r.cur === 'USD') {
+        contracted.usdCents += Number(r.mrr);
+        contracted.subsUsd += Number(r.subs);
+        recurring.usdCents += Number(r.mrr_rec);
+        recurring.subsUsd += Number(r.subs_rec);
+      } else {
+        contracted.brlCents += Number(r.mrr);
+        contracted.subsBrl += Number(r.subs);
+        recurring.brlCents += Number(r.mrr_rec);
+        recurring.subsBrl += Number(r.subs_rec);
+      }
+    }
+    contracted.consolidatedBrlCents = this.consolidateBrl(contracted.usdCents, contracted.brlCents, fxUsdBrl);
+    recurring.consolidatedBrlCents = this.consolidateBrl(recurring.usdCents, recurring.brlCents, fxUsdBrl);
+
+    const revenue = {
+      usdCents: revenueSplit.usdCents,
+      brlCents: revenueSplit.brlCents,
+      consolidatedBrlCents: this.consolidateBrl(revenueSplit.usdCents, revenueSplit.brlCents, fxUsdBrl),
+    };
+    const totalRevenueCents = revenue.consolidatedBrlCents;
+    const payingCustomersPeriod = Number(payingPeriodRows[0]?.count ?? 0);
 
     // Calculate total API cost from the cost map
     let totalApiCostCents = 0;
@@ -806,39 +959,56 @@ export class AdminService {
       totalApiCostCents += unitCost * row.gen_count;
     }
 
-    const arpuCents = totalUsers > 0 ? Math.round(totalRevenueCents / totalUsers) : 0;
+    const arpuCents =
+      payingCustomersPeriod > 0 ? Math.round(totalRevenueCents / payingCustomersPeriod) : 0;
     const marginPercent =
       totalRevenueCents > 0
         ? Math.round(((totalRevenueCents - totalApiCostCents) / totalRevenueCents) * 10000) / 100
         : 0;
 
     return {
-      mrrCents,
-      dailyRevenue: dailyRevenue.map((r) => ({
-        date: String(r.date),
-        revenueCents: r.revenue_cents,
-      })),
+      fxUsdBrl,
+      mrrCents: contracted.consolidatedBrlCents,
+      mrr: { contracted, recurring },
+      totalRevenueCents,
+      revenue,
+      dailyRevenue: dailyRevenue.map((r) => {
+        const usdCents = Number(r.usd_cents);
+        const brlCents = Number(r.brl_cents);
+        return {
+          date: String(r.date),
+          usdCents,
+          brlCents,
+          revenueCents: this.consolidateBrl(usdCents, brlCents, fxUsdBrl),
+        };
+      }),
       revenueByPlan: revenueByPlan.map((r) => ({
         planName: r.plan_name,
         planSlug: r.plan_slug,
-        revenueCents: r.revenue_cents,
-        paymentCount: r.payment_count,
+        currency: toCurrency(r.cur),
+        revenueCents: Number(r.revenue_cents),
+        paymentCount: Number(r.payment_count),
       })),
-      boostSales: boostSales.map((r) => ({
-        name: r.name,
-        credits: r.credits,
-        priceCents: r.price_cents,
-        soldCount: r.sold_count,
-        totalRevenueCents: r.total_revenue_cents,
-      })),
+      boostSales: boostSales.map((r) => {
+        const soldCount = Number(r.sold_count);
+        const totalRevenue = Number(r.total_revenue_cents);
+        return {
+          name: r.name,
+          credits: r.credits,
+          currency: toCurrency(r.cur),
+          priceCents: soldCount > 0 ? Math.round(totalRevenue / soldCount) : 0,
+          soldCount,
+          totalRevenueCents: totalRevenue,
+        };
+      }),
       arpuCents,
-      totalRevenueCents,
+      payingCustomersPeriod,
       totalApiCostCents,
       marginPercent,
     };
   }
 
-  async getUserStats(days: number) {
+  async getUserStats(days: number): Promise<UserStatsResponseDto> {
     const since = new Date();
     since.setDate(since.getDate() - days);
 
@@ -855,8 +1025,8 @@ export class AdminService {
       newUsersMonth,
       dailyNewUsers,
       planDistribution,
-      paidUsers,
-      canceledRecently,
+      paidSubsRows,
+      payingCustomersRows,
       topConsumers,
       inactiveResult,
       totalUsers,
@@ -880,34 +1050,60 @@ export class AdminService {
         ORDER BY date ASC
       `,
 
-      // Plan distribution (users without active sub = 'Free')
-      this.prisma.$queryRaw<{ plan_name: string; plan_slug: string; user_count: number }[]>`
-        SELECT COALESCE(p.name, 'Free') AS plan_name,
-               COALESCE(p.slug, 'free') AS plan_slug,
-               COUNT(DISTINCT u.id)::int AS user_count
-        FROM users u
-        LEFT JOIN subscriptions s ON s.user_id = u.id AND s.status = 'ACTIVE'
-        LEFT JOIN plans p ON p.id = s.plan_id
-        GROUP BY p.name, p.slug
+      // Distribuição por usuário: plano da assinatura paga ativa (mais recente);
+      // senão cortesia ativa (provider admin, plano ≠ free) → "Cortesia"; senão "Free".
+      this.prisma.$queryRaw<{ plan_name: string; plan_slug: string; user_count: bigint }[]>`
+        WITH ${REAL_PAYMENTS_CTE}, ${PAID_SUBS_CTE},
+        user_paid_plan AS (
+          SELECT DISTINCT ON (ps.user_id) ps.user_id, pl.name, pl.slug
+          FROM paid_subs ps
+          JOIN plans pl ON pl.id = ps.plan_id
+          WHERE ps.status = 'ACTIVE'
+          ORDER BY ps.user_id, ps.updated_at DESC
+        ),
+        courtesy_users AS (
+          SELECT DISTINCT s.user_id
+          FROM subscriptions s
+          JOIN plans pl ON pl.id = s.plan_id
+          WHERE s.status = 'ACTIVE' AND pl.slug <> 'free' AND s.payment_provider = 'admin'
+        ),
+        classified AS (
+          SELECT u.id,
+                 CASE WHEN upp.user_id IS NOT NULL THEN upp.name
+                      WHEN cu.user_id IS NOT NULL THEN 'Cortesia'
+                      ELSE 'Free' END AS plan_name,
+                 CASE WHEN upp.user_id IS NOT NULL THEN upp.slug
+                      WHEN cu.user_id IS NOT NULL THEN 'courtesy'
+                      ELSE 'free' END AS plan_slug
+          FROM users u
+          LEFT JOIN user_paid_plan upp ON upp.user_id = u.id
+          LEFT JOIN courtesy_users cu ON cu.user_id = u.id
+        )
+        SELECT plan_name, plan_slug, COUNT(*)::bigint AS user_count
+        FROM classified
+        GROUP BY plan_name, plan_slug
         ORDER BY user_count DESC
       `,
 
-      // Paid users (active subscription, not free plan)
-      this.prisma.$queryRaw<[{ count: number }]>`
-        SELECT COUNT(DISTINCT s.user_id)::int AS count
-        FROM subscriptions s
-        JOIN plans p ON p.id = s.plan_id
-        WHERE s.status = 'ACTIVE'
-          AND p.slug != 'free'
+      // Assinaturas pagas: ativas (subs e usuários) e canceladas no período
+      this.prisma.$queryRaw<[{ active_subs: bigint; paid_users: bigint; canceled: bigint }]>`
+        WITH ${REAL_PAYMENTS_CTE}, ${PAID_SUBS_CTE}
+        SELECT COUNT(*) FILTER (WHERE status = 'ACTIVE')::bigint AS active_subs,
+               COUNT(DISTINCT user_id) FILTER (WHERE status = 'ACTIVE')::bigint AS paid_users,
+               -- Churn = CLIENTE que perdeu a assinatura paga no período e não tem outra ativa.
+               -- Troca de plano cancela a antiga e cria nova: não é churn.
+               COUNT(DISTINCT user_id) FILTER (
+                 WHERE status = 'CANCELED' AND updated_at >= ${since}
+                   AND NOT EXISTS (SELECT 1 FROM paid_subs a WHERE a.user_id = paid_subs.user_id AND a.status = 'ACTIVE')
+               )::bigint AS canceled
+        FROM paid_subs
       `,
 
-      // Canceled recently
-      this.prisma.subscription.count({
-        where: {
-          status: SubscriptionStatus.CANCELED,
-          updatedAt: { gte: since },
-        },
-      }),
+      // Clientes pagantes (≥ 1 pagamento real, histórico)
+      this.prisma.$queryRaw<[{ count: bigint }]>`
+        WITH ${REAL_PAYMENTS_CTE}
+        SELECT COUNT(DISTINCT user_id)::bigint AS count FROM real_payments
+      `,
 
       // Top 10 consumers by credits
       this.prisma.$queryRaw<
@@ -940,14 +1136,15 @@ export class AdminService {
       this.prisma.user.count(),
     ]);
 
-    const paidCount = paidUsers[0]?.count ?? 0;
+    const paidCount = Number(paidSubsRows[0]?.paid_users ?? 0);
+    const canceledRecently = Number(paidSubsRows[0]?.canceled ?? 0);
+    const payingCustomers = Number(payingCustomersRows[0]?.count ?? 0);
     const inactiveCount = inactiveResult[0]?.count ?? 0;
     const conversionRate =
-      totalUsers > 0 ? Math.round((paidCount / totalUsers) * 10000) / 100 : 0;
+      totalUsers > 0 ? Math.round((payingCustomers / totalUsers) * 10000) / 100 : 0;
+    const churnBase = paidCount + canceledRecently;
     const churnRate =
-      paidCount > 0
-        ? Math.round((canceledRecently / (paidCount + canceledRecently)) * 10000) / 100
-        : 0;
+      churnBase > 0 ? Math.round((canceledRecently / churnBase) * 10000) / 100 : 0;
 
     return {
       newUsersToday,
@@ -960,7 +1157,7 @@ export class AdminService {
       planDistribution: planDistribution.map((r) => ({
         planName: r.plan_name,
         planSlug: r.plan_slug,
-        userCount: r.user_count,
+        userCount: Number(r.user_count),
       })),
       paidUsers: paidCount,
       canceledRecently,
@@ -974,6 +1171,7 @@ export class AdminService {
       totalUsers,
       conversionRate,
       churnRate,
+      payingCustomers,
     };
   }
 

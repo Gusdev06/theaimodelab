@@ -20,6 +20,19 @@ export class PaymentsService {
     private readonly metaConversionsService: MetaConversionsService,
   ) {}
 
+  /**
+   * Serializa o processamento do MESMO pagamento externo. A checagem
+   * `payment.findFirst({ externalPaymentId })` dentro da transaction não basta: em
+   * READ COMMITTED, dois webhooks da mesma cobrança chegando juntos (ex.: Cakto
+   * `purchase_approved` + `subscription_created`, ou reenvio da Perfect Pay) enxergam
+   * "nenhum pagamento" ao mesmo tempo e gravam dois — com assinatura gêmea e crédito
+   * em dobro (achado 29/09/2026: 99 pagamentos duplicados). O advisory lock faz o
+   * segundo esperar o commit do primeiro e então cair no skip de idempotência.
+   */
+  private async lockExternalPayment(tx: Prisma.TransactionClient, externalPaymentId: string): Promise<void> {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${externalPaymentId}, 0))`;
+  }
+
   async createPayment(
     userId: string,
     type: PaymentType,
@@ -84,7 +97,8 @@ export class PaymentsService {
     periodEnd.setMonth(periodEnd.getMonth() + 1);
 
     const transactionResult = await this.prisma.$transaction(async (tx) => {
-      // Idempotência: check DENTRO da transaction para evitar race condition
+      // Idempotência: lock + check DENTRO da transaction para evitar race condition
+      await this.lockExternalPayment(tx, externalPaymentId);
       const existingPayment = await tx.payment.findFirst({
         where: { externalPaymentId },
       });
@@ -292,6 +306,7 @@ export class PaymentsService {
 
     await this.prisma.$transaction(async (tx) => {
       // Idempotência dentro da transaction (evita crédito duplicado em retries do webhook)
+      await this.lockExternalPayment(tx, saleCode);
       const existingPayment = await tx.payment.findFirst({
         where: { externalPaymentId: saleCode },
       });
@@ -568,7 +583,8 @@ export class PaymentsService {
     }
 
     const transactionResult = await this.prisma.$transaction(async (tx) => {
-      // Idempotência: check DENTRO da transaction para evitar race condition
+      // Idempotência: lock + check DENTRO da transaction para evitar race condition
+      await this.lockExternalPayment(tx, externalPaymentId);
       const existingPayment = await tx.payment.findFirst({
         where: { externalPaymentId },
       });
