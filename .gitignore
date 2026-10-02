@@ -10,5 +10,3 @@ scripts/stripe-v5-production.env
 scripts/stripe-v5-output-live.json
 scripts/stripe-v5-output.json
 scripts/output/
-CLAUDE.md
-TODO.md
