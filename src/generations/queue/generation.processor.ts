@@ -323,42 +323,7 @@ export class GenerationProcessor extends WorkerHost {
     }
 
     if (data.model === 'seedream-5-lite') {
-      let imageUrls: string[] | undefined;
-      if (data.hasInputImages) {
-        const inputImages = await this.prisma.generationInputImage.findMany({
-          where: { generationId: data.generationId },
-          orderBy: { order: 'asc' },
-        });
-        imageUrls = inputImages
-          .map((img) => img.url)
-          .filter((url): url is string => !!url);
-      }
-
-      const buildInput = (prompt: string) => ({
-        id: data.generationId,
-        prompt,
-        resolution: data.resolution,
-        aspectRatio: data.aspectRatio,
-        imageUrls,
-      });
-
-      try {
-        const result = await this.seedreamLiteProvider.generateImage(buildInput(data.prompt));
-        await this.completeGeneration(data.generationId, result, startTime);
-      } catch (error) {
-        if (this.isSafetyRelatedError(error)) {
-          const retryResult = await this.retryWithRefinedPrompt(
-            data.generationId,
-            data.prompt,
-            (refined) => this.seedreamLiteProvider.generateImage(buildInput(refined)),
-          );
-          if (retryResult) {
-            await this.completeGeneration(data.generationId, retryResult, startTime);
-            return;
-          }
-        }
-        throw error;
-      }
+      await this.processSeedreamLite(data, startTime, 'processImage');
       return;
     }
 
@@ -495,6 +460,13 @@ export class GenerationProcessor extends WorkerHost {
       return;
     }
 
+    // Sem este desvio o Seedream Lite caía no provider Gemini (modelo
+    // desconhecido) e terminava silenciosamente no Nano Banana 2.
+    if (data.model === 'seedream-5-lite') {
+      await this.processSeedreamLite(data, startTime, 'processImageWithFallback');
+      return;
+    }
+
     if (data.model === 'deepdeep') {
       // Undress agora roda no Seedream (WaveSpeed, image-to-image) com prompt
       // explícito e sem o wrapper de roupa. Sempre precisa de imagem de input.
@@ -614,6 +586,48 @@ export class GenerationProcessor extends WorkerHost {
         }
         throw nanoBananaError;
       }
+    }
+  }
+
+  private async processSeedreamLite(
+    data: ImageJobData,
+    startTime: number,
+    context: string,
+  ): Promise<void> {
+    let imageUrls: string[] | undefined;
+    if (data.hasInputImages) {
+      const inputImages = await this.prisma.generationInputImage.findMany({
+        where: { generationId: data.generationId },
+        orderBy: { order: 'asc' },
+      });
+      imageUrls = inputImages
+        .map((img) => img.url)
+        .filter((url): url is string => !!url);
+    }
+
+    try {
+      const result = await this.seedreamLiteProvider.generateImage({
+        id: data.generationId,
+        prompt: data.prompt,
+        resolution: data.resolution,
+        aspectRatio: data.aspectRatio,
+        imageUrls,
+      });
+      await this.completeGeneration(data.generationId, result, startTime);
+    } catch (error) {
+      // Bloqueio de conteúdo vai direto pro Unlocked, como os demais modelos.
+      if (this.isSafetyRelatedError(error)) {
+        const result = await this.fallbackToSeedream(
+          data.generationId,
+          data.prompt,
+          data.aspectRatio,
+          error,
+          `${context}:seedream-5-lite`,
+        );
+        await this.completeGeneration(data.generationId, result, startTime);
+        return;
+      }
+      throw error;
     }
   }
 
@@ -1536,15 +1550,27 @@ export class GenerationProcessor extends WorkerHost {
       .map((img) => img.url)
       .filter((url): url is string => !!url);
 
-    const result = await this.seedreamProvider.generateImage({
-      id: generationId,
-      prompt,
-      resolution: Resolution.RES_2K,
-      aspectRatio,
-      imageUrls: imageUrls.length ? imageUrls : undefined,
-      // Fallback também sem censura — não aplica o wrapper que força roupa.
-      skipSafetyWrapper: true,
-    });
+    let result: { outputUrls: string[]; modelUsed: string };
+    try {
+      result = await this.seedreamProvider.generateImage({
+        id: generationId,
+        prompt,
+        resolution: Resolution.RES_2K,
+        aspectRatio,
+        imageUrls: imageUrls.length ? imageUrls : undefined,
+        // Fallback também sem censura — não aplica o wrapper que força roupa.
+        skipSafetyWrapper: true,
+      });
+    } catch (fallbackError) {
+      // O motivo que o usuário precisa ver é o bloqueio original, não o erro do
+      // Unlocked — senão a falha aparece como "erro do provedor".
+      this.logger.error(
+        `[FALLBACK_SEEDREAM_SAFETY] ${context} gen=${generationId} Unlocked também falhou: ${(fallbackError as Error).message}`,
+      );
+      throw originalError instanceof ContentSafetyError
+        ? originalError
+        : new ContentSafetyError((originalError as Error).message);
+    }
 
     // Tag as safety fallback so we can differentiate from direct Seedream runs
     const existing = await this.prisma.generation.findUnique({

@@ -155,6 +155,13 @@ const PATTERNS: Array<[RegExp, GenerationFailureCodeValue]> = [
   ],
 ];
 
+const PROVIDER_SIDE_CODES = new Set<GenerationFailureCodeValue>([
+  GenerationFailureCode.PROVIDER_OVERLOADED,
+  GenerationFailureCode.PROVIDER_QUOTA_EXCEEDED,
+  GenerationFailureCode.PROVIDER_ERROR,
+  GenerationFailureCode.GENERATION_TIMEOUT,
+]);
+
 /**
  * Traduz a mensagem CRUA do provedor num código estável.
  *
@@ -172,7 +179,13 @@ export function classifyGenerationFailure(
   const msg = rawMessage ?? '';
 
   for (const [pattern, code] of PATTERNS) {
-    if (pattern.test(msg)) return code;
+    if (!pattern.test(msg)) continue;
+    // Bloqueio já confirmado vence erro genérico de provedor: um "500" ou
+    // "finished with state: failed" vindo de moderação escondia o NSFW do usuário.
+    if (isSafetyError && PROVIDER_SIDE_CODES.has(code)) {
+      return GenerationFailureCode.CONTENT_SAFETY_BLOCKED;
+    }
+    return code;
   }
 
   if (isSafetyError) return GenerationFailureCode.CONTENT_SAFETY_BLOCKED;

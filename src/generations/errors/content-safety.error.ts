@@ -59,6 +59,15 @@ export class ContentSafetyError extends Error {
     /inappropriate.*content/i,
     /nsfw/i,
     /\bE005\b/,
+    // GPT Image 2/2.5 (KIE) e Gemini Omni — antes só o classificador de falha
+    // reconhecia, então o bloqueio não acionava o fallback pro Unlocked.
+    /guardrails/i,
+    /appear to be unsafe/i,
+    /may violate/i,
+    /prohibited use/i,
+    /viola.*diretrizes/i,
+    /safety system/i,
+    /public_error_/i,
   ];
 
   /**

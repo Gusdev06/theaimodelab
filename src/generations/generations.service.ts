@@ -39,6 +39,10 @@ import { GenerateVideoImageToVideoDto } from './dto/videos/generate-video-image-
 import { GenerateVideoWithReferencesDto } from './dto/videos/generate-video-with-references.dto';
 import { GenerateMotionControlDto } from './dto/videos/generate-motion-control.dto';
 import { getVideoDurationSeconds } from './utils/video-duration.util';
+import { trimVideoBuffer } from './utils/trim-video.util';
+
+const MOTION_CONTROL_MIN_SECONDS = 3;
+const MOTION_CONTROL_MAX_SECONDS = 30;
 import { GenerateImageDto } from './dto/generate-image.dto';
 import { UpscaleImageDto } from './dto/upscale-image.dto';
 import { GenerateImageNanoBananaDto } from './dto/generate-image-nano-banana.dto';
@@ -1399,8 +1403,35 @@ export class GenerationsService {
     const dbResolution =
       resolution === '1080p' ? Resolution.RES_1080P : Resolution.RES_720P;
 
-    const videoBuffer = Buffer.from(dto.video, 'base64');
-    const durationSeconds = getVideoDurationSeconds(videoBuffer);
+    // Kling Motion Control só aceita vídeo de 3 a 30s (senão o createTask
+    // devolve 422). Curto demais: recusa antes de cobrar. Longo: corta em 30s
+    // e cobra só o que vai pro provedor.
+    const videoMime = dto.video_mime_type ?? 'video/mp4';
+    const videoExt =
+      videoMime === 'video/quicktime'
+        ? 'mov'
+        : videoMime === 'video/x-matroska'
+          ? 'mkv'
+          : 'mp4';
+    let videoBuffer: Buffer = Buffer.from(dto.video, 'base64');
+    const rawDurationSeconds = getVideoDurationSeconds(videoBuffer);
+    if (rawDurationSeconds < MOTION_CONTROL_MIN_SECONDS) {
+      throw new BadRequestException(
+        `O vídeo precisa ter pelo menos ${MOTION_CONTROL_MIN_SECONDS} segundos.`,
+      );
+    }
+    if (rawDurationSeconds > MOTION_CONTROL_MAX_SECONDS) {
+      // margem abaixo de 30s: o stream copy pode passar alguns ms do corte
+      videoBuffer = await trimVideoBuffer(
+        videoBuffer,
+        videoExt,
+        MOTION_CONTROL_MAX_SECONDS - 0.5,
+      );
+    }
+    const durationSeconds = Math.min(
+      rawDurationSeconds,
+      MOTION_CONTROL_MAX_SECONDS,
+    );
 
     const freeGenType = await this.resolveFreeGenForRequest(
       userId,
@@ -1439,13 +1470,6 @@ export class GenerationsService {
     });
 
     // Upload video to S3 — public URL for Wan API, signed URL for internal display
-    const videoMime = dto.video_mime_type ?? 'video/mp4';
-    const videoExt =
-      videoMime === 'video/quicktime'
-        ? 'mov'
-        : videoMime === 'video/x-matroska'
-          ? 'mkv'
-          : 'mp4';
     const { publicUrl: videoPublicUrl, signedUrl: videoSignedUrl } =
       await this.uploadsService.uploadBufferPublic(
         videoBuffer,
