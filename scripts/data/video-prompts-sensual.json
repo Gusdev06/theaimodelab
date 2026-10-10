@@ -438,6 +438,130 @@
           "prompt": "Close-up, static. A woman starts in profile, then slowly turns her face toward the camera into the light, her expression blooming into a soft smile, hair catching the glow. Warm golden rim light, cinematic, photorealistic, high detail."
         }
       ]
+    },
+    {
+      "slug": "video-personagem-e-figurino",
+      "title": "Vídeo · Personagem & figurino",
+      "icon": "Camera",
+      "prompts": [
+        {
+          "title": "Enfermeira",
+          "desc": "ajeita a touca e olha pra câmera",
+          "prompt": "Static camera, slight push-in. A confident woman in a stylish white nurse-style uniform stands in a bright clinic set, she slowly adjusts her cap and tilts her head, giving a warm smile to the camera, then rests a hand on her hip. Clean soft lighting, shallow depth of field, cinematic, photorealistic."
+        },
+        {
+          "title": "Secretária",
+          "desc": "tira os óculos devagar, debruça na mesa",
+          "prompt": "Slow push-in to medium shot. A woman in a fitted pencil skirt and blouse leans over an office desk, she slowly removes her glasses and bites one arm of them, looking at the camera with a playful smile. Warm office lighting, blurred background, cinematic, photorealistic."
+        },
+        {
+          "title": "Policial",
+          "desc": "ajusta o quepe, postura firme",
+          "prompt": "Static camera. A woman in a sleek police-style uniform stands with authority, she slowly adjusts the brim of her cap and crosses her arms, giving a commanding look to the camera, then a subtle smirk. Dramatic cool lighting with warm accents, cinematic, photorealistic, 4K."
+        },
+        {
+          "title": "Comissária de bordo",
+          "desc": "caminha pelo corredor do avião",
+          "prompt": "Tracking shot from the front, slow dolly back. A woman in a flight attendant uniform walks slowly down a cabin aisle toward the camera, one hand gliding along the seats, a polished smile, then stops and tilts her head. Warm cabin lighting, shallow depth of field, cinematic, photorealistic."
+        },
+        {
+          "title": "Empregada (maid)",
+          "desc": "gira com o espanador, sorriso brincalhão",
+          "prompt": "Static camera. A woman in a classic French maid outfit holds a feather duster, she slowly spins around once and strikes a playful pose facing the camera, winking. Warm cozy interior light, soft bokeh, cinematic, photorealistic, tasteful."
+        },
+        {
+          "title": "Cowgirl",
+          "desc": "inclina o chapéu e encara",
+          "prompt": "Medium shot, slow push-in. A woman in a cowgirl outfit with a wide hat and denim shorts stands in a rustic barn, she slowly tips her hat down then lifts her gaze to the camera with a confident smile, hair catching the warm light. Golden dusty light, cinematic, photorealistic."
+        },
+        {
+          "title": "Diaba",
+          "desc": "chifrinhos, sorriso maroto na luz vermelha",
+          "prompt": "Slow push-in to medium close-up. A woman in a red devil costume with small horns stands against a dark background, she slowly runs a finger along her jaw and gives a mischievous smile to the camera, then tilts her head. Dramatic red lighting, haze, cinematic, photorealistic."
+        },
+        {
+          "title": "Anjo",
+          "desc": "asas, luz suave, giro lento",
+          "prompt": "Static camera, slight push-in. A woman in a white angel costume with soft feather wings stands in hazy light, she slowly turns toward the camera, the wings and fabric shifting, and gives a serene smile. Dreamy backlight, glowing particles, cinematic, photorealistic, 4K."
+        },
+        {
+          "title": "Vampira",
+          "desc": "a capa roda, olhar sedutor",
+          "prompt": "Medium shot, static. A woman in an elegant vampire costume with a flowing cape stands in a gothic room, she slowly swirls the cape across her body and looks at the camera with a seductive gaze, then a slight smile. Moody candlelight, deep shadows, cinematic, photorealistic."
+        },
+        {
+          "title": "Gatinha (catsuit)",
+          "desc": "alonga como uma gata",
+          "prompt": "Static camera, slow push-in. A woman in a black catsuit with cat ears crouches playfully, she slowly stretches and arches like a cat, then looks up at the camera and tilts her head with a smirk. Moody low-key lighting, glossy highlights, cinematic, photorealistic."
+        },
+        {
+          "title": "Noiva",
+          "desc": "levanta o véu e olha por cima do ombro",
+          "prompt": "Slow push-in. A woman in a form-fitting white bridal dress stands with her back to the camera, she slowly lifts her veil and turns her head to look over her shoulder with a soft smile. Warm romantic light, soft focus, cinematic, photorealistic, 4K."
+        }
+      ]
+    },
+    {
+      "slug": "video-lifestyle-e-intimista",
+      "title": "Vídeo · Lifestyle & intimista",
+      "icon": "Moon",
+      "prompts": [
+        {
+          "title": "Manhã na cama",
+          "desc": "espreguiça e sorri",
+          "prompt": "Camera slightly above, slow push-in. A woman in an oversized shirt wakes in soft morning light, she slowly stretches her arms above her head with a sleepy smile, then turns her face toward the camera. Airy natural window light, cozy bedroom, warm tones, cinematic, photorealistic."
+        },
+        {
+          "title": "Café de camiseta",
+          "desc": "vira com a xícara na cozinha",
+          "prompt": "Static camera, medium shot. A woman in an oversized t-shirt stands in a sunny kitchen holding a mug of coffee, she slowly takes a sip and turns toward the camera with a relaxed smile, hair loose. Warm morning light, soft bokeh, cinematic, photorealistic."
+        },
+        {
+          "title": "Varanda ao amanhecer",
+          "desc": "roupão no vento, olha pra câmera",
+          "prompt": "Slow push-in. A woman in a silk robe stands on a balcony at sunrise, the robe and her hair moving in the breeze, she slowly turns to the camera and smiles, holding the robe loosely. Golden warm backlight, city or sea behind her, cinematic, photorealistic, 4K."
+        },
+        {
+          "title": "Lendo no sofá",
+          "desc": "abaixa o livro e sorri",
+          "prompt": "Static camera, medium shot. A woman in casual loungewear lies on a sofa with her legs up reading a book, she slowly lowers the book to reveal her face and looks at the camera with a soft smile. Warm cozy living room light, shallow depth of field, cinematic, photorealistic."
+        },
+        {
+          "title": "Dançando sozinha em casa",
+          "desc": "balança leve, descontraída",
+          "prompt": "Static camera, slight push-in. A woman in a tank top and shorts dances slowly and playfully in her living room, swaying and running a hand through her hair, laughing toward the camera. Warm home lighting, natural and candid, cinematic, photorealistic."
+        },
+        {
+          "title": "Olhando pela janela",
+          "desc": "vira do perfil pra câmera",
+          "prompt": "Slow push-in. A woman in a slip stands by a large window gazing outside, soft light on her skin, she slowly turns from profile toward the camera with a gentle, thoughtful smile. Hazy golden window light, intimate mood, cinematic, photorealistic."
+        },
+        {
+          "title": "Relax no spa",
+          "desc": "toalha na nuca, cabeça pro lado",
+          "prompt": "Static camera, medium close-up. A woman with a towel wrapped around her relaxes on a spa lounger, she slowly tilts her head back and to the side with eyes closed, then opens them to the camera and smiles. Soft warm spa lighting, steam, serene, cinematic, photorealistic."
+        },
+        {
+          "title": "Se arrumando no espelho",
+          "desc": "pega o reflexo da câmera",
+          "prompt": "Static camera behind her, reflection in a vanity mirror. A woman in a robe applies a touch of makeup at a vanity, she slowly leans toward the mirror then catches the camera's reflection and gives a playful smile. Warm bulb-lit vanity light, cinematic, photorealistic."
+        },
+        {
+          "title": "Sol na janela",
+          "desc": "se alonga na luz",
+          "prompt": "Static camera, slow push-in. A woman in delicate loungewear stands in a beam of afternoon sun by a window, she slowly stretches and lets the light wash over her, then turns to the camera with a soft smile. Warm sunlight, floating dust particles, cinematic, photorealistic, 4K."
+        },
+        {
+          "title": "No tapete, aconchegante",
+          "desc": "rola e olha pra cima",
+          "prompt": "Camera above, slow push-in. A woman in cozy loungewear lies on a soft rug by a fireplace, she slowly rolls onto her back and looks up at the camera with a relaxed smile, hair spread out. Warm firelight glow, intimate, cinematic, photorealistic."
+        },
+        {
+          "title": "Trocando atrás do biombo",
+          "desc": "silhueta e sai de roupão",
+          "prompt": "Static camera. A woman's soft silhouette moves slowly behind a decorative folding screen, then she steps out from the side wrapped in a robe, looking at the camera with a playful smile. Warm backlight through the screen, tasteful, cinematic, photorealistic."
+        }
+      ]
     }
   ]
 }
