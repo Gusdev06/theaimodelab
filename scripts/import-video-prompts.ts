@@ -10,8 +10,8 @@
  * Alvo:  PromptSection -> PromptCategory -> PromptTemplate (type = text_to_video,
  *        que o web roteia para /video).
  *
- * Idempotente: re-rodar não duplica (upsert de seção por slug; template pulado
- * se já existir um com o mesmo título na categoria). Não mexe nos prompts de
+ * Idempotente: re-rodar não duplica (upsert de seção por slug; template com o
+ * mesmo título na categoria só tem o texto atualizado se mudou). Não mexe nos prompts de
  * imagem existentes. Não sobe imagem (thumbnails entram depois, por fora).
  *
  * Uso:   ts-node -r tsconfig-paths/register scripts/import-video-prompts.ts [--dry]
@@ -82,6 +82,7 @@ async function main(): Promise<void> {
   let sectionsTouched = 0;
   let promptsCreated = 0;
   let promptsSkipped = 0;
+  let promptsUpdated = 0;
 
   for (let sIdx = 0; sIdx < data.sections.length; sIdx++) {
     const section = data.sections[sIdx];
@@ -123,10 +124,16 @@ async function main(): Promise<void> {
       const prompt = section.prompts[pIdx];
       const existing = await prisma.promptTemplate.findFirst({
         where: { categoryId: dbCategory.id, title: prompt.title },
-        select: { id: true },
+        select: { id: true, prompt: true },
       });
       if (existing) {
-        promptsSkipped++;
+        // texto do arquivo mudou (ex.: bloco de pele): atualiza só o prompt, mantém capa e ordem
+        if (existing.prompt !== prompt.prompt) {
+          await prisma.promptTemplate.update({ where: { id: existing.id }, data: { prompt: prompt.prompt } });
+          promptsUpdated++;
+        } else {
+          promptsSkipped++;
+        }
         continue;
       }
       await prisma.promptTemplate.create({
@@ -143,11 +150,11 @@ async function main(): Promise<void> {
       });
       promptsCreated++;
     }
-    console.log(`   criados: ${promptsCreated} | já existiam: ${promptsSkipped}`);
+    console.log(`   criados: ${promptsCreated} | atualizados: ${promptsUpdated} | já existiam: ${promptsSkipped}`);
   }
 
   console.log('\n' + '='.repeat(60));
-  console.log(`  FIM — seções: ${sectionsTouched} | prompts novos: ${promptsCreated} | pulados: ${promptsSkipped}`);
+  console.log(`  FIM — seções: ${sectionsTouched} | prompts novos: ${promptsCreated} | atualizados: ${promptsUpdated} | pulados: ${promptsSkipped}`);
   console.log('='.repeat(60));
 
   if (!DRY_RUN) await prisma.$disconnect();
