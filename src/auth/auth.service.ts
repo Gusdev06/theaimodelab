@@ -230,7 +230,23 @@ export class AuthService {
   /**
    * Gera tokens JWT
    */
+  /**
+   * Gerações grátis compradas (isca) com o e-mail de uma conta que já existia
+   * ficavam presas para sempre (TKT-109). Todo login aplica o que estiver
+   * pendente; nunca atrasa nem derruba o login.
+   */
+  private claimPendingGrants(user: User): void {
+    void this.pendingGrantsService
+      .consumeForUser(user.id, user.email)
+      .catch((error: unknown) =>
+        this.logger.warn(
+          `Grants pendentes de ${user.id} não aplicadas no login: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+  }
+
   private async generateTokens(user: User) {
+    this.claimPendingGrants(user);
     const payload = {
       sub: user.id,
       email: user.email,

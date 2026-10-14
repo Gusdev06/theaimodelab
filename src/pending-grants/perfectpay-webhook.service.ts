@@ -101,6 +101,13 @@ export class PerfectpayWebhookService {
       };
     }
 
+    // Reembolso/chargeback de pack ou da isca: resolve aqui e NÃO revoga a
+    // assinatura do comprador (antes revogava, e o pack/bundle ficava — TKT-099).
+    if (kind === 'refund' || kind === 'chargeback') {
+      const handled = await this.handleNonSubscriptionRefund(payload, kind);
+      if (handled) return handled;
+    }
+
     // Cancelamento / reembolso / chargeback de assinatura recorrente.
     // refund/chargeback → revoga na hora; cancelamento normal → acesso até fim do período.
     if (kind === 'canceled' || kind === 'refund' || kind === 'chargeback') {
@@ -304,6 +311,67 @@ export class PerfectpayWebhookService {
     );
 
     return { processed: true };
+  }
+
+  /**
+   * Reembolso que não é de assinatura. Retorna `null` quando é de assinatura
+   * (o chamador segue para a revogação). A venda registrada como Payment é
+   * marcada REFUNDED e perde a comissão PENDING em qualquer caso (TKT-110).
+   */
+  private async handleNonSubscriptionRefund(
+    payload: any,
+    kind: string,
+  ): Promise<{ processed: boolean; reason?: string } | null> {
+    const saleCode = this.extractSaleCode(payload);
+    if (saleCode) {
+      const refund = await this.paymentsService.refundExternalPayment(saleCode, kind);
+      if (refund.found && refund.type === 'CREDIT_PURCHASE') {
+        return refund.alreadyRefunded
+          ? { processed: false, reason: 'credit purchase already refunded' }
+          : {
+              processed: true,
+              reason: `credit purchase refunded: ${refund.creditsRevoked} credits revoked, ${refund.creditsShortfall} already used`,
+            };
+      }
+      if (refund.found) return null; // pagamento de assinatura
+    }
+
+    const isSubscriptionSale =
+      payload?.subscription != null || payload?.subscription_status != null;
+    if (isSubscriptionSale) return null;
+
+    const planCandidates = this.extractPlanCandidates(payload);
+    if (planCandidates.length) {
+      const plan = await this.prisma.plan.findFirst({
+        where: { perfectpayPlanCode: { in: planCandidates } },
+        select: { id: true },
+      });
+      if (plan) return null;
+      const creditPackage = await this.prisma.creditPackage.findFirst({
+        where: { perfectpayPlanCode: { in: planCandidates } },
+        select: { name: true },
+      });
+      if (creditPackage) {
+        return {
+          processed: false,
+          reason: `refund of credit package "${creditPackage.name}" with no recorded payment — nothing to revoke`,
+        };
+      }
+    }
+
+    // Isca (curso): o bundle de gerações grátis da venda deixa de valer.
+    const saleEventId = this.extractSaleEventId(payload);
+    if (!saleEventId) {
+      return { processed: false, reason: `${kind} event without sale code` };
+    }
+    const revoked = await this.pendingGrantsService.revokeForRefund(saleEventId, kind);
+    return {
+      processed: revoked.grants > 0,
+      reason:
+        revoked.grants > 0
+          ? `course refund: ${revoked.grants} grant(s) revoked`
+          : 'course refund: no grant found for this sale',
+    };
   }
 
   /**
