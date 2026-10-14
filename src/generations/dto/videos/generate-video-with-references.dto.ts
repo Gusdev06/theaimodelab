@@ -1,11 +1,14 @@
 import {
-  IsString,
-  IsOptional,
-  IsNumber,
-  IsBoolean,
-  IsIn,
-  IsEnum,
   IsArray,
+  IsBoolean,
+  IsEnum,
+  IsIn,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -94,7 +97,9 @@ export class GenerateVideoWithReferencesDto {
   })
   @IsOptional()
   @Type(() => Number)
-  @IsNumber()
+  @IsInt()
+  @Min(1)
+  @Max(4)
   sample_count?: number;
 
   @ApiPropertyOptional({

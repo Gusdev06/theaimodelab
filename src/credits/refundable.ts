@@ -21,10 +21,14 @@ export interface Refundable {
 export function computeRefundable(
   ledger: LedgerRow[],
   cap: number,
+  types: { debit: string; refund: string } = {
+    debit: 'GENERATION_DEBIT',
+    refund: 'GENERATION_REFUND',
+  },
 ): Refundable | null {
-  const debits = ledger.filter((row) => row.type === 'GENERATION_DEBIT');
+  const debits = ledger.filter((row) => row.type === types.debit);
   if (debits.length === 0) return null;
-  const refunds = ledger.filter((row) => row.type === 'GENERATION_REFUND');
+  const refunds = ledger.filter((row) => row.type === types.refund);
 
   const sumBySource = (rows: LedgerRow[], source: string): number =>
     rows

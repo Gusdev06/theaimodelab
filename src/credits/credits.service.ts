@@ -454,24 +454,31 @@ export class CreditsService {
       }
 
       if (deltaCredits > 0) {
-        // Refund the diff. Mirror the source proportions of the original debits
-        // so plan/bonus accounting stays consistent.
-        const debits = await tx.creditTransaction.findMany({
-          where: { generationId, type: CreditTransactionType.GENERATION_DEBIT },
+        // Refund the diff. Mirror the source proportions of what is still
+        // refundable (debited minus already refunded). No debit → nothing to
+        // refund: never credit bonus out of thin air (TKT-096/111).
+        const ledger = await tx.creditTransaction.findMany({
+          where: {
+            generationId,
+            type: {
+              in: [
+                CreditTransactionType.GENERATION_DEBIT,
+                CreditTransactionType.GENERATION_REFUND,
+              ],
+            },
+          },
         });
-        const planDebited = debits
-          .filter((d) => d.source === 'plan')
-          .reduce((sum, d) => sum + Math.abs(d.amount), 0);
-        const totalDebited = debits.reduce((sum, d) => sum + Math.abs(d.amount), 0);
-
-        let planRefund = 0;
-        let bonusRefund = 0;
-        if (totalDebited > 0) {
-          planRefund = Math.round((planDebited / totalDebited) * deltaCredits);
-          bonusRefund = deltaCredits - planRefund;
-        } else {
-          bonusRefund = deltaCredits;
+        const available = computeRefundable(ledger, Number.MAX_SAFE_INTEGER);
+        const availableTotal = available ? available.plan + available.bonus : 0;
+        const allowed = Math.min(deltaCredits, availableTotal);
+        if (!available || allowed <= 0) {
+          this.logger.warn(
+            `Ajuste de ${deltaCredits} créditos na geração ${generationId} ignorado: nada debitado a devolver`,
+          );
+          return;
         }
+        const planRefund = Math.round((available.plan / availableTotal) * allowed);
+        const bonusRefund = allowed - planRefund;
 
         await tx.creditBalance.update({
           where: { userId },
@@ -654,28 +661,33 @@ export class CreditsService {
     amount: number,
   ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      const debitTransactions = await tx.creditTransaction.findMany({
+      // Mesma regra do estorno de geração: só devolve o que foi debitado para
+      // este avatar e ainda não foi devolvido. O webhook da HeyGen e o cron de
+      // avatares presos podiam estornar o mesmo treino duas vezes, e sem débito
+      // o valor virava bônus (TKT-111).
+      const ledger = await tx.creditTransaction.findMany({
         where: {
           userAvatarId,
-          type: CreditTransactionType.AVATAR_TRAINING_DEBIT,
+          type: {
+            in: [
+              CreditTransactionType.AVATAR_TRAINING_DEBIT,
+              CreditTransactionType.AVATAR_TRAINING_REFUND,
+            ],
+          },
         },
         orderBy: { createdAt: 'asc' },
       });
-
-      let planRefund = 0;
-      let bonusRefund = 0;
-
-      for (const debit of debitTransactions) {
-        if (debit.source === 'plan') {
-          planRefund += Math.abs(debit.amount);
-        } else {
-          bonusRefund += Math.abs(debit.amount);
-        }
+      const refundable = computeRefundable(ledger, amount, {
+        debit: CreditTransactionType.AVATAR_TRAINING_DEBIT,
+        refund: CreditTransactionType.AVATAR_TRAINING_REFUND,
+      });
+      if (!refundable || refundable.plan + refundable.bonus === 0) {
+        this.logger.warn(
+          `Estorno de avatar ${userAvatarId} ignorado: ${refundable ? 'já estornado' : 'sem débito registrado'}`,
+        );
+        return;
       }
-
-      if (debitTransactions.length === 0) {
-        bonusRefund = amount;
-      }
+      const { plan: planRefund, bonus: bonusRefund } = refundable;
 
       const [balance] = await tx.$queryRawUnsafe<any[]>(
         `SELECT * FROM "credit_balances" WHERE "user_id" = $1 FOR UPDATE`,
