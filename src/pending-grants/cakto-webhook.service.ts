@@ -259,10 +259,21 @@ export class CaktoWebhookService {
       ?.trim();
 
     if (!expected) {
-      this.logger.warn(
-        'CAKTO_WEBHOOK_SECRET not configured — skipping secret check',
+      // Sem segredo configurado o webhook ficava ABERTO (TKT-101). Falha fechado;
+      // só em desenvolvimento, com CAKTO_WEBHOOK_ALLOW_UNAUTHENTICATED=true, passa.
+      if (
+        this.configService.get<string>('CAKTO_WEBHOOK_ALLOW_UNAUTHENTICATED') ===
+        'true'
+      ) {
+        this.logger.warn(
+          'CAKTO_WEBHOOK_SECRET not configured — secret check skipped (CAKTO_WEBHOOK_ALLOW_UNAUTHENTICATED=true)',
+        );
+        return;
+      }
+      this.logger.error(
+        'CAKTO_WEBHOOK_SECRET não configurado — webhook recusado (configure o segredo da Cakto no servidor)',
       );
-      return;
+      throw new UnauthorizedException('Cakto webhook secret not configured');
     }
 
     const received =

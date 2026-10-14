@@ -198,11 +198,13 @@ export class PerfectpayWebhookService {
     }
 
     // 3) Caso contrário: produto de curso → libera gerações grátis por email.
+    // Dedupe por VENDA, sem o status: `approved` e `completed` da mesma venda
+    // chegavam com ids diferentes e criavam dois bundles (TKT-098).
     const { created } = await this.pendingGrantsService.createPending({
       email,
       bundle: PERFECTPAY_COURSE_BUNDLE,
       source: 'perfectpay',
-      externalEventId,
+      externalEventId: this.extractSaleEventId(payload) ?? externalEventId,
     });
 
     this.logger.log(
@@ -371,10 +373,23 @@ export class PerfectpayWebhookService {
       .filter((v) => v.length > 0);
 
     if (expectedTokens.length === 0) {
-      this.logger.warn(
-        'PERFECTPAY_WEBHOOK_TOKEN not configured — skipping token check',
+      // Sem token configurado o webhook ficava ABERTO: qualquer POST ativava
+      // plano/créditos (TKT-101). Agora falha fechado; só em desenvolvimento,
+      // com PERFECTPAY_WEBHOOK_ALLOW_UNAUTHENTICATED=true, passa sem conferir.
+      if (
+        this.configService.get<string>(
+          'PERFECTPAY_WEBHOOK_ALLOW_UNAUTHENTICATED',
+        ) === 'true'
+      ) {
+        this.logger.warn(
+          'PERFECTPAY_WEBHOOK_TOKEN not configured — token check skipped (PERFECTPAY_WEBHOOK_ALLOW_UNAUTHENTICATED=true)',
+        );
+        return;
+      }
+      this.logger.error(
+        'PERFECTPAY_WEBHOOK_TOKEN não configurado — webhook recusado (configure o token da Perfect Pay no servidor)',
       );
-      return;
+      throw new UnauthorizedException('Perfectpay webhook token not configured');
     }
 
     const received =
@@ -483,6 +498,12 @@ export class PerfectpayWebhookService {
     const status = payload?.sale_status_enum ?? 'na';
     if (code) return `perfectpay-sale-${code}-${status}`;
     return null;
+  }
+
+  /** Id por venda (sem status) — chave de dedupe da isca. */
+  private extractSaleEventId(payload: any): string | null {
+    const code = payload?.code ?? payload?.sale_code ?? null;
+    return code ? `perfectpay-sale-${code}` : null;
   }
 
   /**
