@@ -191,6 +191,7 @@ describe('planFallback', () => {
       referenceVideoUrls: ['https://cdn/ref.mp4'],
       referenceImageUrls: ['https://cdn/ref.jpg'],
       durationSeconds: 7,
+      aspectRatio: '9:16',
     });
   });
 

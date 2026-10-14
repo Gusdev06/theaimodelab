@@ -577,7 +577,9 @@ export function planFallback(
         { images: [d.imageUrl], videos: [d.videoUrl] },
         d.resolution,
         ctx.durationSeconds,
-        undefined,
+        // Sem proporção o MiniMax devolve 16:9; Motion Control é dança/Reels
+        // (testado em produção 14/10: vídeo vertical virava horizontal).
+        pickAspect(ctx.aspectRatio, MINIMAX_ASPECTS) ?? '9:16',
         kind,
       );
     }
