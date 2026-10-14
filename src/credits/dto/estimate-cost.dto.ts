@@ -37,6 +37,14 @@ export class EstimateCostDto {
   modelVariant?: string;
 
   @ApiPropertyOptional({
+    description:
+      'Nome do modelo (ex.: veo3_fast, nano-banana-2). Quando enviado, a variante de cobrança é derivada dele no servidor e modelVariant só é conferido (400 MODEL_VARIANT_MISMATCH se divergir).',
+  })
+  @IsOptional()
+  @IsString()
+  model?: string;
+
+  @ApiPropertyOptional({
     description: 'Indica se a geração inclui um vídeo de input (afeta pricing do Gemini Omni)',
     default: false,
   })
