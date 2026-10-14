@@ -426,6 +426,19 @@ export class GenerationProcessor extends WorkerHost {
       return;
     }
 
+    // O cron pode ter marcado FAILED (e estornado tudo) enquanto a alternativa
+    // rodava: completeGeneration ignora o resultado e aqui não pode estornar de novo.
+    const after = await this.prisma.generation.findUnique({
+      where: { id: generation.id },
+      select: { status: true },
+    });
+    if (after?.status !== GenerationStatus.COMPLETED) {
+      this.logger.warn(
+        `[FALLBACK] gen=${generation.id} terminou como ${after?.status ?? 'inexistente'} — sem reconciliação de créditos`,
+      );
+      return;
+    }
+
     let fallbackCredits: number;
     try {
       fallbackCredits = await this.plansService.calculateGenerationCost(
