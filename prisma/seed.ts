@@ -354,6 +354,11 @@ async function main() {
   // ============================================
   console.log('💰 Creating credit costs...');
 
+  // Tabela v6 (2026-10-14, auditoria de créditos): corrige Seedance Spicy sem áudio, Motion Control e Veo Quality.
+  // Seedance 2.5 1080p (hardcoded em plans.service.ts) também mudou: 2.650 / 1.600 cr/s.
+  // Espelho em SQL: prisma/update-credit-costs-v6.sql. Vertex (THEAIMODELAB_FAST/QUALITY) segue desligado;
+  // se religar, reprecificar antes (Fast 2.700/3.200 sem/com áudio, Quality 5.400/10.700 — custo de lista Vertex).
+
   const creditCosts = [
     // Images - Nano Banana 2 (NB2) — v5 pricing (~70% margem no pior plano; créditos = custo_USD × 3333)
     { generationType: 'TEXT_TO_IMAGE', resolution: 'RES_1K', hasAudio: false, modelVariant: 'NB2', creditsPerUnit: 135, isPerSecond: false },
@@ -392,9 +397,11 @@ async function main() {
     { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_2K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 300, isPerSecond: false },
     { generationType: 'IMAGE_TO_IMAGE', resolution: 'RES_4K', hasAudio: false, modelVariant: 'NBP', creditsPerUnit: 400, isPerSecond: false },
 
-    // Motion Control (no model variant) — per second pricing (~70% margem no pior plano)
-    { generationType: 'MOTION_CONTROL', resolution: 'RES_720P', hasAudio: false, modelVariant: null, creditsPerUnit: 100, isPerSecond: true },
-    { generationType: 'MOTION_CONTROL', resolution: 'RES_1080P', hasAudio: false, modelVariant: null, creditsPerUnit: 155, isPerSecond: true },
+    // Motion Control (no model variant) — per second pricing.
+    // v6 (2026-10-14): kie cobra US$ 0,055/s (720p) e 0,09/s (1080p) → 185 / 300 cr/s (= custo × 3333).
+    // A tabela v5 (100/155) vendia abaixo de 50% de margem no pior plano.
+    { generationType: 'MOTION_CONTROL', resolution: 'RES_720P', hasAudio: false, modelVariant: null, creditsPerUnit: 185, isPerSecond: true },
+    { generationType: 'MOTION_CONTROL', resolution: 'RES_1080P', hasAudio: false, modelVariant: null, creditsPerUnit: 300, isPerSecond: true },
 
     // The AI Model Lab Fast (THEAIMODELAB_FAST) — theaimodelab-provider — Text to Video
     // Custo de provedor não documentado → bump proporcional +67% (v4→v5) para acompanhar as demais famílias.
@@ -457,16 +464,18 @@ async function main() {
     { generationType: 'REFERENCE_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 1920, isPerSecond: false },
     { generationType: 'REFERENCE_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_FAST', creditsPerUnit: 3810, isPerSecond: false },
 
-    // Veo 3.1 Quality (VEO_MAX) — KIE API — always hasAudio=true — ~70% margem (créditos = custo_USD × 3333)
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 4260, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 4260, isPerSecond: false },
-    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 6010, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 4260, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 4260, isPerSecond: false },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 6010, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 4260, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 4260, isPerSecond: false },
-    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 6010, isPerSecond: false },
+    // Veo 3.1 Quality (VEO_MAX) — KIE API — always hasAudio=true.
+    // v6 (2026-10-14): kie cobra US$ 2,00 por vídeo de 8 s (400 cr) → 6.700 cr; 4K extrapolado 2× → 10.000.
+    // A tabela v5 (4.260/6.010) equivalia a US$ 1,28 de custo — vendia abaixo do custo no plano anual.
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 6700, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 6700, isPerSecond: false },
+    { generationType: 'TEXT_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 10000, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 6700, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 6700, isPerSecond: false },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 10000, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 6700, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 6700, isPerSecond: false },
+    { generationType: 'REFERENCE_VIDEO', resolution: 'RES_4K', hasAudio: true, modelVariant: 'VEO_MAX', creditsPerUnit: 10000, isPerSecond: false },
 
     // Grok Imagine (GROK_IMAGINE) — KIE API — Fast mode (normal), no audio, duration 6-30s charged per second
     // Custo de provedor não documentado → bump proporcional +67% (v4→v5) para acompanhar as demais famílias.
@@ -498,15 +507,17 @@ async function main() {
     { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'WAVESPEED_LTX_SPICY', creditsPerUnit: 200, isPerSecond: true },
 
     // WaveSpeed Seedance 2.0 Fast Spicy (WAVESPEED_SEEDANCE_SPICY) — NSFW — image-to-video, 4-15s, cobrado por segundo.
-    // Custo real WaveSpeed (áudio on): US$0,10/s (480p) × mult. resolução 1x/2x/5x; áudio off = metade do custo.
+    // Custo real WaveSpeed: US$0,10/s (480p) × mult. resolução 1x/2x/4x. v6 (2026-10-14): a WaveSpeed cobra o
+    // MESMO com ou sem áudio, então as linhas hasAudio=false têm o mesmo preço das com áudio (antes custavam metade
+    // e vendiam a ~40% de margem).
     // Precificado para ~70% de margem no PIOR plano (Studio, ~$0,001/cr); planos menores rendem mais.
     // 4K removido de propósito (custo real absurdo). Tiers: 480p/720p/1080p.
     { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 335, isPerSecond: true },
     { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 670, isPerSecond: true },
     { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: true, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 1670, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 170, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 335, isPerSecond: true },
-    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 835, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_480P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 335, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_720P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 670, isPerSecond: true },
+    { generationType: 'IMAGE_TO_VIDEO', resolution: 'RES_1080P', hasAudio: false, modelVariant: 'WAVESPEED_SEEDANCE_SPICY', creditsPerUnit: 1670, isPerSecond: true },
 
     // WaveSpeed MiniMax H3 (WAVESPEED_MINIMAX_H3) — modelo geral, áudio nativo sempre incluso, 5-15s, cobrado por segundo.
     // Custo real WaveSpeed US$0,04/s (480p) e US$0,08/s (768p). Fórmula do projeto créditos = custo_USD × 3333 → 135 / 270 cr/s.

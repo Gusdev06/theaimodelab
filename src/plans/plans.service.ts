@@ -260,17 +260,18 @@ export class PlansService {
     RES_1080P: 1040,
   };
 
-  // Seedance 2.5 (KIE, 2026-09-16) — tabela pública da KIE: sem vídeo 480p $0,14/s ·
+  // Seedance 2.5 (KIE) — v6 (2026-10-14): a KIE passou a cobrar 1080p a US$ 0,79/s sem vídeo (158 cr/s) e
+  // US$ 0,475/s com vídeo; o código assumia 0,57 / 0,3425. Demais tiers conferidos: sem vídeo 480p $0,14/s ·
   // 720p $0,315/s · 1080p $0,57/s; com vídeo $0,085 / $0,19 / $0,3425. Créditos = custo × 3333.
   private static readonly SEEDANCE_25_PRICING_NO_VIDEO: Record<string, number> = {
     RES_480P: 470,
     RES_720P: 1050,
-    RES_1080P: 1900,
+    RES_1080P: 2650,
   };
   private static readonly SEEDANCE_25_PRICING_WITH_VIDEO: Record<string, number> = {
     RES_480P: 285,
     RES_720P: 635,
-    RES_1080P: 1140,
+    RES_1080P: 1600,
   };
 
   private static calculateSeedance25Cost(
