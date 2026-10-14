@@ -1,4 +1,4 @@
-import { IsInt, IsNotEmpty, IsString, MaxLength } from 'class-validator';
+import { IsInt, IsNotEmpty, IsString, Max, MaxLength, Min, NotEquals } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class AdjustCreditsDto {
@@ -8,6 +8,11 @@ export class AdjustCreditsDto {
   })
   @IsInt()
   @IsNotEmpty()
+  @NotEquals(0)
+  // Teto por ajuste = 1 mês do maior plano (Agency, 200 mil). Mais que isso é
+  // erro de digitação ou abuso (TKT-106).
+  @Min(-200_000)
+  @Max(200_000)
   amount: number;
 
   @ApiProperty({

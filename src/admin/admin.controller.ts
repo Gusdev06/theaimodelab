@@ -18,6 +18,7 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 import { AdminService } from './admin.service';
+import { CurrentUser } from '../common/decorators';
 import { UploadsService } from '../uploads/uploads.service';
 import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -143,8 +144,9 @@ export class AdminController {
   async adjustCredits(
     @Param('id') id: string,
     @Body() dto: AdjustCreditsDto,
+    @CurrentUser('sub') adminId: string,
   ) {
-    await this.adminService.adjustCredits(id, dto.amount, dto.description);
+    await this.adminService.adjustCredits(id, dto.amount, dto.description, adminId);
     return { success: true, message: 'Créditos ajustados com sucesso' };
   }
 
