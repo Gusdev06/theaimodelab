@@ -1,5 +1,6 @@
 import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Job } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreditsService } from '../../credits/credits.service';
@@ -32,6 +33,13 @@ import { DeepDeepProvider } from '../providers/deepdeep.provider';
 import { WavespeedAudioProvider } from '../providers/wavespeed-audio.provider';
 import { GenerationEventsService } from '../generation-events.service';
 import { PromptEnhancerService } from '../../prompt-enhancer/prompt-enhancer.service';
+import { PlansService } from '../../plans/plans.service';
+import { FallbackKind, FallbackPlan, planFallback } from './generation-fallback';
+import {
+  GenerationUnrecoverableError,
+  isUnrecoverableJobError,
+  unwrapJobError,
+} from './unrecoverable.error';
 import { ContentSafetyError } from '../errors/content-safety.error';
 import {
   classifyGenerationFailure,
@@ -72,6 +80,7 @@ import {
   MinimaxH3ReferenceToVideoJobData,
   TextToSpeechJobData,
   VoiceCloneJobData,
+  GenerationJobData,
 } from './generation-queue.constants';
 
 /**
@@ -119,6 +128,8 @@ export class GenerationProcessor extends WorkerHost {
     private readonly wavespeedAudioProvider: WavespeedAudioProvider,
     private readonly generationEvents: GenerationEventsService,
     private readonly promptEnhancer: PromptEnhancerService,
+    private readonly plansService: PlansService,
+    private readonly configService: ConfigService,
   ) {
     super();
   }
@@ -128,7 +139,9 @@ export class GenerationProcessor extends WorkerHost {
       `Processing job ${job.id} [${job.name}] for generation ${job.data.generationId}`,
     );
 
-    return this.dispatch(job.name, job.data);
+    await this.dispatchWithFallback(job.name, job.data as GenerationJobData, {
+      queued: true,
+    });
   }
 
   /**
@@ -200,6 +213,281 @@ export class GenerationProcessor extends WorkerHost {
     }
   }
 
+  // ─── Fallback automático de modelo ─────────────────────────
+  // Plano em ./generation-fallback.ts. Liga/desliga por env:
+  //   GENERATION_FALLBACK_ENABLED (padrão true) — falha técnica do provedor
+  //   GENERATION_SAFETY_FALLBACK_ENABLED (padrão true) — bloqueio de conteúdo em vídeo
+
+  /** Depois disso a geração está perto da janela do cron: não vale começar outra chamada. */
+  private static readonly FALLBACK_DEADLINE_MS = 20 * 60 * 1000;
+
+  /** Erros que não mudam 30 s depois: sem retry cego do BullMQ (TKT-107). */
+  private static readonly NO_RETRY_CODES = new Set<string>([
+    GenerationFailureCode.CONTENT_SAFETY_BLOCKED,
+    GenerationFailureCode.INPUT_IMAGE_REJECTED,
+    GenerationFailureCode.NO_SUBJECT_DETECTED,
+    GenerationFailureCode.VIDEO_DURATION_UNSUPPORTED,
+    GenerationFailureCode.VIDEO_INPUT_DURATION_INVALID,
+    GenerationFailureCode.VIDEO_INPUT_RESOLUTION_LOW,
+    GenerationFailureCode.REFERENCE_MIX_UNSUPPORTED,
+    GenerationFailureCode.REFERENCE_ELEMENT_MISSING,
+    GenerationFailureCode.FILE_TOO_LARGE,
+    GenerationFailureCode.PROMPT_TOO_LONG,
+    GenerationFailureCode.PROVIDER_QUOTA_EXCEEDED,
+  ]);
+
+  /**
+   * Roda o job e, se o provedor falhar, tenta UMA vez num modelo alternativo.
+   * Sucesso no alternativo = geração COMPLETED com o preço reconciliado para o
+   * que rodou de fato. Falha nos dois = o erro ORIGINAL sobe (é o motivo que o
+   * usuário precisa ver) e o BullMQ não repete: a alternativa já foi tentada.
+   * Usado pela fila normal, pela fila ilimitada e pelos runners diretos.
+   */
+  async dispatchWithFallback(
+    jobName: string,
+    data: GenerationJobData,
+    opts: { queued: boolean },
+  ): Promise<void> {
+    try {
+      await this.dispatch(jobName, data);
+      return;
+    } catch (error) {
+      const original = error as Error;
+      const safety = this.isSafetyRelatedError(original);
+      const outcome = await this.tryFallback(jobName, data, original, safety);
+      if (outcome === 'completed') return;
+      if (!opts.queued) throw original;
+      if (
+        safety ||
+        outcome === 'failed' ||
+        this.isDeterministicFailure(original)
+      ) {
+        throw new GenerationUnrecoverableError(original);
+      }
+      throw original;
+    }
+  }
+
+  private isDeterministicFailure(error: Error): boolean {
+    const code = classifyGenerationFailure(rawFailureText(error), false);
+    return GenerationProcessor.NO_RETRY_CODES.has(code);
+  }
+
+  private fallbackEnabled(kind: FallbackKind): boolean {
+    const key =
+      kind === 'safety'
+        ? 'GENERATION_SAFETY_FALLBACK_ENABLED'
+        : 'GENERATION_FALLBACK_ENABLED';
+    return this.configService.get<string>(key, 'true') !== 'false';
+  }
+
+  private async tryFallback(
+    jobName: string,
+    data: GenerationJobData,
+    originalError: Error,
+    safety: boolean,
+  ): Promise<'completed' | 'failed' | 'none'> {
+    const kind: FallbackKind = safety ? 'safety' : 'provider';
+    if (!this.fallbackEnabled(kind)) return 'none';
+
+    const generation = await this.prisma.generation.findUnique({
+      where: { id: data.generationId },
+      select: {
+        id: true,
+        userId: true,
+        status: true,
+        type: true,
+        modelUsed: true,
+        durationSeconds: true,
+        aspectRatio: true,
+        createdAt: true,
+        creditsConsumed: true,
+        usedFreeGeneration: true,
+        parameters: true,
+      },
+    });
+    if (!generation || generation.status !== GenerationStatus.PROCESSING) {
+      return 'none';
+    }
+    const params =
+      generation.parameters && typeof generation.parameters === 'object'
+        ? (generation.parameters as Record<string, unknown>)
+        : {};
+    // Já é a alternativa rodando: fallback de fallback não existe.
+    if (params.fallbackFrom) return 'none';
+    if (
+      Date.now() - generation.createdAt.getTime() >
+      GenerationProcessor.FALLBACK_DEADLINE_MS
+    ) {
+      this.logger.warn(
+        `[FALLBACK] gen=${generation.id} perto da janela do cron — sem alternativa`,
+      );
+      return 'none';
+    }
+
+    let inputImageUrls: string[] | undefined;
+    if (
+      (jobName === GenerationJobName.IMAGE ||
+        jobName === GenerationJobName.IMAGE_WITH_FALLBACK) &&
+      (data as ImageJobData).hasInputImages
+    ) {
+      const inputImages = await this.prisma.generationInputImage.findMany({
+        where: { generationId: data.generationId },
+        orderBy: { order: 'asc' },
+      });
+      inputImageUrls = inputImages
+        .map((img) => img.url)
+        .filter((url): url is string => !!url);
+    }
+
+    const plan = planFallback(jobName, data, {
+      kind,
+      originalModel: generation.modelUsed,
+      generationType: generation.type,
+      durationSeconds: generation.durationSeconds,
+      aspectRatio: generation.aspectRatio,
+      inputImageUrls,
+    });
+    if (!plan) return 'none';
+
+    const errorCode = classifyGenerationFailure(
+      rawFailureText(originalError),
+      safety,
+    );
+    this.logger.warn(
+      `[FALLBACK] gen=${generation.id} ${generation.modelUsed} → ${plan.model} (${kind}: ${errorCode}) motivo="${originalError.message}"`,
+    );
+
+    const fallbackParams = {
+      ...params,
+      fallbackFrom: generation.modelUsed,
+      fallbackTo: plan.model,
+      fallbackKind: kind,
+      fallbackReason: errorCode,
+      fallbackOriginalError: originalError.message.slice(0, 300),
+    };
+    await this.prisma.generation.update({
+      where: { id: generation.id },
+      data: { parameters: fallbackParams },
+    });
+
+    try {
+      await this.dispatch(plan.jobName, plan.data);
+    } catch (fallbackError) {
+      this.logger.error(
+        `[FALLBACK] gen=${generation.id} alternativa ${plan.model} também falhou: ${(fallbackError as Error).message}`,
+      );
+      await this.prisma.generation
+        .update({
+          where: { id: generation.id },
+          data: {
+            parameters: {
+              ...fallbackParams,
+              fallbackFailed: (fallbackError as Error).message.slice(0, 300),
+            },
+          },
+        })
+        .catch(() => undefined);
+      return 'failed';
+    }
+
+    await this.settleFallbackCharge(
+      {
+        id: generation.id,
+        userId: generation.userId,
+        creditsConsumed: generation.creditsConsumed,
+        usedFreeGeneration: generation.usedFreeGeneration,
+        unlimited: params.unlimited === true,
+      },
+      plan,
+    );
+    return 'completed';
+  }
+
+  /**
+   * O cliente nunca paga mais do que foi cobrado: alternativa mais barata →
+   * estorna a diferença e grava o preço real; mais cara → a plataforma absorve.
+   */
+  private async settleFallbackCharge(
+    generation: {
+      id: string;
+      userId: string;
+      creditsConsumed: number;
+      usedFreeGeneration: boolean;
+      unlimited: boolean;
+    },
+    plan: FallbackPlan,
+  ): Promise<void> {
+    if (
+      generation.creditsConsumed <= 0 ||
+      generation.usedFreeGeneration ||
+      generation.unlimited
+    ) {
+      return;
+    }
+
+    let fallbackCredits: number;
+    try {
+      fallbackCredits = await this.plansService.calculateGenerationCost(
+        plan.billing.type,
+        plan.billing.resolution as Resolution,
+        plan.billing.durationSeconds,
+        plan.billing.hasAudio,
+        1,
+        plan.modelVariant,
+        plan.billing.hasVideoInput,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `[FALLBACK] gen=${generation.id} sem tabela de preço para ${plan.model}: cobrança original mantida (${(error as Error).message})`,
+      );
+      return;
+    }
+
+    const delta = generation.creditsConsumed - fallbackCredits;
+    const current = await this.getExistingParameters(generation.id);
+    if (delta > 0) {
+      await this.creditsService.adjustGenerationCost(
+        generation.userId,
+        generation.id,
+        delta,
+        `Estorno parcial: gerado no modelo alternativo ${plan.model} (${fallbackCredits} créditos)`,
+      );
+      await this.prisma.generation.update({
+        where: { id: generation.id },
+        data: {
+          creditsConsumed: fallbackCredits,
+          parameters: {
+            ...current,
+            fallbackCreditsOriginal: generation.creditsConsumed,
+            fallbackCreditsCharged: fallbackCredits,
+            fallbackCreditsRefunded: delta,
+          },
+        },
+      });
+      this.logger.log(
+        `[FALLBACK] gen=${generation.id} estornados ${delta} créditos (${generation.creditsConsumed} → ${fallbackCredits})`,
+      );
+      return;
+    }
+    if (delta < 0) {
+      await this.prisma.generation.update({
+        where: { id: generation.id },
+        data: {
+          parameters: {
+            ...current,
+            fallbackCreditsOriginal: generation.creditsConsumed,
+            fallbackCreditsCharged: generation.creditsConsumed,
+            fallbackCreditsAbsorbed: -delta,
+          },
+        },
+      });
+      this.logger.log(
+        `[FALLBACK] gen=${generation.id} alternativa custa ${-delta} créditos a mais; plataforma absorve`,
+      );
+    }
+  }
+
   // ─── Direct audio runners (no queue) ────────────────────────
   // Audio generations bypass BullMQ — they're fast, single-provider
   // (WaveSpeed), and we don't want the Redis hop adding silent failure modes.
@@ -236,7 +524,9 @@ export class GenerationProcessor extends WorkerHost {
 
   async runImageJobDirectly(data: ImageJobData): Promise<void> {
     try {
-      await this.processImage(data);
+      await this.dispatchWithFallback(GenerationJobName.IMAGE, data, {
+        queued: false,
+      });
     } catch (error) {
       await this.handleFailure(
         data.generationId,
@@ -1838,8 +2128,10 @@ export class GenerationProcessor extends WorkerHost {
       `Job ${job.id} [${job.name}] failed (attempt ${job.attemptsMade}/${job.opts.attempts ?? 1}): ${error.message}`,
     );
 
-    // Only refund after all retries are exhausted
-    if (job.attemptsMade < (job.opts.attempts ?? 1)) {
+    // Only refund after all retries are exhausted. Erro irrecuperável (bloqueio,
+    // entrada recusada, alternativa já tentada) não tem retry: finaliza agora.
+    const unrecoverable = isUnrecoverableJobError(error);
+    if (!unrecoverable && job.attemptsMade < (job.opts.attempts ?? 1)) {
       this.logger.warn(`Job ${job.id} will be retried`);
       return;
     }
@@ -1848,7 +2140,7 @@ export class GenerationProcessor extends WorkerHost {
       job.data.generationId,
       job.data.userId,
       job.data.creditsConsumed,
-      error,
+      unwrapJobError(error),
       job.data.usedFreeGeneration,
     );
   }
