@@ -99,6 +99,8 @@ const UNDRESS_PROMPT =
 const FACE_SWAP_SEEDREAM_PROMPT =
   'Recreate the scene in Image 2 (clothing, body pose, and setting) replacing the person with the woman in Image 1. Preserve facial features, skin tone and body proportions from Image 1 with photorealistic lighting and shadows.';
 
+type FallbackOutcome = 'completed' | 'failed' | 'none';
+
 @Processor(GENERATION_QUEUE, {
   concurrency: 5,
   lockDuration: 15 * 60 * 1000, // 15 min — vídeos podem demorar até 12 min
@@ -248,20 +250,40 @@ export class GenerationProcessor extends WorkerHost {
     data: GenerationJobData,
     opts: { queued: boolean },
   ): Promise<void> {
+    // Retry do BullMQ, job duplicado ou geração já finalizada pelo cron: não
+    // chama o provedor de novo para algo que ninguém vai usar (TKT-107).
+    const current = await this.prisma.generation.findUnique({
+      where: { id: data.generationId },
+      select: { status: true },
+    });
+    if (!current || current.status !== GenerationStatus.PROCESSING) {
+      this.logger.warn(
+        `Generation ${data.generationId} está ${current?.status ?? 'inexistente'} — job ${jobName} ignorado sem chamar o provedor`,
+      );
+      return;
+    }
+
     try {
       await this.dispatch(jobName, data);
       return;
     } catch (error) {
       const original = error as Error;
       const safety = this.isSafetyRelatedError(original);
-      const outcome = await this.tryFallback(jobName, data, original, safety);
+      let outcome: FallbackOutcome = 'none';
+      try {
+        outcome = await this.tryFallback(jobName, data, original, safety);
+      } catch (orchestrationError) {
+        // Falha da orquestração (banco, plano) nunca troca o motivo real da falha.
+        this.logger.error(
+          `[FALLBACK] gen=${data.generationId} orquestração falhou: ${(orchestrationError as Error).message}`,
+        );
+      }
       if (outcome === 'completed') return;
       if (!opts.queued) throw original;
-      if (
-        safety ||
-        outcome === 'failed' ||
-        this.isDeterministicFailure(original)
-      ) {
+      // Bloqueio e erro determinístico não mudam em 30 s: sem retry. Falha
+      // passageira mantém o retry do BullMQ, só do modelo original — a
+      // alternativa roda no máximo uma vez por geração (fallbackAttempt).
+      if (safety || this.isDeterministicFailure(original)) {
         throw new GenerationUnrecoverableError(original);
       }
       throw original;
@@ -286,7 +308,7 @@ export class GenerationProcessor extends WorkerHost {
     data: GenerationJobData,
     originalError: Error,
     safety: boolean,
-  ): Promise<'completed' | 'failed' | 'none'> {
+  ): Promise<FallbackOutcome> {
     const kind: FallbackKind = safety ? 'safety' : 'provider';
     if (!this.fallbackEnabled(kind)) return 'none';
 
@@ -313,8 +335,9 @@ export class GenerationProcessor extends WorkerHost {
       generation.parameters && typeof generation.parameters === 'object'
         ? (generation.parameters as Record<string, unknown>)
         : {};
-    // Já é a alternativa rodando: fallback de fallback não existe.
-    if (params.fallbackFrom) return 'none';
+    // Uma alternativa por geração: se já tentou (deu certo ou não), não tenta de
+    // novo — nem fallback de fallback, nem de novo no retry do BullMQ.
+    if (params.fallbackFrom || params.fallbackAttempt) return 'none';
     if (
       Date.now() - generation.createdAt.getTime() >
       GenerationProcessor.FALLBACK_DEADLINE_MS
@@ -358,17 +381,16 @@ export class GenerationProcessor extends WorkerHost {
       `[FALLBACK] gen=${generation.id} ${generation.modelUsed} → ${plan.model} (${kind}: ${errorCode}) motivo="${originalError.message}"`,
     );
 
-    const fallbackParams = {
-      ...params,
-      fallbackFrom: generation.modelUsed,
-      fallbackTo: plan.model,
-      fallbackKind: kind,
-      fallbackReason: errorCode,
-      fallbackOriginalError: originalError.message.slice(0, 300),
+    const attempt = {
+      from: generation.modelUsed,
+      to: plan.model,
+      kind,
+      reason: errorCode,
+      originalError: originalError.message.slice(0, 300),
     };
     await this.prisma.generation.update({
       where: { id: generation.id },
-      data: { parameters: fallbackParams },
+      data: { parameters: { ...params, fallbackAttempt: attempt } },
     });
 
     try {
@@ -382,8 +404,11 @@ export class GenerationProcessor extends WorkerHost {
           where: { id: generation.id },
           data: {
             parameters: {
-              ...fallbackParams,
-              fallbackFailed: (fallbackError as Error).message.slice(0, 300),
+              ...params,
+              fallbackAttempt: {
+                ...attempt,
+                failed: (fallbackError as Error).message.slice(0, 300),
+              },
             },
           },
         })
@@ -391,16 +416,53 @@ export class GenerationProcessor extends WorkerHost {
       return 'failed';
     }
 
-    await this.settleFallbackCharge(
-      {
-        id: generation.id,
-        userId: generation.userId,
-        creditsConsumed: generation.creditsConsumed,
-        usedFreeGeneration: generation.usedFreeGeneration,
-        unlimited: params.unlimited === true,
-      },
-      plan,
-    );
+    // A alternativa entregou. Daqui para frente nada pode derrubar o job: um
+    // erro aqui viraria retry e o provedor original rodaria de novo.
+    try {
+      const finished = await this.prisma.generation.findUnique({
+        where: { id: generation.id },
+        select: { status: true, parameters: true },
+      });
+      if (finished?.status !== GenerationStatus.COMPLETED) {
+        // O cron finalizou (e estornou) enquanto a alternativa rodava.
+        this.logger.warn(
+          `[FALLBACK] gen=${generation.id} terminou como ${finished?.status ?? 'inexistente'} — sem reconciliação de créditos`,
+        );
+        return 'completed';
+      }
+      const finishedParams =
+        finished.parameters && typeof finished.parameters === 'object'
+          ? { ...(finished.parameters as Record<string, unknown>) }
+          : {};
+      delete finishedParams.fallbackAttempt;
+      await this.prisma.generation.update({
+        where: { id: generation.id },
+        data: {
+          parameters: {
+            ...finishedParams,
+            fallbackFrom: attempt.from,
+            fallbackTo: attempt.to,
+            fallbackKind: kind,
+            fallbackReason: errorCode,
+            fallbackOriginalError: attempt.originalError,
+          },
+        },
+      });
+      await this.settleFallbackCharge(
+        {
+          id: generation.id,
+          userId: generation.userId,
+          creditsConsumed: generation.creditsConsumed,
+          usedFreeGeneration: generation.usedFreeGeneration,
+          unlimited: params.unlimited === true,
+        },
+        plan,
+      );
+    } catch (settleError) {
+      this.logger.error(
+        `[FALLBACK] gen=${generation.id} entregue pela alternativa, mas a reconciliação falhou: ${(settleError as Error).message}`,
+      );
+    }
     return 'completed';
   }
 
@@ -423,19 +485,6 @@ export class GenerationProcessor extends WorkerHost {
       generation.usedFreeGeneration ||
       generation.unlimited
     ) {
-      return;
-    }
-
-    // O cron pode ter marcado FAILED (e estornado tudo) enquanto a alternativa
-    // rodava: completeGeneration ignora o resultado e aqui não pode estornar de novo.
-    const after = await this.prisma.generation.findUnique({
-      where: { id: generation.id },
-      select: { status: true },
-    });
-    if (after?.status !== GenerationStatus.COMPLETED) {
-      this.logger.warn(
-        `[FALLBACK] gen=${generation.id} terminou como ${after?.status ?? 'inexistente'} — sem reconciliação de créditos`,
-      );
       return;
     }
 
