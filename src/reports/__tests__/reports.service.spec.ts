@@ -417,6 +417,9 @@ describe('ReportsService', () => {
       expect(created.every((row) => row.suspectedBot === false)).toBe(true);
     });
 
+    // as enxurradas fazem centenas de chamadas: com a suíte inteira rodando, 5 s (padrão do jest) não bastam
+    const FLOOD_TIMEOUT_MS = 30_000;
+
     it('enxurrada de isca com X-Forwarded-For inventado não bloqueia denúncia de menor nem a comum', async () => {
       const { service, created } = setup({});
       for (let i = 0; i < 120; i++) {
@@ -431,7 +434,7 @@ describe('ReportsService', () => {
       await expect(service.create(dto({ category: ContentReportCategory.NON_CONSENSUAL }), { ip: '192.0.2.3' })).resolves.toMatchObject({ ok: true });
       await expect(service.create(dto({ category: ContentReportCategory.COPYRIGHT }), { ip: '192.0.2.4' })).resolves.toMatchObject({ ok: true });
       expect(created.slice(before).map((row) => row.suspectedBot)).toEqual([false, false, false]);
-    });
+    }, FLOOD_TIMEOUT_MS);
 
     it('enxurrada de denúncia comum esgota o teto dela (120/h), mas MINOR e NON_CONSENSUAL seguem entrando', async () => {
       const { service, created } = setup({ env: { REPORTS_ALERT_EMAIL: 'x@y.com' } });
@@ -451,7 +454,7 @@ describe('ReportsService', () => {
         ['NON_CONSENSUAL', true],
         ['OTHER', true],
       ]);
-    });
+    }, FLOOD_TIMEOUT_MS);
 
     it('700 urgentes com X-Forwarded-For inventado (antes calavam a faixa) não recusam a denúncia de menor de verdade; e-mail avulso só 30', async () => {
       const { service, created, email } = setup({ env: { REPORTS_ALERT_EMAIL: 'x@y.com' } });
@@ -462,7 +465,7 @@ describe('ReportsService', () => {
       expect(email.sendContentReportAlert).toHaveBeenCalledTimes(30);
       expect(created.filter((row) => row.alertError === ALERT_DIGEST_QUEUED)).toHaveLength(671);
       expect(created[700]).toMatchObject({ alertError: ALERT_DIGEST_QUEUED, urgent: true });
-    });
+    }, FLOOD_TIMEOUT_MS);
 
     it('acima do teto que protege o banco: 429 com a alternativa por e-mail', async () => {
       const limits: ReportsLimits = { ...REPORTS_LIMITS, global: { ...REPORTS_LIMITS.global, priority: { limit: 3, windowMs: 60 * MIN } } };
