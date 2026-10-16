@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsIn } from 'class-validator';
+import { IsString, IsOptional, IsIn, IsBoolean } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class GenerateFaceSwapDto {
@@ -49,4 +49,12 @@ export class GenerateFaceSwapDto {
   @IsString()
   @IsIn(['SEM_CENSURA'])
   model_variant?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Atestado obrigatório (ContentSafetyInterceptor): a foto do rosto é de uma pessoa gerada por IA ou de um adulto que autorizou o uso da própria imagem. Sem true, a troca de rosto é recusada (CONSENT_REQUIRED).',
+  })
+  @IsOptional()
+  @IsBoolean()
+  consent_confirmed?: boolean;
 }

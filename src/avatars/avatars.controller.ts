@@ -23,9 +23,13 @@ import {
   AvatarListResponseDto,
   AvatarResponseDto,
 } from './dto/avatar-response.dto';
+import { UseInterceptors } from '@nestjs/common';
+import { ContentSafetyInterceptor } from '../content-safety/content-safety.interceptor';
 
 @ApiTags('avatars')
 @ApiBearerAuth()
+// segurança de conteúdo: recusa referência a menor e exige atestado de consentimento nas ferramentas de foto
+@UseInterceptors(ContentSafetyInterceptor)
 @Controller('api/v1/avatars')
 export class AvatarsController {
   constructor(

@@ -18,6 +18,7 @@ import {
 } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { AcceptTermsDto } from './dto/accept-terms.dto';
 import { UserProfileResponseDto } from './dto/user-profile-response.dto';
 import { CurrentUser } from '../common/decorators';
 
@@ -83,8 +84,9 @@ export class UsersController {
   @ApiResponse({ status: 401, description: 'Não autenticado' })
   async acceptTerms(
     @CurrentUser('sub') userId: string,
+    @Body() body: AcceptTermsDto,
   ): Promise<UserProfileResponseDto> {
-    return this.usersService.acceptTerms(userId);
+    return this.usersService.acceptTerms(userId, body?.version);
   }
 
   @Delete('me')

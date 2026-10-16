@@ -1293,3 +1293,71 @@ model AnalyticsEvent {
   @@index([eventName, createdAt])
   @@map("analytics_events")
 }
+
+// ─── Segurança de conteúdo (15/10/2026) ─────────────────────────────────────
+// Denúncias de conteúdo (menor, imagem íntima sem consentimento, uso de imagem de terceiro, direito autoral) e o
+// registro de bloqueio/consentimento das ferramentas de foto. Sem FK para User de propósito: denúncia e evidência
+// de abuso precisam sobreviver à exclusão da conta (guarda legal), e a tabela não muda o modelo User.
+
+enum ContentReportCategory {
+  MINOR
+  NON_CONSENSUAL
+  IMPERSONATION
+  COPYRIGHT
+  ILLEGAL
+  OTHER
+}
+
+enum ContentReportStatus {
+  OPEN
+  IN_REVIEW
+  ACTIONED
+  DISMISSED
+}
+
+model ContentReport {
+  id               String                @id @default(cuid())
+  category         ContentReportCategory
+  status           ContentReportStatus   @default(OPEN)
+  /// link, id da geração ou descrição de onde está o conteúdo denunciado
+  target           String
+  description      String
+  reporterEmail    String?               @map("reporter_email")
+  reporterUserId   String?               @map("reporter_user_id")
+  /// quem denuncia é a pessoa que aparece no conteúdo (imagem íntima sem consentimento)
+  isDepictedPerson Boolean               @default(false) @map("is_depicted_person")
+  /// hash do IP (nunca o IP puro): limita abuso do formulário sem guardar dado pessoal desnecessário
+  ipHash           String?               @map("ip_hash")
+  adminNote        String?               @map("admin_note")
+  handledBy        String?               @map("handled_by")
+  handledAt        DateTime?             @map("handled_at")
+  createdAt        DateTime              @default(now()) @map("created_at")
+  updatedAt        DateTime              @updatedAt @map("updated_at")
+
+  @@index([status, createdAt])
+  @@index([category])
+  @@map("content_reports")
+}
+
+enum ContentSafetyEventKind {
+  MINOR_BLOCKED
+  CONSENT_ATTESTED
+  CONSENT_MISSING
+}
+
+model ContentSafetyEvent {
+  id           String                 @id @default(cuid())
+  userId       String?                @map("user_id")
+  kind         ContentSafetyEventKind
+  route        String
+  /// o que disparou (termo ou idade), nunca o pedido inteiro
+  match        String?
+  /// trecho do pedido para revisão de abuso (até 300 caracteres)
+  excerpt      String?
+  termsVersion String?                @map("terms_version")
+  createdAt    DateTime               @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([kind, createdAt])
+  @@map("content_safety_events")
+}

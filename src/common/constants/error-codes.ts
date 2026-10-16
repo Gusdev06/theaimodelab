@@ -51,6 +51,19 @@ export const ErrorCodes = {
     statusCode: HttpStatus.BAD_REQUEST,
     message: 'Prompt excede limite de caracteres',
   },
+  // Segurança de conteúdo (15/10/2026): a plataforma recusa antes de qualquer provedor de IA
+  CONTENT_POLICY_MINOR: {
+    code: 'CONTENT_POLICY_MINOR',
+    statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
+    message:
+      'Este pedido faz referência a menor de idade e foi recusado. A The AI Model Lab é exclusivamente para conteúdo com adultos (18+).',
+  },
+  CONSENT_REQUIRED: {
+    code: 'CONSENT_REQUIRED',
+    statusCode: HttpStatus.BAD_REQUEST,
+    message:
+      'Confirme que a foto é de uma pessoa gerada por IA ou de um adulto que autorizou o uso da própria imagem.',
+  },
 } as const;
 
 export type ErrorCode = keyof typeof ErrorCodes;
