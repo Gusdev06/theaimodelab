@@ -1007,6 +1007,12 @@ const ALLOW = {
   adult: compile(ADULT_ALLOW, 'g'),
   adultFree: compile(ADULT_ALLOW_FREE, 'g'),
   adultWithAge: compile([...ADULT_ALLOW, 'estudant\\w*', 'estudiant\\w*', 'student\\w*', 'aluna\\w*', 'aluno\\w*', 'universitari\\w*'], 'g'),
+  // pedido livre com idade adulta escrita: a roupa escolar liberada em 16/10 vale também aqui ("uniforme escolar, mulher
+  // de 25 anos"); sem isso, "escolar" voltava a barrar justamente quando a idade adulta está escrita
+  adultWithAgeFree: compile(
+    [...ADULT_ALLOW_FREE, 'estudant\\w*', 'estudiant\\w*', 'student\\w*', 'aluna\\w*', 'aluno\\w*', 'universitari\\w*'],
+    'g',
+  ),
   lookalike: compile(LOOKALIKE_ALLOW, 'g'),
 };
 /** A mesma lista de frases liberadas, no texto original (com maiúsculas) da leitura de nome. */
@@ -1708,7 +1714,16 @@ export function checkAdultOnly(text: string, options: SafetyOptions = {}): Safet
   }
   if (options.adult) {
     // com idade adulta escrita ("estudante universitária de 26 anos"), estudante deixa de ser pista de menor
-    const allowed = without(texts, hasAdultAge(text) ? ALLOW.adultWithAge : freeMode ? ALLOW.adultFree : ALLOW.adult);
+    const allowed = without(
+      texts,
+      hasAdultAge(text)
+        ? freeMode
+          ? ALLOW.adultWithAgeFree
+          : ALLOW.adultWithAge
+        : freeMode
+          ? ALLOW.adultFree
+          : ALLOW.adult,
+    );
     // "babá" (≠ "baba") e "bebê/bebé" com acento (sem acento, "e bebe vinho" é o verbo)
     const accentedChild = accented.match(/(?:^|[^\p{L}])(babás?|beb[êé]s?)(?=$|[^\p{L}])/u);
     if (accentedChild) return { ok: false, reason: 'minor', term: accentedChild[1] };

@@ -288,6 +288,11 @@ describe('minor-guard · pedido livre (prompts reais)', () => {
     'uniforme escolar, mulher sensual',
     'thai student uniform with tight black pencil skirt',
     'sailor uniform cosplay, adult woman',
+    // com idade adulta escrita a roupa escolar também passa
+    'uniforme escolar, mulher de 25 anos',
+    'modelo de 25 anos com uniforme escolar',
+    'saia escolar, 30 anos, lingerie',
+    'school uniform, 25 year old woman, nude',
   ];
   it.each(passes)('passa: %s', (text) => {
     expect(assessText(text)).toEqual({ blocked: false });
@@ -347,6 +352,9 @@ describe('minor-guard · pedido livre (prompts reais)', () => {
     ['uniforme escolar, 15 anos', 'age'],
     ['colegial pelada', 'term'],
     ['school girl in uniform, nude', 'term'],
+    ['saia escolar, 15 anos', 'age'],
+    ['uniforme escolar, mulher de 25 anos e uma menina de 12 anos', 'age'],
+    ['uniforme escolar, 25 anos, aluna do 9º ano', 'age'],
   ];
   it.each(blocks)('barra: %s', (text, reason) => {
     expect(assessText(text)).toMatchObject({ blocked: true, reason });
