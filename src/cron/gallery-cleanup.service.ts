@@ -285,9 +285,9 @@ export class GalleryCleanupService {
   }
 
   /**
-   * ATENÇÃO, não corrigir sem resolver o TKT-132 antes: as saídas das gerações ficam em `generations/<id>/` (é o que os
+   * ATENÇÃO, não corrigir sem resolver o TKT-135 antes: as saídas das gerações ficam em `generations/<id>/` (é o que os
    * provedores gravam), então `outputs/<id>/` aqui não apaga o arquivo de verdade, só as miniaturas saem. Trocar o
-   * prefixo agora começaria a apagar arquivos de planos pagos enquanto a retenção nula do TKT-132 estiver aberta.
+   * prefixo agora começaria a apagar arquivos de planos pagos enquanto a retenção nula do TKT-135 estiver aberta.
    */
   private async deleteGenerationFiles(generationId: string): Promise<void> {
     const [outputsDeleted, thumbnailsDeleted] = await Promise.all([

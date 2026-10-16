@@ -286,7 +286,7 @@ describe('GalleryCleanupService: a limpeza da galeria nunca apaga evidência', (
     for (const kept of [G_HELD, G_REPORTED, G_POST, G_MINOR, G_AVATAR]) {
       expect(prefixes.some((prefix) => prefix.includes(kept))).toBe(false);
     }
-    // prefixo mantido de propósito até o TKT-132 (ver o comentário no serviço)
+    // prefixo mantido de propósito até o TKT-135 (ver o comentário no serviço)
     expect(prefixes).toContain(`outputs/${G_FREE}/`);
     expect(prefixes).toContain(`thumbnails/${G_FREE}/`);
     // a consulta não filtra mais por conta ativa (quem protege a conta sob guarda é o prazo nulo)
