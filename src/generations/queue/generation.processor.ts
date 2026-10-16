@@ -1721,6 +1721,10 @@ export class GenerationProcessor extends WorkerHost {
    * automático de modelo por bloqueio de conteúdo (vídeo kie → MiniMax H3), que também leva prompt e fotos a outro
    * provedor; (3) o catch de bloqueio terminal no process() e no UnlimitedProcessor.process() (sem relançar);
    * (4) failureCodeOf/failureUserMessage no handleFailure e no markFailed do ilimitado.
+   * Na #3 o erro chega embrulhado em GenerationUnrecoverableError: o catch de (3) passa por unwrapJobError antes de
+   * terminalSafetyBlockOf, senão a recusa por menor não é reconhecida. O "unsafe image upload" da #3 entra no
+   * CONTENT_BLOCK_PATTERN de errors/failure-reason.ts. Merge de teste: conflito neste arquivo, no unlimited.processor.ts,
+   * no errors/failure-reason.ts e no .env.example.
    */
   private async assertSafetyFallbackAllowed(
     generationId: string,
