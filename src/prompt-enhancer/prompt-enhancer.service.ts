@@ -504,7 +504,7 @@ You receive character customization selections from a visual builder. You return
 The generated image must have ULTRA-REALISTIC skin. Every subject.skin_details field must enforce ALL of the following:
 - Authentic natural asymmetry in facial features and body posture
 - Subtle unevenness in eyes, eyebrows, lips, and bone structure
-- Realistic skin texture with visible pores, fine lines, tiny blemishes, slight discoloration, uneven tones, and micro-shadows
+- Realistic skin texture with visible pores, fine lines, small blemishes, slight discoloration, uneven tones, and micro-shadows
 - ABSOLUTELY NO smooth or plastic skin
 - Micro-details: individual hair strands, flyaways, peach fuzz, fabric fibers, wrinkles on clothes
 - Replace any artificial or "AI" lighting feel with believable real-life lighting: natural falloff, imperfect shadows, soft highlights, realistic contrast, subtle light color shifts — lighting should feel accidental, not designed
@@ -551,7 +551,7 @@ You receive a JSON with character traits: characterType, gender, ethnicity, skin
       "footwear": "[Match the scene: sneakers, sandals, barefoot on beach, boots, slides]",
       "accessories": "[2-4 realistic accessories: sunglasses, simple jewelry, watch, hair tie on wrist, tote bag, phone in hand, AirPods, baseball cap, etc. Incorporate input accessories like tattoos/piercings if selected.]"
     },
-    "skin_details": "[ULTRA-DETAILED based on input skinColor. MANDATORY: visible pores with uneven density across face, fine lines around eyes and mouth, tiny blemishes or marks, slight discoloration and uneven skin tones, micro-shadows in skin folds, natural asymmetry in features, subtle peach fuzz catching light, mild redness around nose and cheeks, realistic specular highlights from natural light — NOT uniform glow. If beach/outdoor scene add subtle tan lines and sun-kissed warmth. Incorporate skinCondition if provided (freckles, vitiligo, etc.). ABSOLUTELY NO airbrushing, no beauty filter, no plastic smooth skin. Skin must look like a real phone photo of a real person.]"
+    "skin_details": "[ULTRA-DETAILED based on input skinColor. MANDATORY: visible pores with uneven density across face, fine lines around eyes and mouth, small blemishes or marks, slight discoloration and uneven skin tones, micro-shadows in skin folds, natural asymmetry in features, subtle peach fuzz catching light, mild redness around nose and cheeks, realistic specular highlights from natural light — NOT uniform glow. If beach/outdoor scene add subtle tan lines and sun-kissed warmth. Incorporate skinCondition if provided (freckles, vitiligo, etc.). ABSOLUTELY NO airbrushing, no beauty filter, no plastic smooth skin. Skin must look like a real phone photo of a real person.]"
   },
   "environment": {
     "location": "[SPECIFIC and DIFFERENT every time. Not just 'beach' but 'rocky coastline in Amalfi with turquoise water and colorful houses in background'. Not just 'cafe' but 'small sidewalk cafe in Montmartre with wrought-iron chairs and cobblestones'. Be vivid and specific.]",
@@ -569,11 +569,11 @@ You receive a JSON with character traits: characterType, gender, ethnicity, skin
     "color_temperature": "[Match environment realistically. Warm golden for golden hour, neutral for midday, cool for overcast, mixed indoor ambient. Include subtle light color shifts across the scene as real light does.]"
   },
   "realism_enhancer": {
-    "skin_texture": "Ultra-detailed photorealistic skin with visible pores, fine lines, tiny blemishes, slight discoloration, uneven tones, micro-shadows. No smooth or plastic skin.",
+    "skin_texture": "Ultra-detailed photorealistic skin with visible pores, fine lines, small blemishes, slight discoloration, uneven tones, micro-shadows. No smooth or plastic skin.",
     "micro_details": "Individual hair strands and flyaways, fabric fibers and natural wrinkles, dust particles in light, fingerprints on sunglasses or phone if held, subtle wear on accessories",
     "lighting_realism": "Believable real-life lighting with natural falloff, imperfect shadows, soft highlights, realistic contrast, subtle light color shifts. Lighting feels accidental, not designed.",
     "asymmetry": "Natural facial asymmetry — slightly uneven eyes, eyebrows, lips, and bone structure. Subtle body posture asymmetry. Nothing perfectly aligned.",
-    "imperfections": "Tiny environmental imperfections: slightly dirty ground, scuff marks, water droplets, lens flare from sun, slight overexposure in bright areas as iPhone would capture"
+    "imperfections": "Subtle environmental imperfections: slightly dirty ground, scuff marks, water droplets, lens flare from sun, slight overexposure in bright areas as iPhone would capture"
   },
   "artistic_style": {
     "genre": "Candid Instagram influencer photography",

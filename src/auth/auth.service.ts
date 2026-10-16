@@ -14,6 +14,7 @@ import { PendingGrantsService } from '../pending-grants/pending-grants.service';
 import { TrackingDto } from './dto/tracking.dto';
 import { MetaConversionsService, MetaRequestContext } from '../meta/meta-conversions.service';
 import { WelcomeCreditsService } from './welcome-credits.service';
+import { accountDisabledException } from './strategies/jwt.strategy';
 
 const SIGNUP_BONUS_CREDITS = 50;
 
@@ -85,9 +86,9 @@ export class AuthService {
   ): Promise<AuthResponseDto> {
     const { email, password, name, referralCode, tracking } = registerDto;
 
-    // Verifica se o email já está em uso
+    // Verifica se o email já está em uso (conta desativada também: o e-mail é único e a criação daria erro 500)
     const existingUser = await this.prisma.user.findUnique({
-      where: { email: email.toLowerCase(), isActive: true },
+      where: { email: email.toLowerCase() },
     });
 
     if (existingUser) {
@@ -337,6 +338,21 @@ export class AuthService {
     tracking?: TrackingDto,
     requestContext?: MetaRequestContext,
   ): Promise<AuthResponseDto> {
+    // Primeiro confere o token; só depois entra no login. Assim o erro do login (conta desativada, banco fora)
+    // chega como é, em vez de virar "token inválido" ou disparar a 2ª tentativa como access token.
+    const profile = await this.verifyGoogleToken(googleToken);
+    return this.googleAuth({
+      ...profile,
+      provider: 'google',
+      referralCode,
+      tracking,
+    }, locale, requestContext);
+  }
+
+  /** Confere o token do Google (ID token primeiro, depois access token) e devolve quem é a pessoa. */
+  private async verifyGoogleToken(
+    googleToken: string,
+  ): Promise<{ googleId: string; email: string; name: string; avatarUrl?: string }> {
     try {
       const { OAuth2Client } = await import('google-auth-library');
       const client = new OAuth2Client(this.configService.get('GOOGLE_CLIENT_ID'));
@@ -350,19 +366,16 @@ export class AuthService {
 
         const payload = ticket.getPayload();
 
-        if (!payload || !payload.email) {
+        if (!payload || !payload.email || !payload.sub) {
           throw new Error('Invalid ID token payload');
         }
 
-        return this.googleAuth({
+        return {
           googleId: payload.sub,
           email: payload.email,
           name: payload.name || payload.email.split('@')[0],
           avatarUrl: payload.picture,
-          provider: 'google',
-          referralCode,
-          tracking,
-        }, locale, requestContext);
+        };
       } catch {
         // Se falhar como ID token, tenta como access token
         const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
@@ -373,21 +386,33 @@ export class AuthService {
           throw new UnauthorizedException('Token Google inválido');
         }
 
-        const userInfo = await response.json();
+        const userInfo = (await response.json()) as {
+          sub?: unknown;
+          email?: unknown;
+          name?: unknown;
+          picture?: unknown;
+        };
 
-        if (!userInfo.email) {
+        // sem o id do Google, a busca por oauthProviderId viraria filtro vazio e acharia qualquer conta Google
+        if (
+          typeof userInfo.email !== 'string' ||
+          !userInfo.email ||
+          typeof userInfo.sub !== 'string' ||
+          !userInfo.sub
+        ) {
           throw new UnauthorizedException('Token Google inválido');
         }
 
-        return this.googleAuth({
+        return {
           googleId: userInfo.sub,
           email: userInfo.email,
-          name: userInfo.name || userInfo.email.split('@')[0],
-          avatarUrl: userInfo.picture,
-          provider: 'google',
-          referralCode,
-          tracking,
-        }, locale, requestContext);
+          name:
+            typeof userInfo.name === 'string' && userInfo.name
+              ? userInfo.name
+              : userInfo.email.split('@')[0],
+          avatarUrl:
+            typeof userInfo.picture === 'string' ? userInfo.picture : undefined,
+        };
       }
     } catch (error) {
       if (error instanceof UnauthorizedException) throw error;
@@ -423,6 +448,13 @@ export class AuthService {
     });
 
     let isNewUser = false;
+
+    // Conta desativada (bloqueio, guarda legal, exclusão ou a própria pessoa desativou) não entra pelo Google:
+    // recusa antes de vincular, criar ou emitir qualquer token
+    if (user && !user.isActive) {
+      this.logger.warn(`googleAuth: login recusado, conta ${user.id} desativada`);
+      throw accountDisabledException();
+    }
 
     if (user) {
       // Se o usuário existe mas não tinha OAuth, atualiza

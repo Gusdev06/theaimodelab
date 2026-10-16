@@ -64,6 +64,17 @@ export const ErrorCodes = {
     message:
       'Confirme que a foto é de uma pessoa gerada por IA ou de um adulto que autorizou o uso da própria imagem.',
   },
+  REQUEST_TOO_LARGE: {
+    code: 'REQUEST_TOO_LARGE',
+    statusCode: HttpStatus.PAYLOAD_TOO_LARGE,
+    message: 'O pedido tem texto demais. Encurte o prompt e tente de novo.',
+  },
+  // alfabeto que a trava de menor ainda não lê: recusado sem leitura (não é registrado como tentativa com menor)
+  CONTENT_POLICY_LANGUAGE: {
+    code: 'CONTENT_POLICY_LANGUAGE',
+    statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: 'Ainda não conseguimos conferir pedidos neste alfabeto. Escreva em português, inglês ou espanhol.',
+  },
 } as const;
 
 export type ErrorCode = keyof typeof ErrorCodes;

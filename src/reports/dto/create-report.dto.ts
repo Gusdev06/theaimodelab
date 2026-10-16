@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsEmail, IsEnum, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { Equals, IsBoolean, IsEmail, IsEnum, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { ContentReportCategory } from '@prisma/client';
 
 export class CreateReportDto {
@@ -37,14 +37,29 @@ export class CreateReportDto {
   website?: string;
 }
 
+/**
+ * Andamento da denúncia pelo admin. Pelo menos um campo (o serviço recusa o corpo vazio). Liberar a evidência só com a
+ * denúncia confirmada (ACTIONED). Qualquer troca de status desfaz a liberação: a denúncia volta a segurar a exclusão LGPD
+ * da conta denunciada até ser confirmada e liberada de novo (o pedido que confirma e libera junto vale).
+ */
 export class UpdateReportDto {
-  @ApiProperty({ enum: ['OPEN', 'IN_REVIEW', 'ACTIONED', 'DISMISSED'] })
+  @ApiPropertyOptional({ enum: ['OPEN', 'IN_REVIEW', 'ACTIONED', 'DISMISSED'] })
+  @IsOptional()
   @IsEnum(['OPEN', 'IN_REVIEW', 'ACTIONED', 'DISMISSED'])
-  status: 'OPEN' | 'IN_REVIEW' | 'ACTIONED' | 'DISMISSED';
+  status?: 'OPEN' | 'IN_REVIEW' | 'ACTIONED' | 'DISMISSED';
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   @MaxLength(4000)
   adminNote?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'true libera a evidência (só com a denúncia removida/ACTIONED, já gravada ou no mesmo pedido; repetir não muda a data): a denúncia deixa de segurar a exclusão LGPD da conta denunciada. Qualquer troca de status depois desfaz a liberação',
+    type: Boolean,
+  })
+  @IsOptional()
+  @Equals(true, { message: 'evidenceReleased só aceita true (para voltar a segurar a evidência, mude o status da denúncia)' })
+  evidenceReleased?: true;
 }

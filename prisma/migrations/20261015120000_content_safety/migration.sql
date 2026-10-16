@@ -21,10 +21,17 @@ CREATE TABLE "content_reports" (
     "reporter_email" TEXT,
     "reporter_user_id" TEXT,
     "is_depicted_person" BOOLEAN NOT NULL DEFAULT false,
+    "urgent" BOOLEAN NOT NULL DEFAULT false,
+    "suspected_bot" BOOLEAN NOT NULL DEFAULT false,
+    "alert_sent_at" TIMESTAMP(3),
+    "alert_error" TEXT,
+    "alert_attempts" INTEGER NOT NULL DEFAULT 0,
     "ip_hash" TEXT,
     "admin_note" TEXT,
     "handled_by" TEXT,
     "handled_at" TIMESTAMP(3),
+    "evidence_released_at" TIMESTAMP(3),
+    "evidence_released_by" TEXT,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 
@@ -40,6 +47,10 @@ CREATE TABLE "content_safety_events" (
     "match" TEXT,
     "excerpt" TEXT,
     "terms_version" TEXT,
+    "generation_id" TEXT,
+    "released_at" TIMESTAMP(3),
+    "released_by" TEXT,
+    "release_note" TEXT,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "content_safety_events_pkey" PRIMARY KEY ("id")
@@ -52,8 +63,14 @@ CREATE INDEX "content_reports_status_created_at_idx" ON "content_reports"("statu
 CREATE INDEX "content_reports_category_idx" ON "content_reports"("category");
 
 -- CreateIndex
+CREATE INDEX "content_reports_urgent_status_idx" ON "content_reports"("urgent", "status");
+
+-- CreateIndex
 CREATE INDEX "content_safety_events_user_id_created_at_idx" ON "content_safety_events"("user_id", "created_at");
 
 -- CreateIndex
 CREATE INDEX "content_safety_events_kind_created_at_idx" ON "content_safety_events"("kind", "created_at");
+
+-- CreateIndex
+CREATE INDEX "content_safety_events_generation_id_idx" ON "content_safety_events"("generation_id");
 

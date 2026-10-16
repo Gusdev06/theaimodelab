@@ -7,8 +7,14 @@ import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decor
 import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { UpdateReportDto } from './dto/create-report.dto';
-import { ReportsService } from './reports.service';
+import { REPORTS_SORTS, ReportsService, ReportsSort } from './reports.service';
 
+/**
+ * Denúncias no admin. Cada denúncia vem com `citesMinor` (descrição ou alvo cita menor, a mesma conferência da
+ * urgência) e `urgentReasons` ('category' | 'depicted_person' | 'cites_minor'): o cockpit decide por eles se a
+ * denúncia fura o mudo. `evidenceReleasedAt` diz se a evidência já foi liberada (a denúncia deixou de segurar a
+ * exclusão LGPD da conta denunciada).
+ */
 @ApiTags('admin')
 @ApiBearerAuth()
 @Controller('api/v1/admin/reports')
@@ -18,20 +24,36 @@ export class ReportsAdminController {
   constructor(private readonly reports: ReportsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Lista as denúncias de conteúdo, abertas primeiro (admin)' })
+  @ApiOperation({
+    summary:
+      'Lista as denúncias de conteúdo, abertas primeiro; sort=newest (padrão) ou oldest dentro de cada status. Traz open, urgentOpen e, em cada denúncia, citesMinor e urgentReasons (admin)',
+  })
   async list(
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number,
     @Query('status') status?: string,
+    @Query('sort') sort?: string,
   ) {
-    if (status && !(status in ContentReportStatus)) throw new BadRequestException('status inválido');
-    return this.reports.listForAdmin(page, limit, status as ContentReportStatus | undefined);
+    if (status && !Object.prototype.hasOwnProperty.call(ContentReportStatus, status)) {
+      throw new BadRequestException('status inválido');
+    }
+    if (sort && !REPORTS_SORTS.includes(sort as ReportsSort)) throw new BadRequestException('sort inválido (newest ou oldest)');
+    return this.reports.listForAdmin(page, limit, status as ContentReportStatus | undefined, (sort as ReportsSort | undefined) ?? 'newest');
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Uma denúncia de conteúdo, com citesMinor, urgentReasons e evidenceReleasedAt (admin)' })
+  async detail(@Param('id') id: string) {
+    return this.reports.getForAdmin(id);
   }
 
   @Patch(':id')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
-  @ApiOperation({ summary: 'Muda o andamento de uma denúncia (em análise, removido, descartado) (admin)' })
+  @ApiOperation({
+    summary:
+      'Muda o andamento de uma denúncia (em análise, removido, descartado), a nota e libera a evidência (evidenceReleased: true, só com a denúncia removida/ACTIONED; troca de status desfaz a liberação; 409 se outro admin mudou a denúncia no meio) (admin)',
+  })
   async update(@Param('id') id: string, @Body() dto: UpdateReportDto, @CurrentUser() admin: JwtPayload) {
-    return this.reports.update(id, dto, admin.email);
+    return this.reports.update(id, dto, { id: admin.sub, email: admin.email });
   }
 }

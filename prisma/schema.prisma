@@ -1326,16 +1326,29 @@ model ContentReport {
   reporterUserId   String?               @map("reporter_user_id")
   /// quem denuncia é a pessoa que aparece no conteúdo (imagem íntima sem consentimento)
   isDepictedPerson Boolean               @default(false) @map("is_depicted_person")
-  /// hash do IP (nunca o IP puro): limita abuso do formulário sem guardar dado pessoal desnecessário
+  /// prazo de 24 h: categoria urgente, a própria pessoa denunciando ou descrição que cita menor
+  urgent           Boolean               @default(false)
+  /// isca de robô preenchida numa denúncia urgente: guardada para revisão, sem aviso por e-mail
+  suspectedBot     Boolean               @default(false) @map("suspected_bot")
+  /// aviso por e-mail à equipe: quando saiu, ou por que não saiu
+  alertSentAt      DateTime?             @map("alert_sent_at")
+  alertError       String?               @map("alert_error")
+  /// tentativas de aviso por e-mail (falha passageira é refeita pela varredura, até 5)
+  alertAttempts    Int                   @default(0) @map("alert_attempts")
+  /// hash do IP com chave secreta (nunca o IP puro): limita abuso do formulário sem guardar dado pessoal desnecessário
   ipHash           String?               @map("ip_hash")
   adminNote        String?               @map("admin_note")
   handledBy        String?               @map("handled_by")
   handledAt        DateTime?             @map("handled_at")
+  /// caso encerrado e evidência entregue/liberada: a denúncia deixa de segurar a exclusão LGPD da conta denunciada
+  evidenceReleasedAt DateTime?           @map("evidence_released_at")
+  evidenceReleasedBy String?             @map("evidence_released_by")
   createdAt        DateTime              @default(now()) @map("created_at")
   updatedAt        DateTime              @updatedAt @map("updated_at")
 
   @@index([status, createdAt])
   @@index([category])
+  @@index([urgent, status])
   @@map("content_reports")
 }
 
@@ -1354,10 +1367,18 @@ model ContentSafetyEvent {
   match        String?
   /// trecho do pedido para revisão de abuso (até 300 caracteres)
   excerpt      String?
+  /// versão do termo que o usuário tinha aceitado no momento do evento
   termsVersion String?                @map("terms_version")
+  /// geração criada pelo pedido atestado (liga o atestado à imagem que pode ser contestada)
+  generationId String?                @map("generation_id")
+  /// liberação pelo jurídico (falso positivo do provedor ou caso encerrado): o evento deixa de reter a conta na exclusão LGPD
+  releasedAt   DateTime?              @map("released_at")
+  releasedBy   String?                @map("released_by")
+  releaseNote  String?                @map("release_note")
   createdAt    DateTime               @default(now()) @map("created_at")
 
   @@index([userId, createdAt])
   @@index([kind, createdAt])
+  @@index([generationId])
   @@map("content_safety_events")
 }

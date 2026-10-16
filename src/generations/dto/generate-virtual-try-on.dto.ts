@@ -3,6 +3,7 @@ import {
   IsOptional,
   IsEnum,
   IsIn,
+  IsBoolean,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Resolution } from '@prisma/client';
@@ -89,4 +90,12 @@ export class GenerateVirtualTryOnDto {
   @IsOptional()
   @IsString()
   model_variant?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Atestado de imagem (ContentSafetyInterceptor): a foto é de uma pessoa gerada por IA ou de um adulto que autorizou o uso da própria imagem. Obrigatório (true) nesta rota; sem ele, 400 CONSENT_REQUIRED.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  consent_confirmed?: boolean;
 }

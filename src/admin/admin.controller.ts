@@ -132,6 +132,12 @@ export class AdminController {
 
   @Delete('users/:id')
   @ApiOperation({ summary: 'Excluir um usuário permanentemente' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'ACCOUNT_LEGAL_HOLD: conta sob guarda legal (denúncia ou bloqueio por menor de idade). A exclusão definitiva ' +
+      'apagaria a evidência; use "Excluir dados (LGPD)" (POST users/:id/erase)',
+  })
   async deleteUser(@Param('id') id: string) {
     await this.adminService.deleteUser(id);
     return { success: true, message: 'Usuário excluído com sucesso' };
