@@ -536,6 +536,17 @@ const CHILDLIKE_STRONG = new Set([
   'chupeta\\w*',
   'chupete\\w*',
 ]);
+/**
+ * Roupa de escola (uniforme, saia, camisa, sailor/seifuku): no pedido livre não barra sozinha (decisão do dono, 16/10).
+ * schoolgirl, colegial, high school, série e idade continuam barrando.
+ */
+const SCHOOL_CLOTHING_FREE = new Set([
+  'school ?(?:uniforms?|skirts?|outfits?|blazers?|swimsuits?|bags?|backpacks?|ties?|dress|shoes|socks)',
+  'pleated school\\w*',
+  'sailor uniforms?',
+  'seifuku',
+  'uniforme (?:escolar|de escola|de colegio|do colegio|da escola|del colegio|de (?:la )?escuela|de prepa|de secundaria)',
+]);
 /** Do piso de 25 do construtor ("early twenties" = 20 a 23 anos): no pedido livre (piso 18) é idade adulta. */
 const FLOOR_25_TERMS = new Set(['early (?:20s|20 s|twenties)', 'veintipocos', '(?:20|vinte) e poucos']);
 
@@ -963,6 +974,9 @@ const LISTS = {
     ),
   ),
   minorPersona: compile(MINOR_PERSONA),
+  // pedido livre (decisão do dono, 16/10): uniforme escolar como roupa de adulta não barra sozinho; escola, série e
+  // colegial continuam barrando
+  minorPersonaFree: compile(MINOR_PERSONA.filter((term) => !SCHOOL_CLOTHING_FREE.has(term))),
   child: compile([...CHILD_TERMS, CHILD_COMPANION_PT_ES, CHILD_COMPANION_EN]),
   childlike: compile(CHILDLIKE_CUES),
   childlikeStrong: compile(CHILDLIKE_CUES.filter((term) => CHILDLIKE_STRONG.has(term))),
@@ -973,9 +987,16 @@ const LISTS = {
   strong: compile(LOOKALIKE_STRONG),
   celebrities: compile(CELEBRITIES),
 };
-/** Pedido livre (piso 18): universitária é adulta ("college student", "estudante universitária", "universitaria"). */
+/**
+ * Pedido livre (piso 18): universitária é adulta ("college student", "estudante universitária", "universitaria").
+ * Decisão do dono (16/10): estudante e uniforme escolar sozinhos não barram; idade abaixo de 18, série, ensino médio,
+ * colegial e schoolgirl continuam barrando pelas outras listas.
+ */
 const ADULT_ALLOW_FREE = [
   ...ADULT_ALLOW,
+  'students?',
+  '(?:estudante|estudantes|estudiante|estudiantes|aluna|alunas|aluno|alunos|alumna|alumnas|alumno|alumnos)',
+  '(?:uniforme|uniformes|roupa|roupas|saia|camisa|blusa|ropa|falda) (?:\\w+ )?escolar(?:es)?',
   '(?:college|university|uni|undergrad\\w*|graduate) students?',
   'student (?:association|union|id|card|housing|loans?|visa|discount|dorm\\w*|apartment|residence|exchange|ambassador)\\w*',
   '(?:estudante|estudantes|estudiante|estudiantes|aluna|alunas|aluno|alunos|alumna|alumnas) (?:universitari\\w*|de faculdade|da faculdade|de la universidad|de universidad)',
@@ -1682,7 +1703,7 @@ export function checkAdultOnly(text: string, options: SafetyOptions = {}): Safet
   const minor = findIn(texts, freeMode ? LISTS.minorHardFree : LISTS.minorHard);
   if (minor) return { ok: false, reason: 'minor', term: minor };
   if (!labelOnCommerce) {
-    const persona = findIn(texts, LISTS.minorPersona);
+    const persona = findIn(texts, freeMode ? LISTS.minorPersonaFree : LISTS.minorPersona);
     if (persona) return { ok: false, reason: 'minor', term: persona };
   }
   if (options.adult) {

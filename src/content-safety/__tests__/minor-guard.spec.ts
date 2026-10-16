@@ -22,8 +22,9 @@ describe('minor-guard', () => {
       'child',
       'menor de idade',
       'menor de edad',
-      'uniforme escolar',
-      'school uniform',
+      // uniforme escolar sozinho deixou de barrar (decisão do dono, 16/10); com idade ou colegial continua barrando
+      'uniforme escolar de uma aluna de 14 anos',
+      'school uniform, schoolgirl',
       'fifteen years old',
       'quinze anos de idade',
       'quince años',
@@ -281,6 +282,12 @@ describe('minor-guard · pedido livre (prompts reais)', () => {
     'if a child is present, remove only the child, fill the background',
     'remove every man and every child. fill with the original background',
     'pedonale street, nude woman',
+    // decisão do dono (16/10): estudante e uniforme escolar sozinhos não barram
+    'white student shirt unbuttoned, nude woman',
+    'school uniform, sexy woman',
+    'uniforme escolar, mulher sensual',
+    'thai student uniform with tight black pencil skirt',
+    'sailor uniform cosplay, adult woman',
   ];
   it.each(passes)('passa: %s', (text) => {
     expect(assessText(text)).toEqual({ blocked: false });
@@ -332,8 +339,14 @@ describe('minor-guard · pedido livre (prompts reais)', () => {
     ['anime girl, petite, nude', 'term'],
     ['hentai, realistic skin, petite, nude', 'term'],
     ['petite, tiny, flat chest, naked woman', 'term'],
-    ['white student shirt unbuttoned', 'term'],
     ['k.i.d.s, nude', 'term'],
+    // escola, série, colegial e idade continuam barrando com uniforme ou estudante
+    ['schoolgirl nude', 'term'],
+    ['high school student nude', 'term'],
+    ['student, 16, nude', 'age'],
+    ['uniforme escolar, 15 anos', 'age'],
+    ['colegial pelada', 'term'],
+    ['school girl in uniform, nude', 'term'],
   ];
   it.each(blocks)('barra: %s', (text, reason) => {
     expect(assessText(text)).toMatchObject({ blocked: true, reason });
