@@ -12,6 +12,7 @@ import {
   rawFailureText,
 } from '../errors/failure-reason';
 import { GenerationProcessor } from './generation.processor';
+import { isUnrecoverableJobError, unwrapJobError } from './unrecoverable.error';
 import { GENERATION_UNLIMITED_QUEUE } from './generation-queue.constants';
 
 interface UnlimitedJobMeta {
@@ -43,7 +44,9 @@ export class UnlimitedProcessor extends WorkerHost {
 
     // Delega processamento real ao GenerationProcessor (mesmo dispatcher,
     // mesmos providers, mesma lógica de fallback/safety).
-    await this.generationProcessor.dispatch(job.name, job.data);
+    await this.generationProcessor.dispatchWithFallback(job.name, job.data, {
+      queued: true,
+    });
   }
 
   @OnWorkerEvent('completed')
@@ -65,12 +68,15 @@ export class UnlimitedProcessor extends WorkerHost {
 
     // Só finaliza após esgotar tentativas — durante retries o lock fica preso
     // de propósito (mesma "geração ilimitada" do ponto de vista do usuário).
-    if (job.attemptsMade < (job.opts.attempts ?? 1)) {
+    if (
+      !isUnrecoverableJobError(error) &&
+      job.attemptsMade < (job.opts.attempts ?? 1)
+    ) {
       this.logger.warn(`[UNLIMITED] Job ${job.id} will be retried`);
       return;
     }
 
-    await this.markFailed(meta.generationId, meta.userId, error);
+    await this.markFailed(meta.generationId, meta.userId, unwrapJobError(error));
     await this.unlimitedService.releaseLock(meta.userId).catch((err) => {
       this.logger.warn(
         `[UNLIMITED] Failed to release lock for user ${meta.userId}: ${(err as Error).message}`,

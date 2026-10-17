@@ -84,6 +84,7 @@ export class PendingGrantsService {
           externalEventId: params.externalEventId ?? null,
         },
       });
+      await this.applyToExistingAccount(email);
       return { created: true, id: created.id };
     } catch (error: any) {
       // Race on unique externalEventId — treat as idempotent hit
@@ -106,8 +107,13 @@ export class PendingGrantsService {
     userId: string,
     email: string,
     tx?: Prisma.TransactionClient,
-  ): Promise<void> {
-    const client = tx ?? this.prisma;
+  ): Promise<number> {
+    if (!tx) {
+      return this.prisma.$transaction((client) =>
+        this.consumeForUser(userId, email, client),
+      );
+    }
+    const client = tx;
     const normalizedEmail = email.trim().toLowerCase();
 
     const pendings = await client.pendingFreeGenerationGrant.findMany({
@@ -117,9 +123,19 @@ export class PendingGrantsService {
       },
     });
 
-    if (pendings.length === 0) return;
+    if (pendings.length === 0) return 0;
 
+    let consumed = 0;
     for (const pending of pendings) {
+      // Reserva atômica: webhook, cadastro e login podem consumir a mesma grant
+      // ao mesmo tempo — só quem marcar primeiro credita.
+      const claimed = await client.pendingFreeGenerationGrant.updateMany({
+        where: { id: pending.id, consumedByUserId: null },
+        data: { consumedByUserId: userId, consumedAt: new Date() },
+      });
+      if (claimed.count === 0) continue;
+      consumed += 1;
+
       const bundle = this.parseBundle(pending.bundle);
       for (const [type, amount] of Object.entries(bundle)) {
         if (!amount || amount <= 0) continue;
@@ -130,19 +146,94 @@ export class PendingGrantsService {
           update: { remaining: { increment: amount } },
         });
       }
-
-      await client.pendingFreeGenerationGrant.update({
-        where: { id: pending.id },
-        data: {
-          consumedByUserId: userId,
-          consumedAt: new Date(),
-        },
-      });
     }
 
-    this.logger.log(
-      `Consumed ${pendings.length} pending grant(s) for ${normalizedEmail} → user ${userId}`,
-    );
+    if (consumed > 0) {
+      this.logger.log(
+        `Consumed ${consumed} pending grant(s) for ${normalizedEmail} → user ${userId}`,
+      );
+    }
+    return consumed;
+  }
+
+  /**
+   * Comprador que JÁ tem conta: antes o bundle só era aplicado no cadastro e
+   * ele nunca recebia (TKT-109). Falha aqui não derruba o webhook — o login
+   * aplica de novo.
+   */
+  async applyToExistingAccount(email: string): Promise<number> {
+    try {
+      const user = await this.prisma.user.findFirst({
+        where: { email: { equals: email.trim(), mode: 'insensitive' } },
+        select: { id: true, email: true },
+      });
+      if (!user) return 0;
+      return await this.consumeForUser(user.id, user.email);
+    } catch (error) {
+      this.logger.error(
+        `Não consegui aplicar as gerações grátis de ${email} na conta existente: ${(error as Error).message}`,
+      );
+      return 0;
+    }
+  }
+
+  /**
+   * Reembolso/chargeback da isca: o bundle da venda deixa de valer. Grant ainda
+   * não usada vira bundle vazio (a linha fica para o dedupe do evento); grant já
+   * aplicada tira das gerações grátis o que ainda sobra (até o valor do bundle).
+   * `saleEventId` é o id por venda; ids antigos com o status no fim também casam.
+   */
+  async revokeForRefund(
+    saleEventId: string,
+    reason: string,
+  ): Promise<{ grants: number; removed: Record<string, number> }> {
+    const grants = await this.prisma.pendingFreeGenerationGrant.findMany({
+      where: {
+        OR: [
+          { externalEventId: saleEventId },
+          { externalEventId: { startsWith: `${saleEventId}-` } },
+        ],
+      },
+    });
+    const removed: Record<string, number> = {};
+    let revoked = 0;
+    for (const grant of grants) {
+      if (grant.source.endsWith(':refunded')) continue;
+      const bundle = this.parseBundle(grant.bundle);
+      await this.prisma.$transaction(async (tx) => {
+        if (grant.consumedByUserId) {
+          for (const [type, amount] of Object.entries(bundle)) {
+            if (!amount || amount <= 0) continue;
+            const freeType = type as FreeGenerationType;
+            const row = await tx.userFreeGeneration.findUnique({
+              where: {
+                userId_type: { userId: grant.consumedByUserId, type: freeType },
+              },
+            });
+            const take = Math.min(row?.remaining ?? 0, amount);
+            if (take <= 0) continue;
+            await tx.userFreeGeneration.update({
+              where: {
+                userId_type: { userId: grant.consumedByUserId, type: freeType },
+              },
+              data: { remaining: { decrement: take } },
+            });
+            removed[freeType] = (removed[freeType] ?? 0) + take;
+          }
+        }
+        await tx.pendingFreeGenerationGrant.update({
+          where: { id: grant.id },
+          data: { bundle: {}, source: `${grant.source}:refunded` },
+        });
+      });
+      revoked += 1;
+    }
+    if (revoked > 0) {
+      this.logger.warn(
+        `Isca reembolsada (${reason}) venda ${saleEventId}: ${revoked} grant(s) revogada(s); gerações retiradas ${JSON.stringify(removed)}`,
+      );
+    }
+    return { grants: revoked, removed };
   }
 
   private parseBundle(value: Prisma.JsonValue): FreeGenerationBundle {
