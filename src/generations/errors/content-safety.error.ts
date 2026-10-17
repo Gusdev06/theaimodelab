@@ -1,4 +1,5 @@
 import { ErrorCodes } from '../../common/constants/error-codes';
+import type { PreflightStatus } from '../../content-safety/preflight-status';
 
 /**
  * Thrown when Veo / Vertex AI blocks a generation due to content safety filters.
@@ -193,8 +194,8 @@ export type SafetyFallbackDecision =
 /**
  * Para onde o pedido iria depois do bloqueio:
  *  - `uncensored`: o Unlocked sem censura (fallbackToSeedream), que recebe o prompt E as fotos do usuário;
- *  - `same_provider`: nova tentativa com o prompt reescrito no MESMO provedor com filtro, que já recebeu as fotos
- *    (refazer ali não leva a foto a lugar novo nem tira filtro nenhum).
+ *  - `same_provider`: nova tentativa com o prompt reescrito por um LLM ("passar no filtro") no MESMO provedor, com
+ *    as mesmas fotos.
  */
 export type SafetyFallbackTarget = 'uncensored' | 'same_provider';
 
@@ -203,30 +204,67 @@ export interface SafetyFallbackInput {
   target: SafetyFallbackTarget;
   /** o provedor recusou por menor de idade (isMinorSafetyBlock) */
   isMinor: boolean;
-  /** o pedido leva foto, frame, referência ou vídeo enviado pelo usuário (pode ser pessoa real) */
+  /**
+   * o pedido leva mídia do usuário: foto, frame, referência, vídeo ou avatar (pode ser pessoa real), ou trouxe o
+   * atestado de imagem (que só existe em pedido com foto)
+   */
   hasUserImages: boolean;
   /** o pedido que criou a geração trouxe atestado de consentimento gravado */
   hasConsent: boolean;
+  /** veredito do porteiro de imagem sobre a mídia de entrada (só conta quando há mídia do usuário) */
+  preflight: PreflightStatus;
 }
 
 /**
- * O que fazer depois que um provedor com censura bloqueou o conteúdo, ANTES de qualquer desvio:
- *  - menor → `fail_minor` (qualquer alvo): encerra, sem desvio e sem reescrever o prompt;
- *  - `same_provider` → `allow_fallback`: a nova tentativa com o prompt reescrito vai ao provedor que já tem a foto;
- *  - `uncensored` com foto do usuário sem atestado → `fail_blocked`: encerra pedindo o atestado, sem levar a foto
- *    ao modelo sem censura;
- *  - `uncensored` só com texto, ou com foto atestada → `allow_fallback`.
+ * Por que o desvio parou (null = segue):
+ *  - `minor`: o provedor recusou por menor de idade;
+ *  - `unverified_media`: há mídia do usuário e o porteiro de imagem não a deu como limpa;
+ *  - `needs_consent`: foto limpa, mas sem atestado, e o desvio seria o modelo sem censura.
  */
-export function decideSafetyFallback({
+export type SafetyFallbackBlockReason =
+  | 'minor'
+  | 'unverified_media'
+  | 'needs_consent';
+
+export interface SafetyFallbackVerdict {
+  decision: SafetyFallbackDecision;
+  reason: SafetyFallbackBlockReason | null;
+}
+
+/**
+ * O que fazer depois que um provedor bloqueou o conteúdo, ANTES de qualquer desvio:
+ *  - menor → `fail_minor` (qualquer alvo): encerra, sem desvio e sem reescrever o prompt;
+ *  - mídia do usuário sem `preflight === 'clean'` → `fail_blocked` (qualquer alvo): a recusa pode ser justamente a
+ *    foto que a plataforma quer barrar, então nem o modelo sem censura nem o prompt reescrito recebem a foto;
+ *  - `same_provider` só com texto, ou com foto limpa → `allow_fallback` (o texto reescrito ainda passa pela trava);
+ *  - `uncensored` com foto limpa sem atestado → `fail_blocked`: encerra pedindo o atestado;
+ *  - `uncensored` só com texto, ou com foto limpa e atestada → `allow_fallback`.
+ */
+export function safetyFallbackVerdict({
   target,
   isMinor,
   hasUserImages,
   hasConsent,
-}: SafetyFallbackInput): SafetyFallbackDecision {
-  if (isMinor) return 'fail_minor';
-  if (target === 'same_provider') return 'allow_fallback';
-  if (hasUserImages && !hasConsent) return 'fail_blocked';
-  return 'allow_fallback';
+  preflight,
+}: SafetyFallbackInput): SafetyFallbackVerdict {
+  if (isMinor) return { decision: 'fail_minor', reason: 'minor' };
+  if (hasUserImages && preflight !== 'clean') {
+    return { decision: 'fail_blocked', reason: 'unverified_media' };
+  }
+  if (target === 'same_provider') {
+    return { decision: 'allow_fallback', reason: null };
+  }
+  if (hasUserImages && !hasConsent) {
+    return { decision: 'fail_blocked', reason: 'needs_consent' };
+  }
+  return { decision: 'allow_fallback', reason: null };
+}
+
+/** Só a decisão de safetyFallbackVerdict. */
+export function decideSafetyFallback(
+  input: SafetyFallbackInput,
+): SafetyFallbackDecision {
+  return safetyFallbackVerdict(input).decision;
 }
 
 /**
@@ -285,16 +323,104 @@ export class ConsentRequiredSafetyError extends ContentSafetyError {
   }
 }
 
-/** Bloqueio que encerra a geração sem nova tentativa (menor de idade ou foto sem atestado). */
+/**
+ * A trava de texto da API acusou menor de idade no prompt reescrito pelo agente refinador E no pedido original da
+ * cliente (que escapou da trava de entrada). Encerra como a recusa por menor (CONTENT_POLICY_MINOR, sem nova
+ * tentativa) e sem mandar a reescrita ao provedor. Na trilha de auditoria sai como `refiner:<modelo>` com o termo do
+ * pedido original (nunca o texto). Quando só a reescrita é acusada, o bloqueio é UnverifiedContentBlockError
+ * `refiner_flagged` (safety-fallback-guard.refinedPromptBlockOf).
+ */
+export class RefinedPromptMinorBlockError extends MinorSafetyBlockError {
+  /** termo ou idade que a trava acusou (vai como `match` na trilha) */
+  readonly guardMatch: string;
+
+  constructor(guardMatch: string | undefined, model = '') {
+    super('safety refiner output flagged by the minor guard', model);
+    this.name = 'RefinedPromptMinorBlockError';
+    this.guardMatch = guardMatch?.trim() || 'refiner';
+  }
+}
+
+/** De onde veio um bloqueio terminal sem sinal de menor (UnverifiedContentBlockError). */
+export type UnverifiedContentSource =
+  | 'unverified_media'
+  | 'refiner_unchecked'
+  | 'refiner_flagged';
+
+const UNVERIFIED_CONTENT_MESSAGES: Record<UnverifiedContentSource, string> = {
+  unverified_media:
+    'Bloqueio do filtro em pedido com mídia do usuário sem checagem limpa da mídia: geração encerrada sem desvio',
+  refiner_unchecked:
+    'Prompt reescrito pelo agente refinador não pôde ser conferido pela trava de texto: geração encerrada sem nova tentativa',
+  refiner_flagged:
+    'Prompt reescrito pelo agente refinador acusado pela trava de texto (o pedido original passou): geração encerrada sem nova tentativa',
+};
+
+/**
+ * Bloqueio terminal sem sinal de menor, com o texto genérico de bloqueio (CONTENT_SAFETY_BLOCKED):
+ *  - `unverified_media`: o provedor recusou um pedido com mídia do usuário (foto, frame, vídeo, áudio) que o porteiro
+ *    de imagem não deu como limpa; nem o modelo sem censura nem o prompt reescrito recebem a mídia, e o atestado não
+ *    resolve (pedir o atestado aqui só faria a cliente marcar e cair no mesmo bloqueio);
+ *  - `refiner_unchecked`: a trava de texto não conseguiu conferir o prompt reescrito (alfabeto que ela não lê, texto
+ *    grande demais), então ele não vai ao provedor;
+ *  - `refiner_flagged`: a trava acusou só a reescrita, não o pedido original. O termo foi escrito pelo refinador, então
+ *    não vira MINOR_BLOCKED nem conta para a guarda legal; até o evento REFINER_BLOCKED existir, fica só no log.
+ */
+export class UnverifiedContentBlockError extends ContentSafetyError {
+  /** código da falha decidido aqui (GenerationFailureCode.CONTENT_SAFETY_BLOCKED), não pelo texto */
+  readonly failureCode = 'CONTENT_SAFETY_BLOCKED' as const;
+  /** texto cru do bloqueio do provedor, para o log e o admin */
+  readonly providerDetail: string;
+  /** modelo que bloqueou */
+  readonly model: string;
+  readonly source: UnverifiedContentSource;
+  /** `refiner_flagged`: termo ou idade que a trava acusou na reescrita (só para o log, nunca o texto) */
+  readonly guardMatch?: string;
+
+  constructor(
+    original: unknown,
+    model: string,
+    source: UnverifiedContentSource,
+    guardMatch?: string,
+  ) {
+    const supportCode =
+      original instanceof ContentSafetyError ? original.supportCode : undefined;
+    super(UNVERIFIED_CONTENT_MESSAGES[source], supportCode);
+    this.name = 'UnverifiedContentBlockError';
+    this.model = model;
+    this.source = source;
+    this.guardMatch = guardMatch?.trim() || undefined;
+    this.providerDetail =
+      providerTexts(original).join(' ') || 'provider content block';
+  }
+}
+
+/** Bloqueio que encerra a geração sem nova tentativa (menor, foto sem atestado, foto sem checagem limpa). */
 export type TerminalSafetyBlockError =
   | MinorSafetyBlockError
-  | ConsentRequiredSafetyError;
+  | ConsentRequiredSafetyError
+  | UnverifiedContentBlockError;
 
 export function isTerminalSafetyBlock(
   error: unknown,
 ): error is TerminalSafetyBlockError {
   return (
     error instanceof MinorSafetyBlockError ||
-    error instanceof ConsentRequiredSafetyError
+    error instanceof ConsentRequiredSafetyError ||
+    error instanceof UnverifiedContentBlockError
   );
+}
+
+/**
+ * Rota e `match` do evento MINOR_BLOCKED de um bloqueio por menor: `refiner` com o termo da trava quando foi a
+ * reescrita automática que acusou; senão `provider` com o código de criança do provedor (ou 'provider').
+ */
+export function minorBlockAuditOf(error: unknown): {
+  source: 'provider' | 'refiner';
+  match: string;
+} {
+  if (error instanceof RefinedPromptMinorBlockError) {
+    return { source: 'refiner', match: error.guardMatch };
+  }
+  return { source: 'provider', match: minorSupportCodeOf(error) ?? 'provider' };
 }

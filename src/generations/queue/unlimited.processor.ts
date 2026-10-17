@@ -13,6 +13,10 @@ import {
 } from '../errors/failure-reason';
 import { GenerationProcessor, willBeRetried } from './generation.processor';
 import { GENERATION_UNLIMITED_QUEUE } from './generation-queue.constants';
+import {
+  providerMessageForLog,
+  requestTextsOfJob,
+} from './safety-fallback-guard';
 
 interface UnlimitedJobMeta {
   generationId: string;
@@ -74,7 +78,7 @@ export class UnlimitedProcessor extends WorkerHost {
   async onFailed(job: Job, error: Error): Promise<void> {
     const meta = this.extractMeta(job);
     this.logger.error(
-      `[UNLIMITED] Job ${job.id} [${job.name}] failed (attempt ${job.attemptsMade}/${job.opts.attempts ?? 1}): ${error.message}`,
+      `[UNLIMITED] Job ${job.id} [${job.name}] failed (attempt ${job.attemptsMade}/${job.opts.attempts ?? 1}): ${providerMessageForLog(error, requestTextsOfJob(job.data))}`,
     );
 
     // Só finaliza após esgotar tentativas — durante retries o lock fica preso
