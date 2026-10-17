@@ -329,7 +329,8 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
     });
 
     it('a nova tentativa com o prompt reescrito é recusada por menor: encerra sem voltar para a fila', async () => {
-      grok.generateImageToVideo
+      // só texto: a reescrita no mesmo provedor só existe sem foto
+      grok.generateTextToVideo
         .mockRejectedValueOnce(
           new ContentSafetyError('content policy violation'),
         )
@@ -339,12 +340,10 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
       promptEnhancer.refinePromptForSafety.mockResolvedValue(
         'caminhando na praia, vestida',
       );
-      // a foto passou limpa pelo porteiro: só assim a reescrita roda num pedido com foto
-      contentSafety.preflightStatusForGeneration.mockResolvedValue('clean');
 
-      await expect(processor.process(grokJob())).resolves.toBeUndefined();
+      await expect(processor.process(grokTextJob())).resolves.toBeUndefined();
 
-      expect(grok.generateImageToVideo).toHaveBeenCalledTimes(2);
+      expect(grok.generateTextToVideo).toHaveBeenCalledTimes(2);
       expect(failedUpdateOf(prisma)?.data).toEqual(
         expect.objectContaining({
           errorCode: GenerationFailureCode.CONTENT_POLICY_MINOR,
@@ -457,9 +456,10 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
           ).resolves.toBeUndefined();
 
           expect(seedream.generateImage).not.toHaveBeenCalled();
+          // o desvio sem censura pede o veredito da entrada reavaliada como pedido sexual
           expect(
             contentSafety.preflightStatusForGeneration,
-          ).toHaveBeenCalledWith(GEN_ID);
+          ).toHaveBeenCalledWith(GEN_ID, 'uncensored');
           expectGenericTerminalBlock();
         },
       );
@@ -556,8 +556,8 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
         );
       });
 
-      it.each(NOT_CLEAN)(
-        "com foto, checagem '%s': encerra sem reescrever o prompt e sem reenviar a foto",
+      it.each(ALL)(
+        "com foto, checagem '%s' (inclusive limpa): encerra sem reescrever o prompt e sem reenviar a foto",
         async (preflight) => {
           contentSafety.preflightStatusForGeneration.mockResolvedValue(
             preflight,
@@ -570,30 +570,14 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
 
           expect(promptEnhancer.refinePromptForSafety).not.toHaveBeenCalled();
           expect(grok.generateImageToVideo).toHaveBeenCalledTimes(1);
+          // com foto a reescrita não existe: o veredito do porteiro nem é lido
+          expect(
+            contentSafety.preflightStatusForGeneration,
+          ).not.toHaveBeenCalled();
+          expect(completeGeneration).not.toHaveBeenCalled();
           expectGenericTerminalBlock();
         },
       );
-
-      it('com foto limpa: refaz com o prompt reescrito no mesmo provedor', async () => {
-        contentSafety.preflightStatusForGeneration.mockResolvedValue('clean');
-        grok.generateImageToVideo
-          .mockRejectedValueOnce(
-            new ContentSafetyError('content policy violation'),
-          )
-          .mockResolvedValueOnce({
-            outputUrls: ['https://cdn.test/video.mp4'],
-            modelUsed: 'grok',
-          });
-
-        await expect(processor.process(grokJob())).resolves.toBeUndefined();
-
-        expect(grok.generateImageToVideo).toHaveBeenCalledTimes(2);
-        expect(grok.generateImageToVideo).toHaveBeenLastCalledWith(
-          expect.objectContaining({ prompt: 'caminhando na praia, vestida' }),
-        );
-        expect(completeGeneration).toHaveBeenCalled();
-        expect(failedUpdateOf(prisma)).toBeUndefined();
-      });
 
       it.each(ALL)(
         "só texto, checagem '%s': refaz com o prompt reescrito (comportamento de antes)",
@@ -752,9 +736,7 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
 
       expect(promptEnhancer.refinePromptForSafety).not.toHaveBeenCalled();
       expect(seedance.generateVideo).toHaveBeenCalledTimes(1);
-      expect(contentSafety.preflightStatusForGeneration).toHaveBeenCalledWith(
-        GEN_ID,
-      );
+      expect(contentSafety.preflightStatusForGeneration).not.toHaveBeenCalled();
       expect(failedUpdateOf(prisma)?.data).toEqual({
         status: GenerationStatus.FAILED,
         errorCode: GenerationFailureCode.CONTENT_SAFETY_BLOCKED,
