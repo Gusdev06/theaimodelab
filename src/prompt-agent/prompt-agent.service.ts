@@ -6,11 +6,29 @@ import {
 } from '@nestjs/common';
 import { CreditsService } from '../credits/credits.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreditTransactionType } from '@prisma/client';
+import { ContentSafetyEventKind, CreditTransactionType } from '@prisma/client';
 import { TheaimodelabChatClient, ChatPart } from '../prompt-enhancer/theaimodelab-chat.client';
 import { fitImageForVision } from '../common/utils/vision-image';
+import { BusinessException } from '../common/exceptions/business.exception';
+import { ContentSafetyService } from '../content-safety/content-safety.service';
+import { assessText } from '../content-safety/minor-guard';
 
 const CREDIT_COST = 5;
+
+/** Rota do clonador na trilha de segurança (mesmo formato do interceptor). */
+const SAFETY_ROUTE = 'POST /api/v1/prompt-agent/analyze-image';
+
+/**
+ * Idade como a análise devolve ("adulto jovem 22-27", "16-18", 17). No prompt ela vai como "idade aparente" e com a
+ * unidade: sem ela, "feminino 16-18" passava pela trava de menor como um número qualquer.
+ */
+export function apparentAge(age: unknown): string {
+  const text =
+    typeof age === 'number' && Number.isFinite(age) ? String(age) : typeof age === 'string' ? age.trim() : '';
+  if (!text) return '';
+  const unit = /\d\s*$/.test(text) && !/\b(?:anos?|years?|yrs?|años?)\b/i.test(text) ? ' anos' : '';
+  return `idade aparente ${text}${unit}`;
+}
 
 const SYSTEM_PROMPT = `Você é um agente especializado em análise visual de imagens para criação de prompts de IA generativa voltados a conteúdo UGC (User Generated Content) realista de influenciadores.
 
@@ -113,6 +131,7 @@ export class PromptAgentService {
     private readonly creditsService: CreditsService,
     private readonly prisma: PrismaService,
     private readonly chatClient: TheaimodelabChatClient,
+    private readonly safety: ContentSafetyService,
   ) {}
 
   async analyzeImage(userId: string, image: string) {
@@ -149,9 +168,23 @@ export class PromptAgentService {
       }
 
       const compiledPrompt = this.compileToString(json);
+      // A análise descreve a pessoa da foto: idade ou termo de menor recusa aqui, com a mesma trava das gerações,
+      // antes de o prompt chegar à cliente (o pedido só tinha a imagem, que o interceptor não lê).
+      const verdict = assessText(compiledPrompt);
+      if (verdict.blocked && (verdict.reason === 'age' || verdict.reason === 'term')) {
+        await this.refundSilently(userId);
+        await this.safety.record({
+          userId,
+          kind: ContentSafetyEventKind.MINOR_BLOCKED,
+          route: SAFETY_ROUTE,
+          match: verdict.match ?? null,
+          excerpt: compiledPrompt.replace(/\s+/g, ' ').trim().slice(0, 300),
+        });
+        throw new BusinessException('CONTENT_POLICY_MINOR');
+      }
       return { json, compiledPrompt, creditsUsed: CREDIT_COST };
     } catch (err) {
-      if (err instanceof BadRequestException) throw err;
+      if (err instanceof BadRequestException || err instanceof BusinessException) throw err;
       await this.refundSilently(userId);
       this.logger.error('Falha na análise de imagem', err as any);
       throw new InternalServerErrorException({
@@ -314,7 +347,10 @@ export class PromptAgentService {
     const p = json.perspectiva_da_camera || {};
     parts.push(`${p.pov || ''}, ${p.angulo || ''}, ${p.distancia || ''}, ${p.visibilidade_do_celular || ''}`);
     const a = json.assunto || {};
-    parts.push(`${a.genero || ''} ${a.idade || ''}, vibe ${a.vibe || ''}${a.textura_pele ? ', pele ' + a.textura_pele : ''}`);
+    const age = apparentAge(a.idade);
+    parts.push(
+      `${a.genero || ''}${age ? `, ${age}` : ''}, vibe ${a.vibe || ''}${a.textura_pele ? ', pele ' + a.textura_pele : ''}`,
+    );
     if (a.expressao) {
       parts.push(`olhos ${a.expressao.olhos || ''}, boca ${a.expressao.boca || ''}, emoção ${a.expressao.emocao || ''}`);
     }

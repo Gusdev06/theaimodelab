@@ -1333,6 +1333,21 @@ function numberBefore(tokens: readonly string[], unitIndex: number): FoundNumber
   return start === -1 ? null : { value: total, start, end: unitIndex - 1, decimal: false };
 }
 
+/** Junções de faixa de idade ("16 to 18", "16 a 18", "16 ou 17"); o traço some na leitura ("16-18" vira "16 18"). */
+const RANGE_JOINERS = new Set(['to', 'a', 'ate', 'al', 'ou', 'or', 'o']);
+
+/** Ponta de baixo de uma faixa de idade que termina em `high` ("16-18 anos", "16 to 18 years"), ou null. */
+function rangeLowBefore(tokens: readonly string[], high: FoundNumber): FoundNumber | null {
+  let end = high.start - 1;
+  const joined = RANGE_JOINERS.has(tokens[end] ?? '');
+  if (joined) end--;
+  if (end < 0) return null;
+  // sem junção, só a faixa com traço entre algarismos ("16-18"); "two 22 yo" é contagem de gente
+  if (!joined && !/^\d{1,2}$/.test(tokens[end] ?? '')) return null;
+  const low = numberBefore(tokens, end + 1);
+  return low && !low.decimal && low.value >= 1 && low.value < high.value ? low : null;
+}
+
 /** Ligação entre a pessoa e o número ("garota DE 17 anos", "girl OF 17"): o número é a idade dela. */
 const AGE_LINK_DE = new Set(['de', 'del', 'of']);
 /** "mulher COM 10 anos de experiência": com a pessoa antes, só carreira e afins viram tempo. */
@@ -1455,6 +1470,9 @@ function underageNumber(text: string, strict: boolean, labelOnCommerce: boolean)
     if (UNITS.has(token)) {
       const found = numberBefore(tokens, index);
       if (found && isUnderFloor(found.value) && !isDuration(tokens, found.start, index)) return phrase(found.start, index);
+      // pedido livre: faixa ("16-18 anos", "16 to 18 years", "17 a 20 anos") vale pela ponta de baixo
+      const low = freeMode && found && !found.decimal ? rangeLowBefore(tokens, found) : null;
+      if (low && isUnderFloor(low.value) && !isDuration(tokens, low.start, index)) return phrase(low.start, index);
       const roman = ROMAN[at(index - 1)];
       if (roman && isUnderFloor(roman)) return phrase(index - 1, index);
     }
@@ -1525,8 +1543,14 @@ function underageNumber(text: string, strict: boolean, labelOnCommerce: boolean)
         const tail = at(found.end + 1);
         const durationAfter = UNITS.has(tail) && isDuration(tokens, found.start, found.end + 1);
         const fazQue = token === 'faz' && (tail === 'que' || at(found.end + 2) === 'que');
-        // pedido livre: verbo vago só com o número fechando o trecho; verbo de idade, desde que o número não conte nada
-        const freeAge = !freeMode || (VAGUE_AGE_WORDS.has(token) ? closesAsAge(tokens, found.end) : !countsSomething(tail));
+        // pedido livre: verbo vago só com o número fechando o trecho; verbo de idade, desde que o número não conte nada;
+        // rótulo de idade seguido de faixa ("idade aparente 16-18", "aged 16-18") é idade, não medida
+        const labeledRange =
+          ['idade', 'edad', 'age', 'aged'].includes(token) &&
+          /^\d{1,2}$/.test(tail) &&
+          Number(tail) > found.value &&
+          !/^(?:months?|meses|mes|weeks?|semanas?|days?|dias|hours?|horas?|minutes?|minutos?)$/.test(at(found.end + 2));
+        const freeAge = !freeMode || labeledRange || (VAGUE_AGE_WORDS.has(token) ? closesAsAge(tokens, found.end) : !countsSomething(tail));
         if (freeAge && !COUNT_NOUNS.has(tail) && !durationAfter && !fazQue && !(tail === 'e' && at(found.end + 2) === 'vem')) return phrase(index, found.end);
       }
     }
@@ -1543,7 +1567,10 @@ function underageNumber(text: string, strict: boolean, labelOnCommerce: boolean)
           // pedido livre: "com/con/with" + número é quase sempre contagem ("woman with two men"); vale só fechando o trecho
           const viaWith = tokens.slice(index + 1, next).some((word) => ['com', 'con', 'with'].includes(word));
           const freeAge = !freeMode || (viaWith ? closesAsAge(tokens, found.end) : !countsSomething(tail));
-          if (freeAge && !(UNITS.has(tail) && isDuration(tokens, found.start, found.end + 1))) return phrase(index, found.end);
+          // pedido livre: faixa de tempo depois da pessoa ("mulher com 2 a 3 anos de experiência") não é idade
+          const rangeHigh = freeMode && RANGE_JOINERS.has(tail) ? numberAt(tokens, found.end + 2) : null;
+          const rangeDuration = rangeHigh !== null && UNITS.has(at(rangeHigh.end + 1)) && isDuration(tokens, found.start, rangeHigh.end + 1);
+          if (freeAge && !rangeDuration && !(UNITS.has(tail) && isDuration(tokens, found.start, found.end + 1))) return phrase(index, found.end);
         }
       }
     }

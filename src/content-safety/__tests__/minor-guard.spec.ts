@@ -298,6 +298,14 @@ describe('minor-guard · pedido livre (prompts reais)', () => {
     'mulher com 10 anos de experiência em moda, de lingerie',
     'modelo com 8 anos de carreira, foto sensual',
     '3 anos de pole dance, mulher adulta de lingerie',
+    // faixa de idade adulta e faixa que mede outra coisa
+    'feminino, idade aparente adulto jovem 22-27 anos, vibe confiante',
+    'mulher de 18-22 anos de lingerie',
+    'woman aged 20-25 years old, bikini',
+    'mulher com 2 a 3 anos de experiência como modelo, nua',
+    'whiskey aged 12-18 months on the table, woman in lingerie',
+    'tall woman, she is 5 6, lingerie',
+    'two 22 yo women in bikinis',
     // com idade adulta escrita a roupa escolar também passa
     'uniforme escolar, mulher de 25 anos',
     'modelo de 25 anos com uniforme escolar',
@@ -376,6 +384,14 @@ describe('minor-guard · pedido livre (prompts reais)', () => {
     ['garota linda de 15 anos de biquíni', 'age'],
     ['garota de 17 anos na academia, de lingerie', 'age'],
     ['mulher com 17 anos de lingerie', 'age'],
+    // faixa de idade vale pela ponta de baixo ("16-18" inclui 16 e 17), inclusive no formato do Clonar prompt
+    ['16-18 anos, de lingerie', 'age'],
+    ['garota de 16-18 anos', 'age'],
+    ['16-18 years old, nude', 'age'],
+    ['16 to 18 years old', 'age'],
+    ['aged 16-18, lingerie', 'age'],
+    ['feminino, idade aparente 16-18 anos, vibe confiante', 'age'],
+    ['feminino, idade aparente 17-20 anos', 'age'],
     ['uniforme escolar, mulher de 25 anos e uma menina de 12 anos', 'age'],
     ['uniforme escolar, 25 anos, aluna do 9º ano', 'age'],
   ];
