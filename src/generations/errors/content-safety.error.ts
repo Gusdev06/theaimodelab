@@ -133,6 +133,8 @@ const MINOR_TEXT_PATTERNS: readonly RegExp[] = [
   /(?<![\p{L}\p{N}])sexual\p{L}*[\s/_-]+minors?(?![\p{L}\p{N}])/iu,
   // código de erro em identificador: PUBLIC_ERROR_MINOR, MINOR_UPLOAD, is_minor
   /(?:(?<=_)minors?(?![\p{L}\p{N}])|(?<![\p{L}\p{N}_])minors?(?=_))/iu,
+  // erro público da kie com espaços ("public error minor detected"), além do identificador com sublinhado
+  /(?<![\p{L}\p{N}])public[\s_-]+error[\s_-]+minors?(?![\p{L}\p{N}])/iu,
   // nome de política: "Minor Safety", "minor protection"
   /(?<![\p{L}\p{N}])minor[\s_-]*(?:safety|protection)(?![\p{L}\p{N}])/iu,
   // pt/es: "sexualizem menores", "com menores", "abuso sexual de menores" ("de menores" sozinho é "de tamanho menor")

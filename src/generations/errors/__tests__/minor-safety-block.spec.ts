@@ -30,6 +30,7 @@ describe('isMinorSafetyBlock', () => {
     ['código de criança no texto', 'Request blocked (support code: 17301594)'],
     ['categoria de moderação', 'flagged: sexual/minors'],
     ['identificador', 'PUBLIC_ERROR_MINOR'],
+    ['erro público com espaços', 'Veo generation failed: public error minor detected.'],
     ['criança', 'The image appears to contain a child'],
     [
       '"of a minor"',
@@ -50,6 +51,7 @@ describe('isMinorSafetyBlock', () => {
   it.each([
     ['adjetivo', 'minor scratches detected in the output'],
     ['edição', 'minor edit required'],
+    ['erro público de outro tipo', 'Public error: minor timeout, retry later'],
     [
       'código de outro bloqueio',
       { message: 'blocked', supportCode: '62263041' },
