@@ -34,7 +34,14 @@ import { WavespeedAudioProvider } from '../providers/wavespeed-audio.provider';
 import { GenerationEventsService } from '../generation-events.service';
 import { PromptEnhancerService } from '../../prompt-enhancer/prompt-enhancer.service';
 import { PlansService } from '../../plans/plans.service';
-import { FallbackKind, FallbackPlan, planFallback } from './generation-fallback';
+import {
+  evaluateFallback,
+  FallbackBlockReason,
+  FallbackKind,
+  fallbackKindOf,
+  FallbackPlan,
+  planFallback,
+} from './generation-fallback';
 import {
   GenerationUnrecoverableError,
   isUnrecoverableJobError,
@@ -46,6 +53,7 @@ import {
   GenerationFailureCode,
   rawFailureText,
 } from '../errors/failure-reason';
+import { isMinorRefusal } from '../errors/minor-refusal';
 
 import {
   GenerationStatus,
@@ -99,7 +107,8 @@ const UNDRESS_PROMPT =
 const FACE_SWAP_SEEDREAM_PROMPT =
   'Recreate the scene in Image 2 (clothing, body pose, and setting) replacing the person with the woman in Image 1. Preserve facial features, skin tone and body proportions from Image 1 with photorealistic lighting and shadows.';
 
-type FallbackOutcome = 'completed' | 'failed' | 'none';
+/** `minor_refusal` = a alternativa recusou por menor: sem retry do original. */
+type FallbackOutcome = 'completed' | 'failed' | 'none' | 'minor_refusal';
 
 @Processor(GENERATION_QUEUE, {
   concurrency: 5,
@@ -219,6 +228,11 @@ export class GenerationProcessor extends WorkerHost {
   // Plano em ./generation-fallback.ts. Liga/desliga por env:
   //   GENERATION_FALLBACK_ENABLED (padrão true) — falha técnica do provedor
   //   GENERATION_SAFETY_FALLBACK_ENABLED (padrão true) — bloqueio de conteúdo em vídeo
+  //     (inclui entrada recusada pelo provedor, tratada como segurança)
+  //   GENERATION_FALLBACK_UNCENSORED_WITH_MEDIA (padrão false) — desvio para
+  //     modelo sem censura em geração com mídia do usuário, por qualquer motivo.
+  //     Vira "só com preflight limpo" quando a PR #4 e o porteiro da foto entrarem.
+  // Recusa por menor (isMinorRefusal) não tem chave: nunca desvia nem volta à fila.
 
   /** Depois disso a geração está perto da janela do cron: não vale começar outra chamada. */
   private static readonly FALLBACK_DEADLINE_MS = 20 * 60 * 1000;
@@ -268,7 +282,25 @@ export class GenerationProcessor extends WorkerHost {
       return;
     } catch (error) {
       const original = error as Error;
-      const safety = this.isSafetyRelatedError(original);
+      // Recusa por MENOR encerra aqui, ANTES do kind: sem desvio nenhum (nem
+      // para modelo com filtro) e sem retry. Sem isso, pedido só com texto ia
+      // ao MiniMax (sem filtro) com o mesmo prompt que o provedor recusou.
+      // Merge com a PR #4: trocar a condição por
+      // `isTerminalSafetyBlock(unwrapJobError(original)) || isMinorSafetyBlock(original)`
+      // e manter o curto-circuito antes do kind (o desvio nunca desfaz bloqueio terminal).
+      if (isMinorRefusal(unwrapJobError(original))) {
+        this.logger.warn(
+          `[FALLBACK] gen=${data.generationId} ${jobName}: recusa por menor — sem desvio nem retry`,
+        );
+        await this.recordMinorRefusal(jobName, data, original);
+        if (!opts.queued) throw original;
+        throw new GenerationUnrecoverableError(original);
+      }
+      const safety =
+        fallbackKindOf(
+          rawFailureText(original),
+          this.isSafetyRelatedError(original),
+        ) === 'safety';
       let outcome: FallbackOutcome = 'none';
       try {
         outcome = await this.tryFallback(jobName, data, original, safety);
@@ -283,10 +315,86 @@ export class GenerationProcessor extends WorkerHost {
       // Bloqueio e erro determinístico não mudam em 30 s: sem retry. Falha
       // passageira mantém o retry do BullMQ, só do modelo original — a
       // alternativa roda no máximo uma vez por geração (fallbackAttempt).
-      if (safety || this.isDeterministicFailure(original)) {
+      // Recusa por menor na alternativa também: o retry reenviaria o pedido.
+      if (
+        outcome === 'minor_refusal' ||
+        safety ||
+        this.isDeterministicFailure(original)
+      ) {
         throw new GenerationUnrecoverableError(original);
       }
       throw original;
+    }
+  }
+
+  /**
+   * Marca a recusa por menor em `parameters.fallbackBlocked`, no formato da
+   * guarda de mídia, para a métrica. Log e registro sem prompt nem texto do
+   * provedor. Nunca lança: o registro não troca o motivo da falha.
+   */
+  private async recordMinorRefusal(
+    jobName: string,
+    data: GenerationJobData,
+    originalError: Error,
+  ): Promise<void> {
+    try {
+      const generation = await this.prisma.generation.findUnique({
+        where: { id: data.generationId },
+        select: {
+          modelUsed: true,
+          type: true,
+          durationSeconds: true,
+          aspectRatio: true,
+          parameters: true,
+        },
+      });
+      if (!generation) return;
+      const params =
+        generation.parameters && typeof generation.parameters === 'object'
+          ? (generation.parameters as Record<string, unknown>)
+          : {};
+      // Só para a métrica: o desvio que a guarda barrou, no mesmo cálculo do
+      // caminho normal (sem a guarda de mídia; imagem com foto sai sem alvo,
+      // as URLs ficam no banco). Nada roda. Régua do isSafetyRelatedError sem
+      // o log dele, que grava o texto do provedor.
+      const safetyError =
+        originalError instanceof ContentSafetyError ||
+        originalError.message.includes('no video data returned') ||
+        ContentSafetyError.fromErrorMessage(originalError.message) !== null;
+      const kind = fallbackKindOf(rawFailureText(originalError), safetyError);
+      const wouldBe = planFallback(jobName, data, {
+        kind,
+        originalModel: generation.modelUsed,
+        generationType: generation.type,
+        durationSeconds: generation.durationSeconds,
+        aspectRatio: generation.aspectRatio,
+        allowUncensoredWithMedia: true,
+      });
+      const reason: FallbackBlockReason = 'MINOR_REFUSAL';
+      await this.prisma.generation.update({
+        where: { id: data.generationId },
+        data: {
+          parameters: {
+            ...params,
+            fallbackBlocked: {
+              from: generation.modelUsed,
+              to: wouldBe?.model ?? null,
+              kind,
+              reason,
+              errorCode: classifyGenerationFailure(
+                rawFailureText(originalError),
+                kind === 'safety',
+              ),
+            },
+          },
+        },
+      });
+    } catch (auditError) {
+      // Só o código: a mensagem do Prisma pode trazer os parâmetros (e o prompt).
+      const code = (auditError as { code?: unknown } | null)?.code;
+      this.logger.warn(
+        `[FALLBACK] gen=${data.generationId} registro da recusa por menor falhou (${typeof code === 'string' ? code : 'sem código'})`,
+      );
     }
   }
 
@@ -301,6 +409,16 @@ export class GenerationProcessor extends WorkerHost {
         ? 'GENERATION_SAFETY_FALLBACK_ENABLED'
         : 'GENERATION_FALLBACK_ENABLED';
     return this.configService.get<string>(key, 'true') !== 'false';
+  }
+
+  /** Só "true" explícito libera; ausente ou qualquer outro valor mantém a guarda. */
+  private uncensoredWithMediaAllowed(): boolean {
+    return (
+      this.configService
+        .get<string>('GENERATION_FALLBACK_UNCENSORED_WITH_MEDIA', 'false')
+        ?.trim()
+        .toLowerCase() === 'true'
+    );
   }
 
   private async tryFallback(
@@ -363,20 +481,50 @@ export class GenerationProcessor extends WorkerHost {
         .filter((url): url is string => !!url);
     }
 
-    const plan = planFallback(jobName, data, {
+    const decision = evaluateFallback(jobName, data, {
       kind,
       originalModel: generation.modelUsed,
       generationType: generation.type,
       durationSeconds: generation.durationSeconds,
       aspectRatio: generation.aspectRatio,
       inputImageUrls,
+      allowUncensoredWithMedia: this.uncensoredWithMediaAllowed(),
     });
-    if (!plan) return 'none';
-
     const errorCode = classifyGenerationFailure(
       rawFailureText(originalError),
       safety,
     );
+    if (decision.blocked) {
+      // Sem prompt nem mensagem do provedor no log: só ids e códigos.
+      this.logger.warn(
+        `[FALLBACK] gen=${generation.id} ${generation.modelUsed} → ${decision.blocked.model} barrado (${kind}: ${errorCode}): ${decision.blocked.reason}`,
+      );
+      await this.prisma.generation
+        .update({
+          where: { id: generation.id },
+          data: {
+            parameters: {
+              ...params,
+              fallbackBlocked: {
+                from: generation.modelUsed,
+                to: decision.blocked.model,
+                kind,
+                reason: decision.blocked.reason,
+                errorCode,
+              },
+            },
+          },
+        })
+        .catch((auditError: Error) =>
+          this.logger.warn(
+            `[FALLBACK] gen=${generation.id} registro do bloqueio falhou: ${auditError.message}`,
+          ),
+        );
+      return 'none';
+    }
+    const plan = decision.plan;
+    if (!plan) return 'none';
+
     this.logger.warn(
       `[FALLBACK] gen=${generation.id} ${generation.modelUsed} → ${plan.model} (${kind}: ${errorCode}) motivo="${originalError.message}"`,
     );
@@ -396,8 +544,14 @@ export class GenerationProcessor extends WorkerHost {
     try {
       await this.dispatch(plan.jobName, plan.data);
     } catch (fallbackError) {
+      // A alternativa recusou por menor: o pedido não roda de novo em lugar
+      // nenhum, nem no retry do modelo original (que pode ser sem filtro).
+      const minorRefusal = isMinorRefusal(fallbackError);
+      const failedMessage = String(
+        (fallbackError as Error | null)?.message ?? fallbackError,
+      );
       this.logger.error(
-        `[FALLBACK] gen=${generation.id} alternativa ${plan.model} também falhou: ${(fallbackError as Error).message}`,
+        `[FALLBACK] gen=${generation.id} alternativa ${plan.model} também falhou: ${minorRefusal ? 'recusa por menor' : failedMessage}`,
       );
       await this.prisma.generation
         .update({
@@ -407,13 +561,14 @@ export class GenerationProcessor extends WorkerHost {
               ...params,
               fallbackAttempt: {
                 ...attempt,
-                failed: (fallbackError as Error).message.slice(0, 300),
+                failed: failedMessage.slice(0, 300),
+                ...(minorRefusal ? { minorRefusal: true } : {}),
               },
             },
           },
         })
         .catch(() => undefined);
-      return 'failed';
+      return minorRefusal ? 'minor_refusal' : 'failed';
     }
 
     // A alternativa entregou. Daqui para frente nada pode derrubar o job: um
@@ -1051,6 +1206,7 @@ export class GenerationProcessor extends WorkerHost {
           data.generationId,
           data.prompt,
           (refined) => this.theaimodelabProvider.generateTextToVideo(buildInput(refined)),
+          error,
         );
         if (retryResult) {
           await this.completeGeneration(data.generationId, retryResult, startTime);
@@ -1117,6 +1273,7 @@ export class GenerationProcessor extends WorkerHost {
           data.generationId,
           data.prompt,
           (refined) => this.theaimodelabProvider.generateImageToVideo(buildInput(refined)),
+          error,
         );
         if (retryResult) {
           await this.completeGeneration(data.generationId, retryResult, startTime);
@@ -1178,6 +1335,7 @@ export class GenerationProcessor extends WorkerHost {
           data.prompt,
           (refined) =>
             this.theaimodelabProvider.generateVideoWithReferences(buildInput(refined)),
+          error,
         );
         if (retryResult) {
           await this.completeGeneration(data.generationId, retryResult, startTime);
@@ -1463,6 +1621,7 @@ export class GenerationProcessor extends WorkerHost {
           data.generationId,
           data.prompt,
           (refined) => this.grokImagineProvider.generateImageToVideo(buildInput(refined)),
+          error,
         );
         if (retryResult) {
           await this.completeGeneration(data.generationId, retryResult, startTime);
@@ -1503,6 +1662,7 @@ export class GenerationProcessor extends WorkerHost {
           data.generationId,
           data.prompt,
           (refined) => this.grokImagineProvider.generateTextToVideo(buildInput(refined)),
+          error,
         );
         if (retryResult) {
           await this.completeGeneration(data.generationId, retryResult, startTime);
@@ -1544,6 +1704,7 @@ export class GenerationProcessor extends WorkerHost {
           data.generationId,
           data.prompt,
           (refined) => this.geminiOmniVideoProvider.generateOmniVideo(buildInput(refined)),
+          error,
         );
         if (retryResult) {
           await this.completeGeneration(data.generationId, retryResult, startTime);
@@ -1589,6 +1750,7 @@ export class GenerationProcessor extends WorkerHost {
           data.generationId,
           data.prompt,
           (refined) => this.bytedanceSeedanceProvider.generateVideo(buildInput(refined)),
+          error,
         );
         if (retryResult) {
           await this.completeGeneration(data.generationId, retryResult, startTime);
@@ -1634,6 +1796,7 @@ export class GenerationProcessor extends WorkerHost {
           data.generationId,
           data.prompt,
           (refined) => this.klingProvider.generateImageToVideo(buildInput(refined)),
+          error,
         );
         if (retryResult) {
           await this.completeGeneration(data.generationId, retryResult, startTime);
@@ -1949,11 +2112,24 @@ export class GenerationProcessor extends WorkerHost {
 
   // ─── Safety refinement retry ────────────────────────────────
 
+  /**
+   * `originalError` = a recusa do pedido original. Recusa por menor não se
+   * reescreve (mesma regra da PR #4): volta null, o caller relança o erro
+   * original e o dispatchWithFallback encerra sem desvio nem retry.
+   */
   private async retryWithRefinedPrompt(
     generationId: string,
     originalPrompt: string,
     generateFn: (refinedPrompt: string) => Promise<{ outputUrls: string[]; modelUsed: string }>,
+    originalError: unknown,
   ): Promise<{ outputUrls: string[]; modelUsed: string } | null> {
+    if (isMinorRefusal(originalError)) {
+      this.logger.warn(
+        `Generation ${generationId} recusada por menor — sem reescrita do prompt`,
+      );
+      return null;
+    }
+
     this.logger.warn(
       `Generation ${generationId} blocked by safety filter — attempting prompt refinement`,
     );
@@ -1998,6 +2174,10 @@ export class GenerationProcessor extends WorkerHost {
       this.logger.error(
         `Retry with refined prompt also failed for ${generationId}: ${(retryError as Error).message}`,
       );
+      // Recusa por menor do prompt reescrito sobe como veio: embrulhada no
+      // genérico abaixo, a marca sumia e o dispatchWithFallback levava o prompt
+      // ORIGINAL ao modelo sem filtro. (PR #4 faz o mesmo com isMinorSafetyBlock.)
+      if (isMinorRefusal(retryError)) throw retryError;
       if (this.isSafetyRelatedError(retryError)) {
         throw new ContentSafetyError(
           'A imagem ou texto enviado viola nossas diretrizes de conteúdo mesmo após ajuste automático. Tente reformular sua ideia de forma diferente.',

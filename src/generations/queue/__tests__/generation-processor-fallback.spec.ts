@@ -322,6 +322,408 @@ describe('GenerationProcessor — fallback automático de modelo', () => {
     expect(handleFailure).toHaveBeenCalledWith('gen-1', 'user-1', 200, original, false);
   });
 
+  describe('guarda de mídia do usuário (desvio para sem censura)', () => {
+    const veoImageJob = () => ({
+      ...veoJob(),
+      imageUrls: ['https://cdn/in.jpg'],
+    });
+
+    it('falha técnica com foto: não desvia para o MiniMax, registra o bloqueio e mantém o retry do original', async () => {
+      const record = makeRecord({ type: 'IMAGE_TO_VIDEO' });
+      const { processor } = setup(record);
+      const original = new Error('Veo generation failed: internal error, please try again later.');
+      const { calls } = scriptDispatch(processor, record, GenerationJobName.IMAGE_TO_VIDEO_KIE, original);
+
+      await expect(
+        processor.dispatchWithFallback(GenerationJobName.IMAGE_TO_VIDEO_KIE, veoImageJob() as any, { queued: true }),
+      ).rejects.toBe(original);
+
+      expect(calls).toEqual([GenerationJobName.IMAGE_TO_VIDEO_KIE]);
+      expect(record.parameters).toMatchObject({
+        fallbackBlocked: {
+          from: 'veo3_fast',
+          to: 'wavespeed-minimax-h3',
+          kind: 'provider',
+          reason: 'UNCENSORED_WITH_USER_MEDIA',
+          errorCode: 'PROVIDER_ERROR',
+        },
+      });
+      expect(record.parameters).not.toHaveProperty('fallbackAttempt');
+    });
+
+    it('bloqueio de conteúdo com foto: sem desvio e irrecuperável', async () => {
+      const record = makeRecord({ type: 'IMAGE_TO_VIDEO' });
+      const { processor } = setup(record);
+      const blocked = new ContentSafetyError('Veo generation failed: public error unsafe image upload.');
+      const { calls } = scriptDispatch(processor, record, GenerationJobName.IMAGE_TO_VIDEO_KIE, blocked);
+
+      const error = await processor
+        .dispatchWithFallback(GenerationJobName.IMAGE_TO_VIDEO_KIE, veoImageJob() as any, { queued: true })
+        .catch((e: Error) => e);
+
+      expect(calls).toHaveLength(1);
+      expect(error).toBeInstanceOf(GenerationUnrecoverableError);
+      expect((error as GenerationUnrecoverableError).original).toBe(blocked);
+      expect(record.parameters).toMatchObject({ fallbackBlocked: { kind: 'safety', reason: 'UNCENSORED_WITH_USER_MEDIA' } });
+    });
+
+    it('entrada recusada vira segurança: sem desvio com foto, irrecuperável, código INPUT_IMAGE_REJECTED', async () => {
+      const record = makeRecord({ type: 'IMAGE_TO_VIDEO' });
+      const { processor } = setup(record);
+      const rejected = new Error('Veo generation failed: the image is not compliant, change your input files.');
+      const { calls } = scriptDispatch(processor, record, GenerationJobName.IMAGE_TO_VIDEO_KIE, rejected);
+
+      const error = await processor
+        .dispatchWithFallback(GenerationJobName.IMAGE_TO_VIDEO_KIE, veoImageJob() as any, { queued: true })
+        .catch((e: Error) => e);
+
+      expect(calls).toHaveLength(1);
+      expect(error).toBeInstanceOf(GenerationUnrecoverableError);
+      expect(record.parameters).toMatchObject({
+        fallbackBlocked: { kind: 'safety', reason: 'UNCENSORED_WITH_USER_MEDIA', errorCode: 'INPUT_IMAGE_REJECTED' },
+      });
+    });
+
+    it('entrada recusada em imagem com foto: não cai mais na kie como falha técnica', async () => {
+      const record = makeRecord({ type: 'IMAGE_TO_IMAGE', modelUsed: 'gpt-image-2', creditsConsumed: 200 });
+      const { processor, prisma } = setup(record);
+      prisma.generationInputImage.findMany.mockResolvedValue([{ url: 'https://cdn/in.jpg', order: 0 }] as never);
+      const rejected = new Error('GPT image failed: input was rejected');
+      const { calls } = scriptDispatch(processor, record, GenerationJobName.IMAGE, rejected);
+
+      await expect(
+        processor.dispatchWithFallback(
+          GenerationJobName.IMAGE,
+          { generationId: 'gen-1', userId: 'user-1', creditsConsumed: 200, prompt: 'p', model: 'gpt-image-2', resolution: 'RES_2K', hasInputImages: true } as any,
+          { queued: true },
+        ),
+      ).rejects.toBeInstanceOf(GenerationUnrecoverableError);
+      expect(calls).toEqual([GenerationJobName.IMAGE]);
+      expect(record.parameters).not.toHaveProperty('fallbackAttempt');
+    });
+
+    it('sem foto, falha técnica: o desvio para o MiniMax continua', async () => {
+      const record = makeRecord();
+      const { processor } = setup(record);
+      const { calls } = scriptDispatch(
+        processor,
+        record,
+        GenerationJobName.TEXT_TO_VIDEO_KIE,
+        new Error('Veo generation failed: internal error'),
+      );
+
+      await processor.dispatchWithFallback(GenerationJobName.TEXT_TO_VIDEO_KIE, veoJob() as any, { queued: true });
+
+      expect(calls).toEqual([GenerationJobName.TEXT_TO_VIDEO_KIE, GenerationJobName.MINIMAX_H3_TEXT_TO_VIDEO]);
+      expect(record.parameters).not.toHaveProperty('fallbackBlocked');
+    });
+
+    it.each([
+      ['falha técnica', new Error('Veo generation failed: internal error'), 'provider'],
+      ['entrada recusada', new Error('Veo generation failed: the image is not compliant'), 'safety'],
+    ])('GENERATION_FALLBACK_UNCENSORED_WITH_MEDIA=true libera o desvio com foto (%s)', async (_label, original, kind) => {
+      const record = makeRecord({ type: 'IMAGE_TO_VIDEO' });
+      const { processor } = setup(record, { GENERATION_FALLBACK_UNCENSORED_WITH_MEDIA: 'true' });
+      const { calls } = scriptDispatch(processor, record, GenerationJobName.IMAGE_TO_VIDEO_KIE, original);
+
+      await processor.dispatchWithFallback(GenerationJobName.IMAGE_TO_VIDEO_KIE, veoImageJob() as any, { queued: true });
+
+      expect(calls).toEqual([GenerationJobName.IMAGE_TO_VIDEO_KIE, GenerationJobName.MINIMAX_H3_IMAGE_TO_VIDEO]);
+      expect(record.parameters).toMatchObject({ fallbackTo: 'wavespeed-minimax-h3', fallbackKind: kind });
+    });
+
+    it('valor diferente de "true" no env mantém a guarda', async () => {
+      const record = makeRecord({ type: 'IMAGE_TO_VIDEO' });
+      const { processor } = setup(record, { GENERATION_FALLBACK_UNCENSORED_WITH_MEDIA: '1' });
+      const original = new Error('Veo generation failed: internal error');
+      const { calls } = scriptDispatch(processor, record, GenerationJobName.IMAGE_TO_VIDEO_KIE, original);
+
+      await expect(
+        processor.dispatchWithFallback(GenerationJobName.IMAGE_TO_VIDEO_KIE, veoImageJob() as any, { queued: true }),
+      ).rejects.toBe(original);
+      expect(calls).toHaveLength(1);
+    });
+  });
+
+  describe('recusa por menor (sem desvio, sem retry)', () => {
+    const grokJob = () => ({
+      generationId: 'gen-1',
+      userId: 'user-1',
+      creditsConsumed: 1920,
+      usedFreeGeneration: false,
+      prompt: 'woman walking on the beach at sunset',
+      resolution: 'RES_720P',
+      durationSeconds: 6,
+      aspectRatio: '9:16',
+    });
+    const minimaxJob = () => ({ ...grokJob(), durationSeconds: 5, generateAudio: true });
+    const imageJob = () => ({
+      generationId: 'gen-1',
+      userId: 'user-1',
+      creditsConsumed: 200,
+      usedFreeGeneration: false,
+      prompt: 'p',
+      model: 'gpt-image-2',
+      resolution: 'RES_2K',
+      hasInputImages: false,
+    });
+    const childCodeVeo = () =>
+      new Error('Veo generation failed: The prompt could not be submitted. Support codes: 58061214');
+
+    it.each([
+      ['Veo kie T2V, código de criança', GenerationJobName.TEXT_TO_VIDEO_KIE, veoJob(), 'veo3_fast', childCodeVeo(), 'safety', 'CONTENT_SAFETY_BLOCKED'],
+      [
+        'Veo kie T2V, "child" em bloqueio de política',
+        GenerationJobName.TEXT_TO_VIDEO_KIE,
+        veoJob(),
+        'veo3_fast',
+        new Error('Veo generation failed: request violates content policy, it depicts a child.'),
+        'safety',
+        'CONTENT_SAFETY_BLOCKED',
+      ],
+      [
+        'Veo kie T2V, "child" que o classificador lia como falha técnica',
+        GenerationJobName.TEXT_TO_VIDEO_KIE,
+        veoJob(),
+        'veo3_fast',
+        new Error('Veo generation failed: prompt blocked, it depicts a child.'),
+        'provider',
+        'GENERATION_FAILED',
+      ],
+      [
+        'Grok T2V, código de criança',
+        GenerationJobName.TEXT_TO_VIDEO_GROK,
+        grokJob(),
+        'grok-imagine',
+        new ContentSafetyError('Grok Imagine blocked the request (430)', '17301594'),
+        'safety',
+        'CONTENT_SAFETY_BLOCKED',
+      ],
+      [
+        'Grok T2V, "minor"',
+        GenerationJobName.TEXT_TO_VIDEO_GROK,
+        grokJob(),
+        'grok-imagine',
+        new ContentSafetyError('Content flagged: involving a minor (430)', '430'),
+        'safety',
+        'CONTENT_SAFETY_BLOCKED',
+      ],
+    ])('%s: MiniMax nunca roda, irrecuperável, fallbackBlocked MINOR_REFUSAL', async (_label, jobName, job, model, refusal, kind, errorCode) => {
+      const record = makeRecord({ modelUsed: model });
+      const { processor } = setup(record);
+      const { calls } = scriptDispatch(processor, record, jobName, refusal);
+
+      const error = await processor
+        .dispatchWithFallback(jobName, job as any, { queued: true })
+        .catch((e: Error) => e);
+
+      expect(calls).toEqual([jobName]);
+      expect(error).toBeInstanceOf(GenerationUnrecoverableError);
+      expect(error).toBeInstanceOf(UnrecoverableError);
+      expect((error as GenerationUnrecoverableError).original).toBe(refusal);
+      expect(record.parameters).toMatchObject({
+        fallbackBlocked: { from: model, to: 'wavespeed-minimax-h3', kind, reason: 'MINOR_REFUSAL', errorCode },
+      });
+      expect(record.parameters).not.toHaveProperty('fallbackAttempt');
+    });
+
+    it.each([
+      [
+        'imagem GPT → Nano Banana na kie',
+        GenerationJobName.IMAGE,
+        imageJob(),
+        'gpt-image-2',
+        new Error('GPT image failed: request rejected, the prompt involves children'),
+        'nano-banana-2',
+      ],
+      [
+        'Veo Quality → Veo Fast',
+        GenerationJobName.TEXT_TO_VIDEO_KIE,
+        veoJob('veo3', 6700),
+        'veo3',
+        new Error('Veo generation failed: prompt blocked, it depicts a child.'),
+        'veo3_fast',
+      ],
+    ])('nem para modelo com filtro (%s)', async (_label, jobName, job, model, refusal, filteredTarget) => {
+      const record = makeRecord({ modelUsed: model });
+      const { processor } = setup(record);
+      const { calls } = scriptDispatch(processor, record, jobName, refusal);
+
+      const error = await processor
+        .dispatchWithFallback(jobName, job as any, { queued: true })
+        .catch((e: Error) => e);
+
+      expect(calls).toEqual([jobName]);
+      expect(error).toBeInstanceOf(GenerationUnrecoverableError);
+      expect(record.parameters).toMatchObject({
+        fallbackBlocked: { from: model, to: filteredTarget, kind: 'provider', reason: 'MINOR_REFUSAL' },
+      });
+    });
+
+    it.each([
+      [
+        'Veo kie T2V, código de conteúdo sexual',
+        GenerationJobName.TEXT_TO_VIDEO_KIE,
+        veoJob(),
+        'veo3_fast',
+        new Error('Veo generation failed: The prompt could not be submitted. Support codes: 90789179'),
+      ],
+      [
+        'Grok T2V, bloqueio adulto',
+        GenerationJobName.TEXT_TO_VIDEO_GROK,
+        grokJob(),
+        'grok-imagine',
+        new ContentSafetyError('Content flagged as sexually explicit (430)', '430'),
+      ],
+    ])('bloqueio adulto comum (%s) continua desviando para o MiniMax', async (_label, jobName, job, model, refusal) => {
+      const record = makeRecord({ modelUsed: model });
+      const { processor } = setup(record);
+      const { calls } = scriptDispatch(processor, record, jobName, refusal);
+
+      await processor.dispatchWithFallback(jobName, job as any, { queued: true });
+
+      expect(calls).toEqual([jobName, GenerationJobName.MINIMAX_H3_TEXT_TO_VIDEO]);
+      expect(record.parameters).toMatchObject({ fallbackTo: 'wavespeed-minimax-h3', fallbackKind: 'safety' });
+      expect(record.parameters).not.toHaveProperty('fallbackBlocked');
+    });
+
+    it.each([
+      ['"minor version"', new Error('Veo generation failed: minor version mismatch, internal error')],
+      ['"child process"', new Error('Veo generation failed: child process exited unexpectedly (500)')],
+    ])('%s fora de bloqueio não conta: a falha técnica segue para a alternativa', async (_label, failure) => {
+      const record = makeRecord();
+      const { processor } = setup(record);
+      const { calls } = scriptDispatch(processor, record, GenerationJobName.TEXT_TO_VIDEO_KIE, failure);
+
+      await processor.dispatchWithFallback(GenerationJobName.TEXT_TO_VIDEO_KIE, veoJob() as any, { queued: true });
+
+      expect(calls).toEqual([GenerationJobName.TEXT_TO_VIDEO_KIE, GenerationJobName.MINIMAX_H3_TEXT_TO_VIDEO]);
+      expect(record.parameters).toMatchObject({ fallbackKind: 'provider', fallbackReason: 'PROVIDER_ERROR' });
+      expect(record.parameters).not.toHaveProperty('fallbackBlocked');
+    });
+
+    it('runner direto: o handleFailure recebe o erro original, sem alternativa', async () => {
+      const record = makeRecord({ type: 'TEXT_TO_IMAGE', modelUsed: 'gpt-image-2', creditsConsumed: 200 });
+      const { processor } = setup(record);
+      const refusal = new ContentSafetyError('Request blocked: sexual/minors');
+      const { calls } = scriptDispatch(processor, record, GenerationJobName.IMAGE, refusal);
+      const handleFailure = jest.spyOn(processor as any, 'handleFailure').mockResolvedValue(undefined);
+
+      await processor.runImageJobDirectly(imageJob() as any);
+
+      expect(calls).toEqual([GenerationJobName.IMAGE]);
+      expect(handleFailure).toHaveBeenCalledWith('gen-1', 'user-1', 200, refusal, false);
+      expect(record.parameters).toMatchObject({ fallbackBlocked: { reason: 'MINOR_REFUSAL' } });
+    });
+
+    it('falha ao gravar a métrica não troca o erro; log sem prompt nem mensagem do banco', async () => {
+      const record = makeRecord();
+      const { processor, prisma } = setup(record);
+      prisma.generation.update.mockRejectedValue(new Error('db down'));
+      const refusal = childCodeVeo();
+      const { calls } = scriptDispatch(processor, record, GenerationJobName.TEXT_TO_VIDEO_KIE, refusal);
+      const logger = (processor as any).logger;
+      const warn = jest.spyOn(logger, 'warn');
+      const errorLog = jest.spyOn(logger, 'error');
+
+      const error = await processor
+        .dispatchWithFallback(GenerationJobName.TEXT_TO_VIDEO_KIE, veoJob() as any, { queued: true })
+        .catch((e: Error) => e);
+
+      expect(calls).toEqual([GenerationJobName.TEXT_TO_VIDEO_KIE]);
+      expect(error).toBeInstanceOf(GenerationUnrecoverableError);
+      expect((error as GenerationUnrecoverableError).original).toBe(refusal);
+      const lines = [...warn.mock.calls, ...errorLog.mock.calls].map((args) => args.join(' '));
+      expect(lines.some((line) => line.includes('recusa por menor'))).toBe(true);
+      expect(lines.some((line) => line.includes(veoJob().prompt) || line.includes('db down'))).toBe(false);
+    });
+
+    it('alternativa recusa por menor: irrecuperável (o retry levaria o pedido de novo ao modelo original)', async () => {
+      const record = makeRecord({ modelUsed: 'wavespeed-minimax-h3' });
+      const { processor } = setup(record);
+      const original = new Error('MiniMax H3 failed: internal error');
+      const minor = new ContentSafetyError('Content flagged: involving a minor (430)', '430');
+      const { calls } = scriptDispatch(processor, record, GenerationJobName.MINIMAX_H3_TEXT_TO_VIDEO, original, minor);
+
+      const error = await processor
+        .dispatchWithFallback(GenerationJobName.MINIMAX_H3_TEXT_TO_VIDEO, minimaxJob() as any, { queued: true })
+        .catch((e: Error) => e);
+
+      expect(calls).toEqual([GenerationJobName.MINIMAX_H3_TEXT_TO_VIDEO, GenerationJobName.SEEDANCE_VIDEO]);
+      expect(error).toBeInstanceOf(GenerationUnrecoverableError);
+      expect((error as GenerationUnrecoverableError).original).toBe(original);
+      expect(record.parameters).toMatchObject({
+        fallbackAttempt: { to: 'bytedance-seedance-2', minorRefusal: true },
+      });
+    });
+
+    describe('reescrita do prompt (Grok com o processo real)', () => {
+      /** Grok recusa na ordem de `refusals`; a alternativa (se rodar) entrega. */
+      function runGrok(record: GenerationRecord, refusals: Error[]) {
+        const { processor } = setup(record);
+        const grok = { generateTextToVideo: jest.fn() };
+        for (const refusal of refusals) grok.generateTextToVideo.mockRejectedValueOnce(refusal);
+        const promptEnhancer = { refinePromptForSafety: jest.fn(async () => 'woman walking on the beach, golden hour') };
+        Object.assign(processor as any, { grokImagineProvider: grok, promptEnhancer });
+        const realDispatch = processor.dispatch.bind(processor);
+        const calls: string[] = [];
+        jest.spyOn(processor, 'dispatch').mockImplementation(async (jobName: string, data: unknown) => {
+          calls.push(jobName);
+          if (jobName === GenerationJobName.TEXT_TO_VIDEO_GROK) return realDispatch(jobName, data);
+          record.status = 'COMPLETED';
+        });
+        return { processor, grok, promptEnhancer, calls };
+      }
+
+      const adult = () => new ContentSafetyError('Content flagged as sexually explicit (430)', '430');
+      const minor = () => new ContentSafetyError('Content flagged: involving a minor (430)', '430');
+
+      it('recusa por menor não vai para a reescrita: sobe crua e o MiniMax nunca roda', async () => {
+        const record = makeRecord({ modelUsed: 'grok-imagine' });
+        const refusal = minor();
+        const { processor, grok, promptEnhancer, calls } = runGrok(record, [refusal]);
+
+        const error = await processor
+          .dispatchWithFallback(GenerationJobName.TEXT_TO_VIDEO_GROK, grokJob() as any, { queued: true })
+          .catch((e: Error) => e);
+
+        expect(promptEnhancer.refinePromptForSafety).not.toHaveBeenCalled();
+        expect(grok.generateTextToVideo).toHaveBeenCalledTimes(1);
+        expect(calls).toEqual([GenerationJobName.TEXT_TO_VIDEO_GROK]);
+        expect(error).toBeInstanceOf(GenerationUnrecoverableError);
+        expect((error as GenerationUnrecoverableError).original).toBe(refusal);
+        expect(record.parameters).toMatchObject({ fallbackBlocked: { reason: 'MINOR_REFUSAL' } });
+      });
+
+      it('prompt reescrito recusado por menor: a marca não some no erro genérico e o MiniMax nunca roda', async () => {
+        const record = makeRecord({ modelUsed: 'grok-imagine' });
+        const refusal = minor();
+        const { processor, promptEnhancer, calls } = runGrok(record, [adult(), refusal]);
+
+        const error = await processor
+          .dispatchWithFallback(GenerationJobName.TEXT_TO_VIDEO_GROK, grokJob() as any, { queued: true })
+          .catch((e: Error) => e);
+
+        expect(promptEnhancer.refinePromptForSafety).toHaveBeenCalledTimes(1);
+        expect(calls).toEqual([GenerationJobName.TEXT_TO_VIDEO_GROK]);
+        expect(error).toBeInstanceOf(GenerationUnrecoverableError);
+        expect((error as GenerationUnrecoverableError).original).toBe(refusal);
+        expect(record.parameters).toMatchObject({ fallbackBlocked: { reason: 'MINOR_REFUSAL' } });
+      });
+
+      it('reescrita recusada por motivo adulto: o desvio de sempre para o MiniMax continua', async () => {
+        const record = makeRecord({ modelUsed: 'grok-imagine' });
+        const { processor, promptEnhancer, calls } = runGrok(record, [adult(), adult()]);
+
+        await processor.dispatchWithFallback(GenerationJobName.TEXT_TO_VIDEO_GROK, grokJob() as any, { queued: true });
+
+        expect(promptEnhancer.refinePromptForSafety).toHaveBeenCalledTimes(1);
+        expect(calls).toEqual([GenerationJobName.TEXT_TO_VIDEO_GROK, GenerationJobName.MINIMAX_H3_TEXT_TO_VIDEO]);
+        expect(record.parameters).toMatchObject({ fallbackKind: 'safety', fallbackTo: 'wavespeed-minimax-h3' });
+      });
+    });
+  });
+
   describe('onFailed', () => {
     const job = (attemptsMade: number) => ({
       id: 'job-1',

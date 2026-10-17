@@ -20,6 +20,10 @@ import {
   WavespeedImageToVideoJobData,
   WavespeedSeedanceImageToVideoJobData,
 } from './generation-queue.constants';
+import {
+  classifyGenerationFailure,
+  GenerationFailureCode,
+} from '../errors/failure-reason';
 
 /**
  * Plano de fallback: quando o provedor de um modelo falha, qual modelo
@@ -28,10 +32,18 @@ import {
  * Regras:
  *  - Uma alternativa por modelo, de preferência em OUTRO provedor (queda da
  *    kie não derruba a WaveSpeed e vice-versa).
- *  - `provider` = falha técnica (500, timeout, cota, entrada recusada).
- *    `safety` = bloqueio de conteúdo depois do refinamento de prompt; só vale
- *    para os modelos de vídeo da kie, que caem no MiniMax H3 (tolerante a +18,
- *    como a plataforma vende). Imagem já tem o próprio caminho (Unlocked).
+ *  - `provider` = falha técnica (500, timeout, cota).
+ *    `safety` = bloqueio de conteúdo depois do refinamento de prompt, e também
+ *    entrada recusada pelo provedor (a mídia enviada foi o motivo; ver
+ *    `fallbackKindOf`). Só vale para os modelos de vídeo da kie, que caem no
+ *    MiniMax H3 (tolerante a +18, como a plataforma vende). Imagem já tem o
+ *    próprio caminho (Unlocked).
+ *  - Guarda de mídia: nenhum desvio para modelo sem censura leva a mídia do
+ *    usuário (foto, quadro, referência, vídeo, áudio), qualquer que seja o
+ *    motivo, salvo `allowUncensoredWithMedia` (env, padrão desligado). Ver
+ *    `evaluateFallback`.
+ *  - Recusa por menor (`isMinorRefusal`) nunca chega aqui: o processador
+ *    encerra a geração antes do plano, sem desvio nenhum e sem retry.
  *  - O cliente nunca paga mais do que foi cobrado: se a alternativa custa
  *    menos, o processador estorna a diferença (`billing`); se custa mais, a
  *    plataforma absorve. As escolhas abaixo foram conferidas contra o custo
@@ -72,6 +84,102 @@ export interface FallbackContext {
   aspectRatio?: string | null;
   /** URLs públicas das imagens de input (jobs de imagem que só têm `hasInputImages`). */
   inputImageUrls?: string[];
+  /**
+   * Libera desvio para modelo sem censura em geração com mídia do usuário
+   * (env `GENERATION_FALLBACK_UNCENSORED_WITH_MEDIA`). Omitido = bloqueado.
+   */
+  allowUncensoredWithMedia?: boolean;
+}
+
+/**
+ * Por que o desvio não roda. `MINOR_REFUSAL` = o provedor recusou por menor
+ * (o processador barra antes do plano).
+ */
+export type FallbackBlockReason =
+  | 'UNCENSORED_WITH_USER_MEDIA'
+  | 'MINOR_REFUSAL';
+
+export interface FallbackDecision {
+  /** Plano que pode rodar; null = sem alternativa (ou bloqueada). */
+  plan: FallbackPlan | null;
+  /** Preenchido quando havia alternativa, mas a guarda barrou. */
+  blocked?: { reason: FallbackBlockReason; model: string };
+}
+
+/**
+ * Alvos sem filtro de conteúdo. Mesma lista de `isUncensoredModel`
+ * (src/content-safety/content-safety.interceptor.ts, PR #4): no merge, trocar
+ * por ela e apagar esta cópia.
+ */
+const UNCENSORED_MODELS: ReadonlySet<string> = new Set([
+  'sem-censura',
+  'sem-censura-fallback',
+  'deepdeep',
+  'wavespeed-ltx-spicy',
+  'wavespeed-seedance-spicy',
+  'comfydeploy-wan',
+  // MiniMax H3 (WaveSpeed): sem filtro na prática, alvo universal dos vídeos.
+  'wavespeed-minimax-h3',
+]);
+/** Slug que se apresenta como sem filtro entra na regra antes de entrar na lista. */
+const UNCENSORED_SLUG = /sem-censura|unlocked|uncensored|spicy|nsfw/;
+
+export function isUncensoredFallbackModel(model: string): boolean {
+  const slug = model.trim().toLowerCase();
+  return UNCENSORED_MODELS.has(slug) || UNCENSORED_SLUG.test(slug);
+}
+
+/** Campos de job que carregam mídia enviada pelo usuário (URL, lista ou flag). */
+const USER_MEDIA_FIELDS = [
+  'imageUrl',
+  'imageUrls',
+  'lastImageUrl',
+  'firstFrameUrl',
+  'lastFrameUrl',
+  'referenceImageUrls',
+  'referenceVideoUrls',
+  'referenceAudioUrls',
+  'videoUrl',
+  'videoList',
+  'sourceImageUrl',
+  'targetImageUrl',
+  'audioUrl',
+  'hasInputImages',
+  'hasVideoInput',
+] as const;
+
+function carriesUserMedia(data: GenerationJobData): boolean {
+  const fields = data as unknown as Record<string, unknown>;
+  return USER_MEDIA_FIELDS.some((field) => {
+    const value = fields[field];
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'string') return value.trim().length > 0;
+    return value === true;
+  });
+}
+
+/** A geração (ou o plano montado a partir dela) leva mídia do usuário ao provedor? */
+export function hasUserMedia(
+  data: GenerationJobData,
+  ctx: Pick<FallbackContext, 'inputImageUrls'>,
+): boolean {
+  return carriesUserMedia(data) || (ctx.inputImageUrls?.length ?? 0) > 0;
+}
+
+/**
+ * Motivo do desvio a partir do erro do provedor. "Entrada recusada" (a mídia
+ * enviada foi rejeitada, sem código de segurança) conta como segurança, não
+ * como falha técnica: o motivo pode ser justamente o que a trava quer barrar.
+ */
+export function fallbackKindOf(
+  rawErrorText: string,
+  safetyError: boolean,
+): FallbackKind {
+  if (safetyError) return 'safety';
+  return classifyGenerationFailure(rawErrorText, false) ===
+    GenerationFailureCode.INPUT_IMAGE_REJECTED
+    ? 'safety'
+    : 'provider';
 }
 
 const MINIMAX_MODEL = 'wavespeed-minimax-h3';
@@ -426,7 +534,44 @@ function seedance2(
   };
 }
 
+/**
+ * Decide o desvio: monta a alternativa e aplica a guarda de mídia. Desvio
+ * para modelo sem censura com mídia do usuário não roda, qualquer que seja o
+ * motivo (`provider` ou `safety`), salvo `allowUncensoredWithMedia`.
+ * Quando a trava de conteúdo (PR #4) e o porteiro da foto entrarem, a
+ * liberação deixa de ser o env e passa a ser "só com preflight limpo".
+ */
+export function evaluateFallback(
+  jobName: string,
+  data: GenerationJobData,
+  ctx: FallbackContext,
+): FallbackDecision {
+  const plan = planAlternative(jobName, data, ctx);
+  if (!plan) return { plan: null };
+  if (
+    !ctx.allowUncensoredWithMedia &&
+    isUncensoredFallbackModel(plan.model) &&
+    (hasUserMedia(data, ctx) || carriesUserMedia(plan.data))
+  ) {
+    return {
+      plan: null,
+      blocked: { reason: 'UNCENSORED_WITH_USER_MEDIA', model: plan.model },
+    };
+  }
+  return { plan };
+}
+
+/** Atalho de `evaluateFallback` para quem só precisa do plano. */
 export function planFallback(
+  jobName: string,
+  data: GenerationJobData,
+  ctx: FallbackContext,
+): FallbackPlan | null {
+  return evaluateFallback(jobName, data, ctx).plan;
+}
+
+/** Mapa de alternativas, sem a guarda de mídia. */
+function planAlternative(
   jobName: string,
   data: GenerationJobData,
   ctx: FallbackContext,

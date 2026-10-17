@@ -1,11 +1,20 @@
 import { GenerationType } from '@prisma/client';
 import {
+  evaluateFallback,
   FallbackContext,
+  FallbackKind,
+  fallbackKindOf,
+  hasUserMedia,
+  isUncensoredFallbackModel,
   MOTION_CONTROL_FALLBACK_PROMPT,
   planFallback,
 } from '../generation-fallback';
 import {
+  ComfyDeployImageToVideoJobData,
+  GenerationJobData,
   GenerationJobName,
+  ImageToVideoGrokJobData,
+  ReferenceToVideoKieJobData,
   ImageJobData,
   ImageNanoBananaJobData,
   ImageToVideoKieJobData,
@@ -29,10 +38,13 @@ const base = {
   usedFreeGeneration: false,
 };
 
+// Mapa de alternativas: a guarda de mídia fica liberada aqui para conferir o
+// plano montado; ela tem o próprio bloco de testes (evaluateFallback) abaixo.
 const ctx = (overrides: Partial<FallbackContext> = {}): FallbackContext => ({
   kind: 'provider',
   originalModel: 'veo3_fast',
   generationType: GenerationType.TEXT_TO_VIDEO,
+  allowUncensoredWithMedia: true,
   ...overrides,
 });
 
@@ -361,5 +373,241 @@ describe('planFallback', () => {
     expect(planFallback(GenerationJobName.IMAGE, gpt, ctx({ kind: 'safety' }))).toBeNull();
     expect(planFallback(GenerationJobName.VIRTUAL_TRY_ON, gpt, ctx())).toBeNull();
     expect(planFallback(GenerationJobName.TEXT_TO_VIDEO, gpt, ctx())).toBeNull();
+  });
+});
+
+describe('evaluateFallback — guarda de mídia do usuário', () => {
+  // Contexto de produção: a guarda vem LIGADA (allowUncensoredWithMedia omitido).
+  const guardCtx = (overrides: Partial<FallbackContext> = {}): FallbackContext => ({
+    kind: 'provider',
+    originalModel: 'veo3_fast',
+    generationType: GenerationType.IMAGE_TO_VIDEO,
+    ...overrides,
+  });
+
+  const veoImage: ImageToVideoKieJobData = {
+    ...base,
+    prompt: 'p',
+    model: 'veo3_fast',
+    resolution: 'RES_720P',
+    generateAudio: true,
+    imageUrls: ['https://cdn/in.jpg'],
+  };
+  const veoText: TextToVideoKieJobData = {
+    ...base,
+    prompt: 'p',
+    model: 'veo3_fast',
+    resolution: 'RES_720P',
+    aspectRatio: '9:16',
+    generateAudio: true,
+  };
+
+  // Todos os jobs com mídia do usuário cujo desvio é o MiniMax H3 (sem censura).
+  const withMediaToUncensored: Array<
+    [string, GenerationJobName, GenerationJobData, FallbackKind[], Partial<FallbackContext>]
+  > = [
+    ['Veo Fast com foto (first/last frame)', GenerationJobName.IMAGE_TO_VIDEO_KIE, veoImage, ['provider', 'safety'], {}],
+    [
+      'Veo referência com imagens',
+      GenerationJobName.REFERENCE_TO_VIDEO_KIE,
+      { ...base, prompt: 'p', model: 'veo3_fast', resolution: 'RES_720P', generateAudio: true, imageUrls: ['https://cdn/a.jpg', 'https://cdn/b.jpg'] } as ReferenceToVideoKieJobData,
+      ['provider', 'safety'],
+      {},
+    ],
+    [
+      'Omni com vídeo de referência',
+      GenerationJobName.OMNI_VIDEO,
+      { ...base, prompt: 'p', resolution: 'RES_720P', durationSeconds: 5, videoList: [{ url: 'https://cdn/clip.mp4', start: 0, ends: 5 }], hasVideoInput: true } as OmniVideoJobData,
+      ['provider', 'safety'],
+      {},
+    ],
+    [
+      'Seedance 2.5 com quadro inicial',
+      GenerationJobName.SEEDANCE_VIDEO,
+      { ...base, prompt: 'p', resolution: 'RES_720P', durationSeconds: 5, firstFrameUrl: 'https://cdn/f.jpg', generateAudio: true, hasVideoInput: false } as SeedanceVideoJobData,
+      ['provider', 'safety'],
+      {},
+    ],
+    [
+      'Seedance só com áudio de referência',
+      GenerationJobName.SEEDANCE_VIDEO,
+      { ...base, prompt: 'p', resolution: 'RES_720P', durationSeconds: 5, referenceAudioUrls: ['https://cdn/voz.mp3'], generateAudio: true, hasVideoInput: false } as SeedanceVideoJobData,
+      ['provider', 'safety'],
+      {},
+    ],
+    [
+      'Kling com foto',
+      GenerationJobName.KLING_IMAGE_TO_VIDEO,
+      { ...base, prompt: 'p', resolution: 'RES_720P', durationSeconds: 5, imageUrls: ['https://cdn/k.jpg'], aspectRatio: '9:16', generateAudio: true } as KlingImageToVideoJobData,
+      ['provider', 'safety'],
+      {},
+    ],
+    [
+      'Grok com foto',
+      GenerationJobName.IMAGE_TO_VIDEO_GROK,
+      { ...base, prompt: 'p', resolution: 'RES_720P', durationSeconds: 6, imageUrls: ['https://cdn/g.jpg'] } as ImageToVideoGrokJobData,
+      ['provider', 'safety'],
+      {},
+    ],
+    [
+      'ComfyDeploy com foto',
+      GenerationJobName.COMFYDEPLOY_IMAGE_TO_VIDEO,
+      { ...base, prompt: 'p', resolution: 'RES_720P', durationSeconds: 5, imageUrl: 'https://cdn/c.jpg' } as ComfyDeployImageToVideoJobData,
+      ['provider', 'safety'],
+      {},
+    ],
+    [
+      'Motion Control (vídeo + foto)',
+      GenerationJobName.MOTION_CONTROL,
+      { ...base, videoUrl: 'https://cdn/ref.mp4', imageUrl: 'https://cdn/ref.jpg', resolution: 'RES_720P' } as MotionControlJobData,
+      ['provider', 'safety'],
+      { durationSeconds: 7 },
+    ],
+    [
+      'LTX Spicy com foto (falha técnica)',
+      GenerationJobName.WAVESPEED_IMAGE_TO_VIDEO,
+      { ...base, prompt: 'p', resolution: 'RES_480P', durationSeconds: 5, imageUrl: 'https://cdn/x.jpg' } as WavespeedImageToVideoJobData,
+      ['provider'],
+      {},
+    ],
+    [
+      'Seedance Spicy com foto (falha técnica)',
+      GenerationJobName.WAVESPEED_SEEDANCE_IMAGE_TO_VIDEO,
+      { ...base, prompt: 'p', resolution: 'RES_720P', durationSeconds: 5, imageUrl: 'https://cdn/x.jpg', generateAudio: false } as WavespeedSeedanceImageToVideoJobData,
+      ['provider'],
+      {},
+    ],
+  ];
+
+  describe.each(withMediaToUncensored)('%s', (_label, jobName, data, kinds, extra) => {
+    it.each(kinds)('motivo %s: barrado por padrão, sem plano', (kind) => {
+      const decision = evaluateFallback(jobName, data, guardCtx({ kind, ...extra }));
+      expect(decision.plan).toBeNull();
+      expect(decision.blocked).toEqual({ reason: 'UNCENSORED_WITH_USER_MEDIA', model: 'wavespeed-minimax-h3' });
+      expect(planFallback(jobName, data, guardCtx({ kind, ...extra }))).toBeNull();
+    });
+
+    it.each(kinds)('motivo %s: env explicitamente false também barra', (kind) => {
+      const decision = evaluateFallback(jobName, data, guardCtx({ kind, allowUncensoredWithMedia: false, ...extra }));
+      expect(decision.plan).toBeNull();
+      expect(decision.blocked?.reason).toBe('UNCENSORED_WITH_USER_MEDIA');
+    });
+
+    it.each(kinds)('motivo %s: env liberado devolve o plano no MiniMax', (kind) => {
+      const decision = evaluateFallback(jobName, data, guardCtx({ kind, allowUncensoredWithMedia: true, ...extra }));
+      expect(decision.blocked).toBeUndefined();
+      expect(decision.plan).toMatchObject({ model: 'wavespeed-minimax-h3', kind });
+    });
+  });
+
+  it.each<FallbackKind>(['provider', 'safety'])('sem mídia, alvo sem censura (%s): segue para o MiniMax texto', (kind) => {
+    const decision = evaluateFallback(GenerationJobName.TEXT_TO_VIDEO_KIE, veoText, guardCtx({ kind }));
+    expect(decision.blocked).toBeUndefined();
+    expect(decision.plan).toMatchObject({ jobName: GenerationJobName.MINIMAX_H3_TEXT_TO_VIDEO, model: 'wavespeed-minimax-h3', kind });
+
+    const grok: TextToVideoGrokJobData = { ...base, prompt: 'p', resolution: 'RES_720P', durationSeconds: 6 };
+    expect(evaluateFallback(GenerationJobName.TEXT_TO_VIDEO_GROK, grok, guardCtx({ kind })).plan?.model).toBe('wavespeed-minimax-h3');
+  });
+
+  it('com mídia, alvo com filtro (falha técnica): desvio liberado', () => {
+    // Veo Quality → Veo Fast (mesmo filtro)
+    const quality = { ...veoImage, model: 'veo3' };
+    expect(evaluateFallback(GenerationJobName.IMAGE_TO_VIDEO_KIE, quality, guardCtx()).plan).toMatchObject({ model: 'veo3_fast' });
+
+    // MiniMax com foto → Seedance 2.0 (kie, com filtro)
+    const minimax: MinimaxH3ImageToVideoJobData = { ...base, prompt: 'p', resolution: 'RES_720P', durationSeconds: 5, imageUrl: 'https://cdn/i.jpg', generateAudio: true };
+    expect(evaluateFallback(GenerationJobName.MINIMAX_H3_IMAGE_TO_VIDEO, minimax, guardCtx()).plan).toMatchObject({ model: 'bytedance-seedance-2' });
+
+    // Imagem com foto (provedor próprio → kie, e kie → provedor próprio)
+    const image: ImageJobData = { ...base, prompt: 'p', model: 'gpt-image-2', resolution: 'RES_2K', hasInputImages: true };
+    expect(
+      evaluateFallback(GenerationJobName.IMAGE, image, guardCtx({ inputImageUrls: ['https://cdn/in.jpg'] })).plan,
+    ).toMatchObject({ model: 'nano-banana-2' });
+    const kie: ImageNanoBananaJobData = { ...base, prompt: 'p', model: 'nano-banana-2', resolution: 'RES_2K', outputFormat: 'png', imageUrls: ['https://cdn/in.jpg'] };
+    expect(evaluateFallback(GenerationJobName.IMAGE_NANO_BANANA, kie, guardCtx()).plan).toMatchObject({ model: 'gemini-3.1-flash-image-preview' });
+  });
+
+  it('sem mídia, alvo com filtro: desvio liberado', () => {
+    const quality = { ...veoText, model: 'veo3' };
+    expect(evaluateFallback(GenerationJobName.TEXT_TO_VIDEO_KIE, quality, guardCtx()).plan).toMatchObject({ model: 'veo3_fast' });
+    const minimax: MinimaxH3TextToVideoJobData = { ...base, prompt: 'p', resolution: 'RES_720P', durationSeconds: 5, generateAudio: true };
+    expect(evaluateFallback(GenerationJobName.MINIMAX_H3_TEXT_TO_VIDEO, minimax, guardCtx()).plan).toMatchObject({ model: 'bytedance-seedance-2' });
+  });
+
+  it('entrada recusada vira segurança: imagem com foto fica sem desvio (antes caía na kie)', () => {
+    const image: ImageJobData = { ...base, prompt: 'p', model: 'gpt-image-2', resolution: 'RES_2K', hasInputImages: true };
+    const kind = fallbackKindOf('Generation failed: input was rejected, change your input files', false);
+    expect(kind).toBe('safety');
+    expect(evaluateFallback(GenerationJobName.IMAGE, image, guardCtx({ kind, inputImageUrls: ['https://cdn/in.jpg'] }))).toEqual({ plan: null });
+  });
+
+  it('entrada recusada em vídeo com foto: segurança e barrado antes do MiniMax', () => {
+    const kind = fallbackKindOf('Veo failed: the image is not compliant', false);
+    const decision = evaluateFallback(GenerationJobName.IMAGE_TO_VIDEO_KIE, veoImage, guardCtx({ kind }));
+    expect(kind).toBe('safety');
+    expect(decision.plan).toBeNull();
+    expect(decision.blocked?.reason).toBe('UNCENSORED_WITH_USER_MEDIA');
+  });
+
+  describe('fallbackKindOf', () => {
+    it.each([
+      ['500', 'Veo generation failed: Internal Server Error (500)'],
+      ['timeout', 'Veo generation timed out.'],
+      ['cota', 'kie: credits insufficient for this request'],
+      ['sobrecarga', 'Service Unavailable (503)'],
+      ['sem saída', 'no video data returned'],
+    ])('falha técnica (%s) = provider', (_label, message) => {
+      expect(fallbackKindOf(message, false)).toBe('provider');
+    });
+
+    it.each([
+      'the image is not compliant',
+      'Your input was rejected',
+      'Please change your input files and try again',
+    ])('entrada recusada (%s) = safety', (message) => {
+      expect(fallbackKindOf(message, false)).toBe('safety');
+    });
+
+    it('bloqueio já reconhecido = safety, mesmo com texto de 500', () => {
+      expect(fallbackKindOf('Internal Server Error', true)).toBe('safety');
+    });
+  });
+
+  describe('hasUserMedia', () => {
+    it('reconhece foto, quadro, referência, vídeo, áudio e as flags', () => {
+      const cases: Array<Record<string, unknown>> = [
+        { imageUrl: 'https://cdn/a.jpg' },
+        { imageUrls: ['https://cdn/a.jpg'] },
+        { lastImageUrl: 'https://cdn/a.jpg' },
+        { firstFrameUrl: 'https://cdn/a.jpg' },
+        { lastFrameUrl: 'https://cdn/a.jpg' },
+        { referenceImageUrls: ['https://cdn/a.jpg'] },
+        { referenceVideoUrls: ['https://cdn/a.mp4'] },
+        { referenceAudioUrls: ['https://cdn/a.mp3'] },
+        { videoUrl: 'https://cdn/a.mp4' },
+        { videoList: [{ url: 'https://cdn/a.mp4', start: 0, ends: 4 }] },
+        { hasInputImages: true },
+        { hasVideoInput: true },
+      ];
+      for (const media of cases) {
+        expect(hasUserMedia({ ...base, prompt: 'p', ...media } as unknown as GenerationJobData, {})).toBe(true);
+      }
+    });
+
+    it('lista vazia, texto vazio e flag false não contam; URLs carregadas do banco contam', () => {
+      const empty = { ...base, prompt: 'p', imageUrls: [], imageUrl: '  ', hasInputImages: false, hasVideoInput: false } as unknown as GenerationJobData;
+      expect(hasUserMedia(empty, {})).toBe(false);
+      expect(hasUserMedia(empty, { inputImageUrls: [] })).toBe(false);
+      expect(hasUserMedia(empty, { inputImageUrls: ['https://cdn/in.jpg'] })).toBe(true);
+    });
+  });
+
+  it('isUncensoredFallbackModel: MiniMax e slugs sem filtro sim; alvos com filtro não', () => {
+    for (const model of ['wavespeed-minimax-h3', 'sem-censura', 'wavespeed-ltx-spicy', 'Modelo-Uncensored-Novo']) {
+      expect(isUncensoredFallbackModel(model)).toBe(true);
+    }
+    for (const model of ['veo3_fast', 'bytedance-seedance-2', 'nano-banana-2', 'gemini-3-pro-image-preview']) {
+      expect(isUncensoredFallbackModel(model)).toBe(false);
+    }
   });
 });
