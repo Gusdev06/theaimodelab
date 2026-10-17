@@ -1333,6 +1333,39 @@ function numberBefore(tokens: readonly string[], unitIndex: number): FoundNumber
   return start === -1 ? null : { value: total, start, end: unitIndex - 1, decimal: false };
 }
 
+/** Ligação entre a pessoa e o número ("garota DE 17 anos", "girl OF 17"): o número é a idade dela. */
+const AGE_LINK_DE = new Set(['de', 'del', 'of']);
+/** "mulher COM 10 anos de experiência": com a pessoa antes, só carreira e afins viram tempo. */
+const AGE_LINK_WITH = new Set(['com', 'con', 'with']);
+/** Palavra vaga entre a ligação e o número ("de uns 17 anos", "with about 17 years"). */
+const AGE_LINK_FILLERS = new Set(['uns', 'umas', 'unos', 'unas', 'cerca', 'about', 'around', 'apenas', 'only', 'just', 'quase', 'almost']);
+/** Depois de "pessoa com N anos de": o que é tempo de carreira, profissão ou relação, não a idade dela. */
+const CAREER_NOUNS = new Set([
+  'experiencia', 'experience', 'carreira', 'carrera', 'career', 'mercado', 'market', 'trabalho', 'work', 'profissao', 'profession', 'oficio', 'atuacao',
+  'trajetoria', 'trayectoria', 'casamento', 'casada', 'casado', 'casados', 'matrimonio', 'marriage', 'married', 'namoro', 'relacionamento', 'relationship',
+  'modelagem', 'modeling', 'modelling', 'empresa', 'company', 'industria', 'industry', 'negocio', 'negocios', 'business', 'ramo', 'setor', 'sector', 'area',
+  'servico', 'service', 'profissional', 'professional',
+]);
+
+/**
+ * Como uma pessoa se liga ao número logo antes dele: 'de' ("garota de 17 anos de lingerie", "garota linda de 16 anos"),
+ * 'with' ("mulher com 10 anos de experiência") ou null (sem pessoa até 2 palavras antes da ligação).
+ */
+function personAgeLink(tokens: readonly string[], numberStart: number): 'de' | 'with' | null {
+  let index = numberStart - 1;
+  for (let skipped = 0; skipped < 2 && AGE_LINK_FILLERS.has(tokens[index] ?? ''); skipped++) index--;
+  const link = tokens[index] ?? '';
+  const kind = AGE_LINK_DE.has(link) ? 'de' : AGE_LINK_WITH.has(link) ? 'with' : null;
+  if (!kind) return null;
+  // a pessoa logo antes da ligação ou com um adjetivo no meio ("garota linda de 17 anos")
+  for (let back = index - 1; back >= Math.max(0, index - 2); back--) {
+    const word = tokens[back];
+    if (word === ',') break;
+    if (PERSON_NOUNS.has(word) || PERSON_SUBJECTS.has(word) || FIRST_NAMES.has(word)) return kind;
+  }
+  return null;
+}
+
 /** "N anos" que não é idade: "há 10 anos", "10 anos de experiência", "anos 80", "10 years ago", "10 anos mais jovem". */
 function isDuration(tokens: readonly string[], numberStart: number, unitIndex: number): boolean {
   // "nasceu há 17 anos" é idade
@@ -1352,15 +1385,21 @@ function isDuration(tokens: readonly string[], numberStart: number, unitIndex: n
   if (after === 'a' && ['menos', 'mais'].includes(tokens[unitIndex + 2] ?? '')) return true;
   // "N anos de X" é tempo ("3 anos de pole dance", "12 anos de ballet"), menos "de idade/de vida" e traço físico
   // ("garota de 16 anos de olhos verdes" continua idade)
+  // pessoa antes do número: "garota de 17 anos de lingerie" e "garota de 17 anos na academia" continuam idade; com
+  // "com", só carreira e afins viram tempo ("mulher com 10 anos de experiência")
+  const link = personAgeLink(tokens, numberStart);
   if (after === 'de' || after === 'of' || after === 'del') {
     const noun = tokens[unitIndex + 2] ?? '';
     if (AGE_NOUNS_AFTER.has(noun)) return false;
+    if (link === 'de' || (link === 'with' && !CAREER_NOUNS.has(noun))) return false;
     if (noun && noun !== ',' && !/^\d/.test(noun)) return true;
   }
   if (PREPOSITIONS.has(after)) {
     let next = unitIndex + 2;
     while (ARTICLES.has(tokens[next] ?? '') && next < unitIndex + 4) next++;
-    if (DURATION_NOUNS.has(tokens[next] ?? '')) return true;
+    const noun = tokens[next] ?? '';
+    if (link === 'de' || (link === 'with' && !CAREER_NOUNS.has(noun))) return false;
+    if (DURATION_NOUNS.has(noun)) return true;
   }
   return false;
 }
