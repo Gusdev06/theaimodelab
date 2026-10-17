@@ -1,0 +1,38 @@
+{
+  "Labels": [
+    {
+      "Name": "Person",
+      "Confidence": 99.2,
+      "Instances": [
+        {
+          "BoundingBox": {
+            "Width": 0.3,
+            "Height": 0.8,
+            "Left": 0.05,
+            "Top": 0.1
+          },
+          "Confidence": 99.2
+        },
+        {
+          "BoundingBox": {
+            "Width": 0.3,
+            "Height": 0.8,
+            "Left": 0.55,
+            "Top": 0.1
+          },
+          "Confidence": 97.4
+        }
+      ],
+      "Parents": []
+    },
+    {
+      "Name": "Chair",
+      "Confidence": 88.3,
+      "Instances": [],
+      "Parents": [{ "Name": "Furniture" }]
+    },
+    { "Name": "Furniture", "Confidence": 88.3, "Instances": [], "Parents": [] }
+  ],
+  "LabelModelVersion": "3.0",
+  "$metadata": { "httpStatusCode": 200 }
+}

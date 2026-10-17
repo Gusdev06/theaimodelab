@@ -75,6 +75,19 @@ export const ErrorCodes = {
     statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
     message: 'Ainda não conseguimos conferir pedidos neste alfabeto. Escreva em português, inglês ou espanhol.',
   },
+  // checagem de segurança da plataforma nas rotas sem fila (foto checada antes da chamada externa): texto único para
+  // toda regra, sem dizer qual detector disparou
+  IMAGE_SAFETY_BLOCKED: {
+    code: 'IMAGE_SAFETY_BLOCKED',
+    statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: 'O pedido não passou na checagem de segurança.',
+  },
+  // a checagem não respondeu a tempo: a foto não segue sem ser checada
+  SAFETY_CHECK_UNAVAILABLE: {
+    code: 'SAFETY_CHECK_UNAVAILABLE',
+    statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+    message: 'A checagem de segurança está indisponível. Tente de novo em instantes.',
+  },
 } as const;
 
 export type ErrorCode = keyof typeof ErrorCodes;

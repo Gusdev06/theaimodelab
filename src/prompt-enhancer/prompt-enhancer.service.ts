@@ -856,6 +856,8 @@ O usuário sempre anexará uma imagem de referência do personagem. Por isso, NU
 | Qualquer descrição de aparência física do personagem | Remover — a imagem de referência já define o visual |
 | "deepfake", "clone", "replica" | Remover completamente |
 | Menção a menores de idade / crianças em contextos sensíveis | Reformular com adultos ou remover |
+| Idade adulta escrita ("25 anos", "mulher de 30") | MANTER a idade (não é aparência física): "a 25-year-old adult woman" |
+| "garota", "menina", "chica", "novinha", "universitária" (pessoa adulta) | "adult woman" / "young adult woman" — NUNCA "girl", "young girl", "teen", "college girl" ou "schoolgirl" |
 
 ### Violência e Armas
 | Proibido | Substituir por |
@@ -976,8 +978,9 @@ An original fictional character [DESCRIÇÃO DO PERSONAGEM].
       return null;
     }
 
+    // só o tamanho: o texto reescrito vem de um pedido recusado e não vai para o log
     this.logger.log(
-      `[SAFETY REFINER] Refined prompt (${refinedPrompt.length} chars): ${refinedPrompt.substring(0, 100)}...`,
+      `[SAFETY REFINER] Refined prompt (${refinedPrompt.length} chars)`,
     );
     return refinedPrompt;
   }

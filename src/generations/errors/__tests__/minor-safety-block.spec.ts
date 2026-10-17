@@ -4,10 +4,15 @@ import {
   decideSafetyFallback,
   isMinorSafetyBlock,
   isTerminalSafetyBlock,
+  minorBlockAuditOf,
   minorSupportCodeOf,
   MinorSafetyBlockError,
   MINOR_BLOCK_USER_MESSAGE,
+  RefinedPromptMinorBlockError,
+  safetyFallbackVerdict,
+  UnverifiedContentBlockError,
 } from '../content-safety.error';
+import { toPreflightStatus } from '../../../content-safety/preflight-status';
 import {
   classifyGenerationFailure,
   CONTENT_BLOCKED_NEEDS_CONSENT_MESSAGE,
@@ -71,58 +76,108 @@ describe('isMinorSafetyBlock', () => {
 });
 
 describe('decideSafetyFallback', () => {
-  describe("alvo 'uncensored' (fallbackToSeedream: Unlocked sem censura com as fotos da geração)", () => {
-    it.each([
-      [
-        { isMinor: true, hasUserImages: false, hasConsent: false },
-        'fail_minor',
-      ],
-      [{ isMinor: true, hasUserImages: true, hasConsent: true }, 'fail_minor'],
-      [
-        { isMinor: false, hasUserImages: true, hasConsent: false },
-        'fail_blocked',
-      ],
-      [
-        { isMinor: false, hasUserImages: true, hasConsent: true },
-        'allow_fallback',
-      ],
-      [
-        { isMinor: false, hasUserImages: false, hasConsent: false },
-        'allow_fallback',
-      ],
-    ] as const)('%j → %s', (input, expected) => {
-      expect(decideSafetyFallback({ target: 'uncensored', ...input })).toBe(
-        expected,
-      );
+  const TARGETS = ['uncensored', 'same_provider'] as const;
+  const PREFLIGHTS = ['clean', 'gray', 'flagged', 'unavailable'] as const;
+  const NOT_CLEAN = ['gray', 'flagged', 'unavailable'] as const;
+
+  describe('recusa por menor: encerra em qualquer alvo, com ou sem foto, com qualquer veredito', () => {
+    const cases = TARGETS.flatMap((target) =>
+      PREFLIGHTS.flatMap((preflight) =>
+        [true, false].map((hasUserImages) => ({
+          target,
+          preflight,
+          hasUserImages,
+          hasConsent: hasUserImages,
+        })),
+      ),
+    );
+    it.each(cases)('%j → fail_minor', (input) => {
+      expect(safetyFallbackVerdict({ ...input, isMinor: true })).toEqual({
+        decision: 'fail_minor',
+        reason: 'minor',
+      });
     });
   });
 
-  describe("alvo 'same_provider' (prompt reescrito no mesmo provedor com filtro, que já tem a foto)", () => {
-    it.each([
-      [
-        { isMinor: true, hasUserImages: false, hasConsent: false },
-        'fail_minor',
-      ],
-      [{ isMinor: true, hasUserImages: true, hasConsent: true }, 'fail_minor'],
-      // foto sem atestado NÃO impede a nova tentativa: a foto não vai a lugar novo e o filtro continua
-      [
-        { isMinor: false, hasUserImages: true, hasConsent: false },
-        'allow_fallback',
-      ],
-      [
-        { isMinor: false, hasUserImages: true, hasConsent: true },
-        'allow_fallback',
-      ],
-      [
-        { isMinor: false, hasUserImages: false, hasConsent: false },
-        'allow_fallback',
-      ],
-    ] as const)('%j → %s', (input, expected) => {
-      expect(decideSafetyFallback({ target: 'same_provider', ...input })).toBe(
-        expected,
-      );
+  describe('com mídia do usuário e sem checagem limpa da imagem: terminal nos DOIS alvos, com ou sem atestado', () => {
+    const cases = TARGETS.flatMap((target) =>
+      NOT_CLEAN.flatMap((preflight) =>
+        [true, false].map((hasConsent) => ({ target, preflight, hasConsent })),
+      ),
+    );
+    it.each(cases)('%j → fail_blocked (unverified_media)', (input) => {
+      const verdict = safetyFallbackVerdict({
+        ...input,
+        isMinor: false,
+        hasUserImages: true,
+      });
+      expect(verdict).toEqual({
+        decision: 'fail_blocked',
+        reason: 'unverified_media',
+      });
+      expect(
+        decideSafetyFallback({ ...input, isMinor: false, hasUserImages: true }),
+      ).toBe('fail_blocked');
     });
   });
+
+  describe("com mídia do usuário e checagem 'clean'", () => {
+    it.each([
+      ['uncensored', true, 'allow_fallback', null],
+      ['uncensored', false, 'fail_blocked', 'needs_consent'],
+      // reescrever o prompt e reenviar a mesma foto não existe, nem com a foto limpa (camada 4, regra 3)
+      ['same_provider', true, 'fail_blocked', 'unverified_media'],
+      ['same_provider', false, 'fail_blocked', 'unverified_media'],
+    ] as const)(
+      'alvo %s, atestado=%s → %s (%s)',
+      (target, hasConsent, decision, reason) => {
+        expect(
+          safetyFallbackVerdict({
+            target,
+            isMinor: false,
+            hasUserImages: true,
+            hasConsent,
+            preflight: 'clean',
+          }),
+        ).toEqual({ decision, reason });
+      },
+    );
+  });
+
+  describe('só texto: o veredito da imagem não conta (comportamento de antes)', () => {
+    const cases = TARGETS.flatMap((target) =>
+      PREFLIGHTS.map((preflight) => ({ target, preflight })),
+    );
+    it.each(cases)('%j → allow_fallback', (input) => {
+      expect(
+        decideSafetyFallback({
+          ...input,
+          isMinor: false,
+          hasUserImages: false,
+          hasConsent: false,
+        }),
+      ).toBe('allow_fallback');
+    });
+  });
+});
+
+describe('toPreflightStatus', () => {
+  it.each([
+    ['clean', 'clean'],
+    ['gray', 'gray'],
+    ['flagged', 'flagged'],
+    ['unavailable', 'unavailable'],
+    ['CLEAN', 'unavailable'],
+    ['', 'unavailable'],
+    [null, 'unavailable'],
+    [undefined, 'unavailable'],
+    [1, 'unavailable'],
+  ] as const)(
+    '%j → %s (valor desconhecido nunca vira clean)',
+    (value, expected) => {
+      expect(toPreflightStatus(value)).toBe(expected);
+    },
+  );
 });
 
 describe('falha por menor', () => {
@@ -189,6 +244,18 @@ describe('bloqueio terminal (encerra sem nova tentativa do BullMQ)', () => {
       ),
     ).toBe(true);
     expect(
+      isTerminalSafetyBlock(
+        new UnverifiedContentBlockError(
+          'content policy',
+          'veo3',
+          'unverified_media',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isTerminalSafetyBlock(new RefinedPromptMinorBlockError('teen')),
+    ).toBe(true);
+    expect(
       isTerminalSafetyBlock(new ContentSafetyError('content policy')),
     ).toBe(false);
     expect(isTerminalSafetyBlock(new Error('500 internal error'))).toBe(false);
@@ -234,5 +301,47 @@ describe('texto da falha para o usuário', () => {
         new Error('Não foi possível gerar a imagem'),
       ),
     ).toBe('Não foi possível gerar a imagem');
+  });
+});
+
+describe('foto sem checagem limpa e reescrita barrada', () => {
+  it('foto sem checagem limpa sai como CONTENT_SAFETY_BLOCKED com o texto genérico (sem pedir atestado)', () => {
+    const error = new UnverifiedContentBlockError(
+      new ContentSafetyError('Request violates content policy', '62263041'),
+      'grok-imagine',
+      'unverified_media',
+    );
+    expect(error.model).toBe('grok-imagine');
+    expect(error.source).toBe('unverified_media');
+    expect(error.supportCode).toBe('62263041');
+    expect(error.providerDetail).toContain('content policy');
+    const code = failureCodeOf(error, true);
+    expect(code).toBe(GenerationFailureCode.CONTENT_SAFETY_BLOCKED);
+    expect(failureUserMessage(code, error)).toBe(CONTENT_BLOCKED_USER_MESSAGE);
+  });
+
+  it('reescrita acusada pela trava sai como menor, com rota refiner e o termo como match', () => {
+    const error = new RefinedPromptMinorBlockError(' teen ');
+    expect(error).toBeInstanceOf(MinorSafetyBlockError);
+    expect(failureCodeOf(error, true)).toBe(
+      GenerationFailureCode.CONTENT_POLICY_MINOR,
+    );
+    expect(minorBlockAuditOf(error)).toEqual({
+      source: 'refiner',
+      match: 'teen',
+    });
+    expect(
+      minorBlockAuditOf(new RefinedPromptMinorBlockError(undefined)),
+    ).toEqual({ source: 'refiner', match: 'refiner' });
+  });
+
+  it('recusa do provedor continua como provider com o código de criança', () => {
+    expect(
+      minorBlockAuditOf(new MinorSafetyBlockError('code 58061214', 'veo3')),
+    ).toEqual({ source: 'provider', match: '58061214' });
+    expect(minorBlockAuditOf(new Error('sexual/minors'))).toEqual({
+      source: 'provider',
+      match: 'provider',
+    });
   });
 });

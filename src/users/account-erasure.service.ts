@@ -26,6 +26,8 @@ import {
 } from '../auth/strategies/jwt.strategy';
 import { HeyGenProvider } from '../avatars/providers/heygen.provider';
 import { assessText } from '../content-safety/minor-guard';
+import { IMAGE_EVIDENCE_EVENT_KINDS } from '../content-safety/safety-event-kinds';
+import { minimizeAccountScans } from '../content-safety/image-safety/scan-retention';
 import { AsaasSubscriptionsService } from '../payments/asaas-subscriptions.service';
 import { CaktoApiService } from '../payments/cakto-api.service';
 import { StripeService } from '../payments/stripe.service';
@@ -1368,7 +1370,18 @@ export async function countMinorBlocks(
   const withMedia = providerGenerationIds.length
     ? await generationsWithUserMedia(db, providerGenerationIds)
     : new Set<string>();
-  return tallyMinorBlocks(events, withMedia, now);
+  const tally = tallyMinorBlocks(events, withMedia, now);
+  // checagem de imagem da plataforma (foto/resultado com menor, ou segurado sem decisão do revisor): evidência de
+  // mídia como a recusa do provedor com foto — qualquer data, não ignorável, sem depender de generationsWithUserMedia
+  const imageEvidence = await db.contentSafetyEvent.findMany({
+    where: {
+      userId,
+      kind: { in: [...IMAGE_EVIDENCE_EVENT_KINDS] },
+      releasedAt: null,
+    },
+    select: { id: true },
+  });
+  return { ...tally, provider: tally.provider + imageEvidence.length };
 }
 
 /**
@@ -1420,6 +1433,17 @@ export async function minorBlockedGenerationIds(
       select: { generationId: true },
     });
     for (const row of rows) if (row.generationId) found.add(row.generationId);
+    // foto/resultado barrado ou segurado pela checagem de imagem da plataforma (sem decisão do revisor) também é evidência
+    const imageRows = await db.contentSafetyEvent.findMany({
+      where: {
+        kind: { in: [...IMAGE_EVIDENCE_EVENT_KINDS] },
+        releasedAt: null,
+        generationId: { in: ids },
+      },
+      select: { generationId: true },
+    });
+    for (const row of imageRows)
+      if (row.generationId) found.add(row.generationId);
   }
   return found;
 }
@@ -1876,6 +1900,8 @@ export class AccountErasureService implements BeforeApplicationShutdown {
         return report;
       }
 
+      // checagens de imagem e texto da conta: ficam só veredito, regra e data (sem hash, chave nem idades)
+      await this.minimizeSafetyScans(user.id);
       const plan = phase.erasure.plan;
       const cleanup = this.startExternalCleanup(plan, storageConfigured);
       const completed = await this.settleWithin(
@@ -1931,6 +1957,21 @@ export class AccountErasureService implements BeforeApplicationShutdown {
       return report;
     } finally {
       if (!releaseInBackground) this.running.delete(userId);
+    }
+  }
+
+  /**
+   * Conta apagada sem guarda legal: as checagens da segurança de imagem e texto perdem hash, pHash, chave do arquivo e
+   * sinais (idade por rosto) na hora; a linha com evidência guardada fica inteira. Melhor esforço depois do commit: a
+   * falha vira log e o cron de minimização das checagens apaga os sinais no prazo dele.
+   */
+  private async minimizeSafetyScans(userId: string): Promise<void> {
+    try {
+      await minimizeAccountScans(this.prisma, userId);
+    } catch (error) {
+      this.logger.warn(
+        `account-erasure: conta ${userId}: checagens de segurança não minimizadas agora (${errorMessage(error)}); o cron de minimização apaga os sinais no prazo`,
+      );
     }
   }
 

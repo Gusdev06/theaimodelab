@@ -130,6 +130,17 @@ export class UnlimitedService {
     await this.redis.del(this.lockKey(userId));
   }
 
+  /**
+   * Renova o prazo do lock que JÁ existe (EXPIRE puro: nunca recria um lock vencido). Usado quando o job espera a
+   * checagem de segurança na fila, para o lock não vencer no meio da espera e abrir uma 2ª ilimitada em paralelo.
+   */
+  async extendLock(userId: string, ttlSeconds: number): Promise<void> {
+    await this.redis.expire(
+      this.lockKey(userId),
+      Math.max(UNLIMITED_LOCK_TTL_SECONDS, Math.ceil(ttlSeconds)),
+    );
+  }
+
   async isLocked(userId: string): Promise<boolean> {
     return (await this.redis.exists(this.lockKey(userId))) === 1;
   }

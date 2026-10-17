@@ -55,12 +55,14 @@ import { MetaModule } from './meta/meta.module';
 import { MarketingLeadsModule } from './marketing-leads/marketing-leads.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { ContentSafetyModule } from './content-safety/content-safety.module';
+import { ImageSafetyModule } from './content-safety/image-safety/image-safety.module';
 import { ReportsModule } from './reports/reports.module';
 
 
 @Module({
   imports: [
     ContentSafetyModule,
+    ImageSafetyModule,
     ReportsModule,
     ConfigModule.forRoot({
       isGlobal: true,
