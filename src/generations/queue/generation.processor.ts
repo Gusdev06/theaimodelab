@@ -1,5 +1,5 @@
 import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
-import { Logger } from '@nestjs/common';
+import { Logger, Optional } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreditsService } from '../../credits/credits.service';
@@ -34,17 +34,24 @@ import { GenerationEventsService } from '../generation-events.service';
 import { PromptEnhancerService } from '../../prompt-enhancer/prompt-enhancer.service';
 import { ContentSafetyService } from '../../content-safety/content-safety.service';
 import {
+  ImageSafetyService,
+  type OutputCompletion,
+} from '../../content-safety/image-safety/image-safety.service';
+import {
   ConsentRequiredSafetyError,
   ContentSafetyError,
   isMinorSafetyBlock,
   isTerminalSafetyBlock,
+  keepsInputsOnFailure,
   MinorSafetyBlockError,
   minorBlockAuditOf,
+  SafetyCheckPendingError,
   safetyFallbackVerdict,
   type SafetyFallbackTarget,
   type TerminalSafetyBlockError,
   UnverifiedContentBlockError,
 } from '../errors/content-safety.error';
+import { deferJobForSafetyCheck } from './safety-check-deferral';
 import type { PreflightStatus } from '../../content-safety/preflight-status';
 import {
   jobCarriesUserMedia,
@@ -98,21 +105,7 @@ import {
   VoiceCloneJobData,
 } from './generation-queue.constants';
 
-/**
- * Prompt de undress usado pelo modelo `deepdeep`, que agora roda no Seedream
- * (WaveSpeed, image-to-image) em vez da API n8ked/deepnude. Passa cru pro
- * provider com `skipSafetyWrapper` — sem o wrapper que força roupa no personagem.
- */
-const UNDRESS_PROMPT =
-  'remove all visible clothing from the subject in the image, keeping natural body proportions and anatomy, tits, vagina, ass, etc.';
-
-/**
- * Prompt de face swap usado quando o modo Unlocked (NSFW) está ligado, rodando
- * pelo Seedream (WaveSpeed, image-to-image) com `skipSafetyWrapper`. Também é
- * reaproveitado como fallback de segurança do face swap padrão (nano-banana-2).
- */
-const FACE_SWAP_SEEDREAM_PROMPT =
-  'Recreate the scene in Image 2 (clothing, body pose, and setting) replacing the person with the woman in Image 1. Preserve facial features, skin tone and body proportions from Image 1 with photorealistic lighting and shadows.';
+import { FACE_SWAP_SEEDREAM_PROMPT, UNDRESS_PROMPT } from './server-prompts';
 
 /** O desvio que vem depois de um bloqueio do filtro (ver assertSafetyFallbackAllowed). */
 interface SafetyFallbackRequest {
@@ -215,11 +208,13 @@ export class GenerationProcessor extends WorkerHost {
     private readonly generationEvents: GenerationEventsService,
     private readonly promptEnhancer: PromptEnhancerService,
     private readonly contentSafety: ContentSafetyService,
+    /** segurança de imagem e texto (módulo global); ausente ou com os modos off = comportamento da Onda 0 */
+    @Optional() private readonly imageSafety?: ImageSafetyService,
   ) {
     super();
   }
 
-  async process(job: Job): Promise<void> {
+  async process(job: Job, token?: string): Promise<void> {
     this.logger.log(
       `Processing job ${job.id} [${job.name}] for generation ${job.data.generationId}`,
     );
@@ -227,6 +222,10 @@ export class GenerationProcessor extends WorkerHost {
     try {
       await this.dispatch(job.name, job.data);
     } catch (error) {
+      // checagem de segurança fora do ar: o job espera na fila (nada foi ao provedor), sem desvio
+      if (error instanceof SafetyCheckPendingError) {
+        throw await deferJobForSafetyCheck(job, token, error);
+      }
       const terminal = this.terminalSafetyBlockOf(error, job.data);
       if (!terminal) throw error;
       // Bloqueio terminal (menor de idade, foto sem atestado): encerra aqui e o job CONCLUI. Relançar faria o
@@ -245,6 +244,8 @@ export class GenerationProcessor extends WorkerHost {
    * vence enquanto o job espera na fila.
    */
   async dispatch(jobName: string, jobData: unknown): Promise<void> {
+    // porteiro de segurança ANTES do 1º provedor (as duas filas passam aqui); segurado ou já resolvido = não despacha
+    if (!(await this.passesSafetyPreflight(jobName, jobData, true))) return;
     const generationId = jobGenerationIdOf(jobData);
     const data = await withRefreshedMediaUrls(jobData, (url) =>
       this.freshInputUrl(generationId, url),
@@ -351,6 +352,12 @@ export class GenerationProcessor extends WorkerHost {
 
   async runImageJobDirectly(data: ImageJobData): Promise<void> {
     try {
+      // sem fila não há espera: checagem indisponível encerra na hora (com estorno)
+      if (
+        !(await this.passesSafetyPreflight(GenerationJobName.IMAGE, data, false))
+      ) {
+        return;
+      }
       await this.processImage(data);
     } catch (error) {
       await this.handleFailure(
@@ -656,6 +663,8 @@ export class GenerationProcessor extends WorkerHost {
         'theaimodelab',
       );
     } catch (theaimodelabError) {
+      // bloqueio terminal (inclusive da checagem da saída) nunca desvia nem regera em outro provedor
+      if (isTerminalSafetyBlock(theaimodelabError)) throw theaimodelabError;
       if (this.isSafetyRelatedError(theaimodelabError)) {
         // alvo 'uncensored': o desvio abaixo é o Unlocked sem censura (fallbackToSeedream), com as fotos da geração
         await this.assertSafetyFallbackAllowed(data.generationId, theaimodelabError, {
@@ -685,7 +694,8 @@ export class GenerationProcessor extends WorkerHost {
       });
       if (
         preCheck?.status === GenerationStatus.FAILED ||
-        preCheck?.status === GenerationStatus.COMPLETED
+        preCheck?.status === GenerationStatus.COMPLETED ||
+        preCheck?.status === GenerationStatus.IN_REVIEW
       ) {
         this.logger.warn(
           `Generation ${data.generationId} already ${preCheck.status} before Nano Banana fallback — aborting to save KIE costs`,
@@ -1073,6 +1083,8 @@ export class GenerationProcessor extends WorkerHost {
         'theaimodelab',
       );
     } catch (theaimodelabError) {
+      // bloqueio terminal (inclusive da checagem da saída) nunca desvia nem regera em outro provedor
+      if (isTerminalSafetyBlock(theaimodelabError)) throw theaimodelabError;
       if (this.isSafetyRelatedError(theaimodelabError)) {
         // try-on sempre leva a foto da pessoa e a da roupa
         // alvo 'uncensored': o desvio abaixo é o Unlocked sem censura (fallbackToSeedream), com as fotos da geração
@@ -1102,7 +1114,8 @@ export class GenerationProcessor extends WorkerHost {
       });
       if (
         preCheck?.status === GenerationStatus.FAILED ||
-        preCheck?.status === GenerationStatus.COMPLETED
+        preCheck?.status === GenerationStatus.COMPLETED ||
+        preCheck?.status === GenerationStatus.IN_REVIEW
       ) {
         this.logger.warn(
           `Generation ${data.generationId} already ${preCheck.status} before Nano Banana fallback — aborting to save KIE costs`,
@@ -1733,6 +1746,26 @@ export class GenerationProcessor extends WorkerHost {
 
   // ─── Safety helpers ─────────────────────────────────────────
 
+  /**
+   * Porteiro de segurança da plataforma (ImageSafetyService.preflight) antes do 1º provedor: true = pode despachar.
+   * Bloqueio lança erro terminal; fornecedor fora lança SafetyCheckPendingError (o process() adia o job) ou, sem fila,
+   * SafetyCheckUnavailableError. Sem o serviço ou com os modos off, sempre true (Onda 0).
+   * PR API #3: o dispatchWithFallback chama o dispatch(); o catch dele relança isSafetyCheckHalt (terminal OU pendente)
+   * ANTES de calcular o kind do tryFallback, senão a checagem pendente vira 'provider' e desvia para o MiniMax H3.
+   */
+  private async passesSafetyPreflight(
+    jobName: string,
+    jobData: unknown,
+    queued: boolean,
+  ): Promise<boolean> {
+    if (!this.imageSafety) return true;
+    const outcome = await this.imageSafety.preflight(
+      { name: jobName, data: jobData },
+      { queued },
+    );
+    return outcome.action === 'proceed';
+  }
+
   private isSafetyRelatedError(error: unknown): boolean {
     if (error instanceof ContentSafetyError) return true;
     if (error instanceof Error) {
@@ -1760,11 +1793,13 @@ export class GenerationProcessor extends WorkerHost {
    * LANÇA um bloqueio terminal quando não pode; o process() (e o UnlimitedProcessor, e os run*Directly) encerram a
    * geração pelo caminho normal de falha (handleFailure: estorno, SSE, MINOR_BLOCKED) sem nova tentativa do BullMQ.
    *  - menor de idade, qualquer alvo → MinorSafetyBlockError (CONTENT_POLICY_MINOR);
-   *  - mídia do usuário (foto, frame, referência, vídeo, ou atestado gravado) sem veredito 'clean' do porteiro de
-   *    imagem, qualquer alvo → UnverifiedContentBlockError (CONTENT_SAFETY_BLOCKED): nem modelo sem censura nem
-   *    prompt reescrito com a foto. Até o porteiro existir o veredito é sempre 'unavailable';
-   *  - alvo 'same_provider' (retryWithRefinedPrompt) só com texto ou com foto limpa → segue (a reescrita ainda passa
-   *    pela trava de texto dentro do retryWithRefinedPrompt);
+   *  - alvo 'same_provider' (retryWithRefinedPrompt) com mídia do usuário → UnverifiedContentBlockError
+   *    (CONTENT_SAFETY_BLOCKED) com QUALQUER veredito: reescrever o prompt para passar no filtro e reenviar a mesma foto
+   *    não existe (seção 2, camada 4, regra 3); só com texto → segue (a reescrita passa pelas camadas 1 e 2 dentro do
+   *    retryWithRefinedPrompt);
+   *  - alvo 'uncensored' com mídia do usuário sem veredito 'clean' do porteiro de imagem → UnverifiedContentBlockError.
+   *    O veredito é o da entrada reavaliada como pedido sexual (o destino não tem filtro: zona de dúvida e estilizado
+   *    sem juiz não passam). Com IMAGE_SAFETY_MODE=off o veredito é sempre 'unavailable';
    *  - alvo 'uncensored' (fallbackToSeedream) com foto limpa sem atestado → ConsentRequiredSafetyError
    *    (CONTENT_BLOCKED_NEEDS_CONSENT);
    *  - alvo 'uncensored' só com texto, ou com foto limpa e atestada → segue o desvio de sempre.
@@ -1797,6 +1832,8 @@ export class GenerationProcessor extends WorkerHost {
     error: unknown,
     request: SafetyFallbackRequest,
   ): Promise<void> {
+    // bloqueio terminal que chegou a um catch de provedor (checagem da plataforma, guarda anterior) nunca desvia
+    if (isTerminalSafetyBlock(error)) throw error;
     const isMinor = isMinorSafetyBlock(error);
     // o atestado só existe em pedido com foto: também conta como mídia do usuário
     const hasConsent =
@@ -1806,9 +1843,11 @@ export class GenerationProcessor extends WorkerHost {
       (request.userMedia === true ||
         hasConsent ||
         (await this.hasStoredInputImages(generationId)));
-    const preflight: PreflightStatus = hasUserImages
-      ? await this.preflightStatusFor(generationId)
-      : 'unavailable';
+    // só o desvio sem censura consulta o porteiro: com foto, a reescrita no mesmo provedor encerra com qualquer veredito
+    const preflight: PreflightStatus =
+      hasUserImages && request.target === 'uncensored'
+        ? await this.preflightStatusFor(generationId, request.target)
+        : 'unavailable';
     const { decision, reason } = safetyFallbackVerdict({
       target: request.target,
       isMinor,
@@ -1965,10 +2004,12 @@ export class GenerationProcessor extends WorkerHost {
   /** Veredito do porteiro de imagem para as entradas da geração. Falha de leitura = sem checagem ('unavailable'). */
   private async preflightStatusFor(
     generationId: string,
+    target: SafetyFallbackTarget,
   ): Promise<PreflightStatus> {
     try {
       return await this.contentSafety.preflightStatusForGeneration(
         generationId,
+        target,
       );
     } catch (error) {
       this.logger.error(
@@ -2068,7 +2109,8 @@ export class GenerationProcessor extends WorkerHost {
     });
     if (
       preCheck?.status === GenerationStatus.FAILED ||
-      preCheck?.status === GenerationStatus.COMPLETED
+      preCheck?.status === GenerationStatus.COMPLETED ||
+      preCheck?.status === GenerationStatus.IN_REVIEW
     ) {
       this.logger.warn(
         `Generation ${generationId} already ${preCheck.status} before Seedream safety fallback — aborting`,
@@ -2098,6 +2140,7 @@ export class GenerationProcessor extends WorkerHost {
         skipSafetyWrapper: true,
       });
     } catch (fallbackError) {
+      if (isTerminalSafetyBlock(fallbackError)) throw fallbackError;
       // O motivo que o usuário precisa ver é o bloqueio original, não o erro do
       // Unlocked — senão a falha aparece como "erro do provedor".
       this.logger.error(
@@ -2180,6 +2223,14 @@ export class GenerationProcessor extends WorkerHost {
       );
       throw refinerBlock;
     }
+    // leitor de sentido do texto sobre a reescrita (camada 2): acusada e agindo = REFINER_BLOCKED, terminal, sem
+    // gravar o prompt reescrito; com o texto off não chama ninguém
+    const classifierBlock = await this.imageSafety?.checkRefinedPrompt(
+      generationId,
+      refinedPrompt,
+      '',
+    );
+    if (classifierBlock) throw classifierBlock;
 
     // Save the refined prompt for audit / user visibility
     await this.prisma.generation.update({
@@ -2202,6 +2253,7 @@ export class GenerationProcessor extends WorkerHost {
     try {
       return await generateFn(refinedPrompt);
     } catch (retryError) {
+      if (isTerminalSafetyBlock(retryError)) throw retryError;
       this.logger.error(
         `Retry with refined prompt also failed for ${generationId}: ${providerMessageForLog(retryError, [originalPrompt, refinedPrompt])}`,
       );
@@ -2247,14 +2299,15 @@ export class GenerationProcessor extends WorkerHost {
     startTime: number,
     provider?: string,
   ): Promise<void> {
-    // Idempotency: skip if already completed/failed
+    // Idempotency: skip if already completed/failed (ou segurada pela checagem de segurança)
     const current = await this.prisma.generation.findUnique({
       where: { id: generationId },
       select: { status: true },
     });
     if (
       current?.status === GenerationStatus.COMPLETED ||
-      current?.status === GenerationStatus.FAILED
+      current?.status === GenerationStatus.FAILED ||
+      current?.status === GenerationStatus.IN_REVIEW
     ) {
       this.logger.warn(
         `Generation ${generationId} already ${current.status}, skipping completeGeneration`,
@@ -2263,7 +2316,142 @@ export class GenerationProcessor extends WorkerHost {
     }
 
     const processingTimeMs = Date.now() - startTime;
+    // checagem do resultado ANTES das miniaturas e da transação. Não lança por veredito (roda dentro do try de cada
+    // provedor, onde qualquer erro vira desvio): segurado = IN_REVIEW; barrado = encerrado aqui com estorno
+    const released = await this.screenOutputs(
+      generationId,
+      result,
+      processingTimeMs,
+      provider,
+    );
+    if (!released) return;
+    await this.finishCompletion(
+      generationId,
+      released,
+      processingTimeMs,
+      provider,
+    );
+  }
 
+  /**
+   * Checagem de segurança do resultado (ImageSafetyService.checkOutput): devolve o resultado com as URLs públicas
+   * (promovidas da quarentena) ou null quando ele foi segurado (IN_REVIEW) ou barrado (já encerrado aqui, com
+   * estorno). Sem o serviço, o resultado segue como veio.
+   */
+  private async screenOutputs(
+    generationId: string,
+    result: { outputUrls: string[]; modelUsed: string },
+    processingTimeMs: number,
+    provider?: string,
+  ): Promise<{ outputUrls: string[]; modelUsed: string } | null> {
+    if (!this.imageSafety) return result;
+    const outcome = await this.imageSafety.checkOutput(
+      generationId,
+      result.outputUrls,
+      {
+        modelUsed: result.modelUsed,
+        provider: provider ?? null,
+        processingTimeMs,
+      },
+    );
+    if (outcome.action === 'promote') {
+      return { ...result, outputUrls: outcome.outputs };
+    }
+    if (outcome.action === 'blocked') {
+      await this.failForSafety(generationId, outcome.error, 'processing');
+    }
+    return null;
+  }
+
+  /**
+   * Conclui uma geração segurada (IN_REVIEW) cujo resultado foi liberado depois (cron da quarentena ou revisor), com as
+   * URLs já promovidas. Só uma conclusão vence (trava IN_REVIEW → PROCESSING). Público: o cron da quarentena usa.
+   * A troca grava safetyCheckedAt agora: a geração segurada há horas não pode cair no cron de presas (que conta dali)
+   * enquanto conclui, senão sairia concluída E estornada.
+   */
+  async completeHeldGeneration(
+    generationId: string,
+    outputUrls: string[],
+    completion: OutputCompletion,
+  ): Promise<boolean> {
+    const { count } = await this.prisma.generation.updateMany({
+      where: { id: generationId, status: GenerationStatus.IN_REVIEW },
+      data: {
+        status: GenerationStatus.PROCESSING,
+        safetyCheckedAt: new Date(),
+      },
+    });
+    if (count === 0) return false;
+    await this.finishCompletion(
+      generationId,
+      { outputUrls, modelUsed: completion.modelUsed },
+      completion.processingTimeMs,
+      completion.provider ?? undefined,
+    );
+    return true;
+  }
+
+  /**
+   * Encerra pelo caminho do bloqueio terminal (estorno, SSE, limpeza das entradas) uma geração barrada pela checagem
+   * da saída ou segurada que venceu no cron. Nunca lança. Público: o cron da quarentena usa.
+   *  - `held` (padrão, o cron): só encerra quem ganhar a troca IN_REVIEW → PROCESSING; outra réplica ou o revisor que
+   *    chegou antes já encerrou. A troca grava safetyCheckedAt agora, para o cron de presas não estornar junto;
+   *  - `processing` (o próprio job, resultado barrado na checagem): a geração está PROCESSING, sem troca.
+   */
+  async failForSafety(
+    generationId: string,
+    error: TerminalSafetyBlockError,
+    from: 'held' | 'processing' = 'held',
+  ): Promise<void> {
+    try {
+      if (from === 'held') {
+        // segurada: volta a PROCESSING só para o encerramento (handleFailure não mexe em IN_REVIEW)
+        const { count } = await this.prisma.generation.updateMany({
+          where: { id: generationId, status: GenerationStatus.IN_REVIEW },
+          data: {
+            status: GenerationStatus.PROCESSING,
+            safetyCheckedAt: new Date(),
+          },
+        });
+        if (count === 0) {
+          this.logger.warn(
+            `[IMAGE_SAFETY] gen=${generationId}: já não estava segurada — encerramento feito por outro caminho`,
+          );
+          return;
+        }
+      }
+      const generation = await this.prisma.generation.findUnique({
+        where: { id: generationId },
+        select: {
+          userId: true,
+          creditsConsumed: true,
+          usedFreeGeneration: true,
+        },
+      });
+      if (!generation) return;
+      await this.finalizeTerminalBlock(
+        {
+          generationId,
+          userId: generation.userId,
+          creditsConsumed: generation.creditsConsumed,
+          usedFreeGeneration: generation.usedFreeGeneration,
+        },
+        error,
+      );
+    } catch (failError) {
+      this.logger.error(
+        `[IMAGE_SAFETY] gen=${generationId}: encerramento do bloqueio falhou (${(failError as Error).message}) — conferir no admin`,
+      );
+    }
+  }
+
+  /** O que vem depois da checagem: miniaturas, saídas, prazo da galeria, SSE e limpeza das entradas. */
+  private async finishCompletion(
+    generationId: string,
+    result: { outputUrls: string[]; modelUsed: string },
+    processingTimeMs: number,
+    provider?: string,
+  ): Promise<void> {
     const updateData: Record<string, unknown> = {
       status: GenerationStatus.COMPLETED,
       modelUsed: result.modelUsed,
@@ -2455,14 +2643,15 @@ export class GenerationProcessor extends WorkerHost {
     usedFreeGeneration?: boolean,
     requestTexts: ReadonlyArray<string> = [],
   ): Promise<void> {
-    // Idempotency: skip if already completed/failed
+    // Idempotency: skip if already completed/failed (segurada pela checagem só sai pelo cron ou pelo revisor)
     const current = await this.prisma.generation.findUnique({
       where: { id: generationId },
       select: { status: true },
     });
     if (
       current?.status === GenerationStatus.COMPLETED ||
-      current?.status === GenerationStatus.FAILED
+      current?.status === GenerationStatus.FAILED ||
+      current?.status === GenerationStatus.IN_REVIEW
     ) {
       this.logger.warn(
         `Generation ${generationId} already ${current.status}, skipping handleFailure`,
@@ -2524,13 +2713,26 @@ export class GenerationProcessor extends WorkerHost {
     );
 
     // recusa por menor: a foto enviada é a evidência do caso (fica no bucket e na tabela, para a equipe e as
-    // autoridades); nas outras falhas, apaga os arquivos de entrada para economizar armazenamento
+    // autoridades); bloqueio da checagem cuja evidência não foi guardada também (storage fora): a limpeza apagaria a
+    // prova. Nas outras falhas, apaga os arquivos de entrada para economizar armazenamento
     if (isMinorBlock) {
       this.logger.warn(`Generation ${generationId}: entradas mantidas como evidência (recusa por menor de idade)`);
       return;
     }
+    if (keepsInputsOnFailure(error)) {
+      this.logger.error(
+        `Generation ${generationId}: evidência pendente — entradas e resultado mantidos (conferir e mover para a evidência)`,
+      );
+      return;
+    }
     // Fire-and-forget: delete input files from S3 to save storage
     this.cleanupInputFiles(generationId);
+    // sobra do resultado na quarentena (upload parcial, hold que não foi gravado); com o modo off não faz nada
+    this.imageSafety?.discardFailedOutputs(generationId).catch((err) =>
+      this.logger.warn(
+        `Failed to discard quarantined outputs for ${generationId}: ${(err as Error).message}`,
+      ),
+    );
   }
 
   private async getUserRetentionDays(

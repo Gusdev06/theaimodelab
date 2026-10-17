@@ -1,14 +1,22 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ContentSafetyEvent, ContentSafetyEventKind } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CURRENT_TERMS_VERSION } from '../users/terms.constants';
 import type { PreflightStatus } from './preflight-status';
+import { RELEASABLE_SAFETY_EVENT_KINDS } from './safety-event-kinds';
+import {
+  PREFLIGHT_STATUS_READER,
+  type PreflightStatusReader,
+  type PreflightStatusTarget,
+} from './image-safety/image-safety.tokens';
 
 /** Nota da liberação de um bloqueio por menor: o jurídico explica por quê (fica na trilha). */
 export const SAFETY_RELEASE_NOTE_MIN_LENGTH = 10;
@@ -49,7 +57,13 @@ export interface SafetyEventInput {
 export class ContentSafetyService {
   private readonly logger = new Logger(ContentSafetyService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    /** status do preflight lido de content_safety_scans (módulo de segurança de imagem); ausente = 'unavailable' */
+    @Optional()
+    @Inject(PREFLIGHT_STATUS_READER)
+    private readonly preflightReader: PreflightStatusReader | null = null,
+  ) {}
 
   /** Versão do termo que o usuário aceitou (a evidência vale pelo que ele aceitou, não pelo que está vigente). */
   private async acceptedTermsVersion(userId: string | null): Promise<string | null> {
@@ -123,13 +137,17 @@ export class ContentSafetyService {
 
   /**
    * Veredito do porteiro de imagem para a mídia de entrada da geração: ponto único de leitura para os desvios
-   * depois de uma recusa do provedor. Ainda não existe checagem de imagem gravada, então devolve sempre
-   * `unavailable` (todo desvio com foto do usuário encerra a geração). Onda 1: ler a tabela de checagens
-   * (content_safety_scans, etapas de entrada) desta geração e passar o resultado por toPreflightStatus.
+   * depois de uma recusa do provedor. Lê as checagens de entrada gravadas (content_safety_scans) pelo leitor do módulo
+   * de segurança de imagem; com IMAGE_SAFETY_MODE=off, sem checagem ou sem o leitor registrado, devolve `unavailable`
+   * (todo desvio com foto do usuário encerra a geração, como na Onda 0). `target: 'uncensored'` reavalia a entrada como
+   * pedido sexual (o destino não tem filtro).
    */
-  preflightStatusForGeneration(generationId: string): Promise<PreflightStatus> {
-    void generationId;
-    return Promise.resolve('unavailable');
+  preflightStatusForGeneration(
+    generationId: string,
+    target?: PreflightStatusTarget,
+  ): Promise<PreflightStatus> {
+    if (!this.preflightReader) return Promise.resolve('unavailable');
+    return this.preflightReader.statusFor(generationId, target);
   }
 
   /** Quantos pedidos com referência a menor o usuário teve recusados nas últimas `hours` horas (sem os liberados). */
@@ -161,9 +179,10 @@ export class ContentSafetyService {
   }
 
   /**
-   * Libera um bloqueio por menor (MINOR_BLOCKED) a pedido do jurídico: falso positivo do filtro ou do provedor, ou
-   * caso encerrado. Nada é apagado (o evento fica na trilha com quem liberou, quando e por quê); ele só deixa de contar
-   * para a guarda legal da conta (exclusão LGPD e exclusão definitiva) e de segurar a geração ligada a ele.
+   * Libera um bloqueio por menor (MINOR_BLOCKED, ou os de imagem: IMAGE_MINOR_BLOCKED, OUTPUT_MINOR_BLOCKED,
+   * INPUT_HELD, OUTPUT_HELD) a pedido do jurídico: falso positivo do filtro ou do provedor, ou caso encerrado. Nada é
+   * apagado (o evento fica na trilha com quem liberou, quando e por quê); ele só deixa de contar para a guarda legal da
+   * conta (exclusão LGPD e exclusão definitiva) e de segurar a geração ligada a ele.
    * Idempotente: liberar de novo devolve a liberação já gravada, sem mudar data, autor ou nota.
    */
   async releaseMinorBlock(
@@ -180,17 +199,17 @@ export class ContentSafetyService {
     }
     const event = await this.prisma.contentSafetyEvent.findUnique({ where: { id: eventId } });
     if (!event) throw new NotFoundException('Evento de segurança não encontrado');
-    if (event.kind !== ContentSafetyEventKind.MINOR_BLOCKED) {
+    if (!RELEASABLE_SAFETY_EVENT_KINDS.has(event.kind)) {
       throw new BadRequestException({
         code: 'CONTENT_SAFETY_RELEASE_KIND',
-        message: 'Só bloqueio por menor de idade (MINOR_BLOCKED) pode ser liberado.',
+        message: 'Só bloqueio ou retenção por segurança de conteúdo (menor de idade, foto ou resultado segurado) pode ser liberado.',
       });
     }
     if (event.releasedAt) return { ...withRelease(event), alreadyReleased: true };
 
     // a trava é a própria condição: dois admins liberando juntos gravam uma vez só (o 2º recebe a 1ª liberação)
     const { count } = await this.prisma.contentSafetyEvent.updateMany({
-      where: { id: eventId, kind: ContentSafetyEventKind.MINOR_BLOCKED, releasedAt: null },
+      where: { id: eventId, kind: event.kind, releasedAt: null },
       data: { releasedAt: new Date(), releasedBy: admin.id, releaseNote: text },
     });
     const current = await this.prisma.contentSafetyEvent.findUnique({ where: { id: eventId } });

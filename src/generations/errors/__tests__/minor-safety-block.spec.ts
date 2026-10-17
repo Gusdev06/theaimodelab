@@ -125,8 +125,9 @@ describe('decideSafetyFallback', () => {
     it.each([
       ['uncensored', true, 'allow_fallback', null],
       ['uncensored', false, 'fail_blocked', 'needs_consent'],
-      ['same_provider', true, 'allow_fallback', null],
-      ['same_provider', false, 'allow_fallback', null],
+      // reescrever o prompt e reenviar a mesma foto não existe, nem com a foto limpa (camada 4, regra 3)
+      ['same_provider', true, 'fail_blocked', 'unverified_media'],
+      ['same_provider', false, 'fail_blocked', 'unverified_media'],
     ] as const)(
       'alvo %s, atestado=%s → %s (%s)',
       (target, hasConsent, decision, reason) => {

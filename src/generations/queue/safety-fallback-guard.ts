@@ -60,6 +60,59 @@ export function jobCarriesUserMedia(jobData: unknown): boolean {
   });
 }
 
+/** Campos de mídia de vídeo e de áudio (o resto dos campos de jobCarriesUserMedia é foto ou frame). */
+const VIDEO_MEDIA_KEYS: ReadonlySet<string> = new Set([
+  'videoUrl',
+  'referenceVideoUrls',
+  MEDIA_CLIP_LIST_KEY,
+]);
+const AUDIO_MEDIA_KEYS: ReadonlySet<string> = new Set([
+  'audioUrl',
+  'referenceAudioUrls',
+]);
+
+/** Uma URL de mídia do usuário no job, com o tipo pelo campo (a checagem de imagem lê pela chave, nunca pela URL). */
+export interface JobMediaUrl {
+  url: string;
+  kind: 'image' | 'video' | 'audio';
+  field: string;
+}
+
+/**
+ * Todas as URLs de mídia do usuário que o job leva (os mesmos campos de jobCarriesUserMedia, inclusive a `url` dos
+ * clipes do Omni), com o tipo pelo campo. Para o porteiro de imagem (ImageSafetyService.preflight).
+ */
+export function jobMediaUrls(jobData: unknown): JobMediaUrl[] {
+  if (!jobData || typeof jobData !== 'object') return [];
+  const data = jobData as Record<string, unknown>;
+  const kindOf = (field: string): JobMediaUrl['kind'] =>
+    VIDEO_MEDIA_KEYS.has(field)
+      ? 'video'
+      : AUDIO_MEDIA_KEYS.has(field)
+        ? 'audio'
+        : 'image';
+  const found: JobMediaUrl[] = [];
+  const push = (field: string, value: unknown) => {
+    if (typeof value === 'string' && value.trim() !== '') {
+      found.push({ url: value, kind: kindOf(field), field });
+    }
+  };
+  for (const key of SINGLE_MEDIA_KEYS) push(key, data[key]);
+  for (const key of MEDIA_URL_LIST_KEYS) {
+    const list = data[key];
+    if (Array.isArray(list)) for (const value of list) push(key, value);
+  }
+  const clips = data[MEDIA_CLIP_LIST_KEY];
+  if (Array.isArray(clips)) {
+    for (const clip of clips) {
+      if (clip && typeof clip === 'object') {
+        push(MEDIA_CLIP_LIST_KEY, (clip as { url?: unknown }).url);
+      }
+    }
+  }
+  return found;
+}
+
 /**
  * Cópia do job com cada URL de mídia do usuário trocada por `refresh(url)` (campos de jobCarriesUserMedia, inclusive
  * a `url` dos clipes do Omni). O resto do job e o que não é texto ficam iguais; o job original não muda.

@@ -211,7 +211,11 @@ export interface SafetyFallbackInput {
   hasUserImages: boolean;
   /** o pedido que criou a geração trouxe atestado de consentimento gravado */
   hasConsent: boolean;
-  /** veredito do porteiro de imagem sobre a mídia de entrada (só conta quando há mídia do usuário) */
+  /**
+   * veredito do porteiro de imagem sobre a mídia de entrada (só conta quando há mídia do usuário e o alvo é
+   * `uncensored`; para esse alvo o leitor reavalia a entrada como pedido sexual: zona de dúvida e estilizado sem juiz
+   * não são 'clean')
+   */
   preflight: PreflightStatus;
 }
 
@@ -234,9 +238,12 @@ export interface SafetyFallbackVerdict {
 /**
  * O que fazer depois que um provedor bloqueou o conteúdo, ANTES de qualquer desvio:
  *  - menor → `fail_minor` (qualquer alvo): encerra, sem desvio e sem reescrever o prompt;
- *  - mídia do usuário sem `preflight === 'clean'` → `fail_blocked` (qualquer alvo): a recusa pode ser justamente a
- *    foto que a plataforma quer barrar, então nem o modelo sem censura nem o prompt reescrito recebem a foto;
- *  - `same_provider` só com texto, ou com foto limpa → `allow_fallback` (o texto reescrito ainda passa pela trava);
+ *  - `same_provider` com mídia do usuário → `fail_blocked`, com QUALQUER veredito do porteiro: reescrever o prompt
+ *    para passar no filtro e reenviar a mesma foto é contorno de filtro (seção 2, camada 4, regra 3: "com foto, não
+ *    existe");
+ *  - mídia do usuário sem `preflight === 'clean'` → `fail_blocked`: a recusa pode ser justamente a foto que a
+ *    plataforma quer barrar, então o modelo sem censura não recebe a foto;
+ *  - `same_provider` só com texto → `allow_fallback` (o texto reescrito ainda passa pelas camadas 1 e 2);
  *  - `uncensored` com foto limpa sem atestado → `fail_blocked`: encerra pedindo o atestado;
  *  - `uncensored` só com texto, ou com foto limpa e atestada → `allow_fallback`.
  */
@@ -248,11 +255,13 @@ export function safetyFallbackVerdict({
   preflight,
 }: SafetyFallbackInput): SafetyFallbackVerdict {
   if (isMinor) return { decision: 'fail_minor', reason: 'minor' };
+  if (target === 'same_provider') {
+    return hasUserImages
+      ? { decision: 'fail_blocked', reason: 'unverified_media' }
+      : { decision: 'allow_fallback', reason: null };
+  }
   if (hasUserImages && preflight !== 'clean') {
     return { decision: 'fail_blocked', reason: 'unverified_media' };
-  }
-  if (target === 'same_provider') {
-    return { decision: 'allow_fallback', reason: null };
   }
   if (hasUserImages && !hasConsent) {
     return { decision: 'fail_blocked', reason: 'needs_consent' };
@@ -395,11 +404,143 @@ export class UnverifiedContentBlockError extends ContentSafetyError {
   }
 }
 
+/* ─── Checagem de segurança da própria plataforma (porteiro de imagem e leitor de texto) ─────────────────────────
+ *
+ * Erros do ImageSafetyService (src/content-safety/image-safety). NÃO estendem ContentSafetyError de propósito: o catch
+ * de cada provedor desvia todo ContentSafetyError (Unlocked, prompt reescrito) e o desvio genérico regera em qualquer
+ * outro erro, então cada catch relança isTerminalSafetyBlock antes de qualquer desvio. A mensagem não casa com os
+ * padrões de bloqueio de provedor. O evento de segurança (IMAGE_MINOR_BLOCKED, TEXT_CLASSIFIER_FLAGGED…) é gravado
+ * pelo serviço; o encerramento (handleFailure) não grava MINOR_BLOCKED por eles. A cliente vê sempre o mesmo código e
+ * o mesmo texto genérico; a regra e a força ficam só no registro interno.
+ */
+
+/** Onde a checagem barrou: mídia de entrada, texto do pedido ou resultado do provedor. */
+export type PlatformSafetyStage = 'input' | 'text' | 'output';
+
+export interface PlatformSafetyBlockOptions {
+  /**
+   * alguma mídia que devia ir para a evidência não foi (storage fora, bucket faltando): o encerramento NÃO apaga as
+   * entradas (inputs/<id>/ e generation_input_images), senão a prova some junto com a limpeza
+   */
+  evidencePending?: boolean;
+}
+
+/** Barrado pela checagem da plataforma (código público único IMAGE_SAFETY_BLOCKED). */
+export class PlatformSafetyBlockError extends Error {
+  readonly failureCode = 'IMAGE_SAFETY_BLOCKED' as const;
+  /** ver PlatformSafetyBlockOptions.evidencePending */
+  readonly evidencePending: boolean;
+
+  constructor(
+    readonly stage: PlatformSafetyStage,
+    /** regra que decidiu (E1…E7, S1…S7, T_*): só para o registro e o log, nunca para a cliente */
+    readonly ruleId: string | null,
+    readonly strength: string,
+    options: PlatformSafetyBlockOptions = {},
+  ) {
+    super(
+      `checagem de segurança da plataforma: ${stage} barrado (${ruleId ?? 'sem regra'}, ${strength})`,
+    );
+    this.name = 'PlatformSafetyBlockError';
+    this.evidencePending = options.evidencePending === true;
+  }
+}
+
+/** Foto, quadro ou vídeo de entrada barrado antes do provedor (E1, E2, E5, E6, E7, E3b). */
+export class InputImageSafetyBlockError extends PlatformSafetyBlockError {
+  constructor(
+    ruleId: string | null,
+    strength: string,
+    options: PlatformSafetyBlockOptions = {},
+  ) {
+    super('input', ruleId, strength, options);
+    this.name = 'InputImageSafetyBlockError';
+  }
+}
+
+/** Texto do pedido barrado pelo leitor de sentido (T_CLASSIFIER, T_AMBIGUOUS) ou entrada segurada que venceu. */
+export class TextSafetyBlockError extends PlatformSafetyBlockError {
+  constructor(
+    ruleId: string | null,
+    strength: string,
+    options: PlatformSafetyBlockOptions = {},
+  ) {
+    super('text', ruleId, strength, options);
+    this.name = 'TextSafetyBlockError';
+  }
+}
+
+/**
+ * Resultado do provedor barrado na quarentena (S1, S2, S5, S6), ou segurado para revisão que venceu sem decisão:
+ * evidência guardada, falha com estorno.
+ */
+export class OutputImageSafetyBlockError extends PlatformSafetyBlockError {
+  constructor(
+    ruleId: string | null,
+    strength: string,
+    options: PlatformSafetyBlockOptions = {},
+  ) {
+    super('output', ruleId, strength, options);
+    this.name = 'OutputImageSafetyBlockError';
+  }
+}
+
+/** O encerramento deste bloqueio deve manter as entradas (evidência de menor ou evidência que não foi guardada)? */
+export function keepsInputsOnFailure(error: unknown): boolean {
+  return error instanceof PlatformSafetyBlockError && error.evidencePending;
+}
+
+/**
+ * A checagem não respondeu e a janela acabou (ou não há fila para esperar, ou o arquivo não dá para ler): a mídia
+ * nunca vai ao provedor sem checagem. Terminal, com estorno ("tente de novo em instantes").
+ */
+export class SafetyCheckUnavailableError extends Error {
+  readonly failureCode = 'SAFETY_CHECK_UNAVAILABLE' as const;
+
+  constructor(
+    /** quem falhou (rekognition, safeguard, storage, ffmpeg…) e por quê: só para o log */
+    readonly provider: string,
+    readonly failure: string,
+  ) {
+    super(
+      `checagem de segurança da plataforma indisponível: ${provider} (${failure})`,
+    );
+    this.name = 'SafetyCheckUnavailableError';
+  }
+}
+
+/**
+ * A checagem não respondeu, mas ainda dá para esperar: o job volta à fila com espera crescente (moveToDelayed) até a
+ * janela de 10 min contada da 1ª tentativa. NÃO é terminal e nunca desvia para outro provedor. Se o adiamento falhar,
+ * o retry normal do BullMQ assume e, no fim, a geração falha como SAFETY_CHECK_UNAVAILABLE (com estorno).
+ */
+export class SafetyCheckPendingError extends Error {
+  readonly failureCode = 'SAFETY_CHECK_UNAVAILABLE' as const;
+
+  constructor(
+    readonly provider: string,
+    readonly failure: string,
+    /** espera até a próxima tentativa */
+    readonly delayMs: number,
+    /** 1ª tentativa da checagem (epoch ms): a janela conta daqui */
+    readonly firstAttemptAt: number,
+    /** quantas vezes o job já foi adiado por isto */
+    readonly deferrals: number,
+  ) {
+    super(
+      `checagem de segurança da plataforma pendente: ${provider} (${failure}); nova tentativa em ${Math.round(delayMs / 1000)} s`,
+    );
+    this.name = 'SafetyCheckPendingError';
+  }
+}
+
 /** Bloqueio que encerra a geração sem nova tentativa (menor, foto sem atestado, foto sem checagem limpa). */
 export type TerminalSafetyBlockError =
   | MinorSafetyBlockError
   | ConsentRequiredSafetyError
-  | UnverifiedContentBlockError;
+  | UnverifiedContentBlockError
+  | PlatformSafetyBlockError
+  | SafetyCheckUnavailableError;
 
 export function isTerminalSafetyBlock(
   error: unknown,
@@ -407,9 +548,20 @@ export function isTerminalSafetyBlock(
   return (
     error instanceof MinorSafetyBlockError ||
     error instanceof ConsentRequiredSafetyError ||
-    error instanceof UnverifiedContentBlockError
+    error instanceof UnverifiedContentBlockError ||
+    error instanceof PlatformSafetyBlockError ||
+    error instanceof SafetyCheckUnavailableError
   );
 }
+
+/**
+ * A checagem da plataforma parou o pedido (bloqueio terminal ou espera na fila): nenhum desvio, nenhum fallback de
+ * modelo. Na PR API #3, o catch do dispatchWithFallback relança isto ANTES de calcular o kind do tryFallback.
+ */
+export function isSafetyCheckHalt(error: unknown): boolean {
+  return isTerminalSafetyBlock(error) || error instanceof SafetyCheckPendingError;
+}
+
 
 /**
  * Rota e `match` do evento MINOR_BLOCKED de um bloqueio por menor: `refiner` com o termo da trava quando foi a

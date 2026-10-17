@@ -1,4 +1,4 @@
-import { assessBody, assessText, collectTexts } from '../minor-guard';
+import { assessBody, assessText, collectTexts, mentionsMinorRemoval } from '../minor-guard';
 
 /**
  * Trava a guarda de menores nos dois sentidos: o que TEM de bloquear (pt/en/es, idade por número e por extenso,
@@ -409,5 +409,53 @@ describe('minor-guard · pedido livre (prompts reais)', () => {
     const started = Date.now();
     expect(assessText(long)).toEqual({ blocked: false });
     expect(Date.now() - started).toBeLessThan(3000);
+  });
+});
+
+/** Regra E6 da segurança de imagem: o texto pede para tirar criança da foto (frases neutras, sem pedido adulto). */
+describe('mentionsMinorRemoval', () => {
+  it.each([
+    'remove the children from the image, beach scenery',
+    'kids, if present: remove only (landscape photo)',
+    'if a child is present, remove only the child, fill the background',
+    'remove every man and every child. fill with the original background',
+    'Remove the kids from the background',
+    'apague a criança do fundo da foto',
+    'tire as crianças da imagem e deixe só a paisagem',
+    'quitar a los niños de la foto',
+    'the children are removed, keep the garden',
+    'please remove the kids, keep the sky',
+    'no blur, remove the kids from the frame',
+  ])('pede para tirar criança: %s', (text) => {
+    expect(mentionsMinorRemoval(text)).toBe(true);
+  });
+
+  it.each([
+    'portrait of a woman in a garden, no kids',
+    'mother of 2 kids, studio portrait',
+    'remove the background, keep the kids',
+    'remove the car from the street',
+    'Negative prompt: child, teen\nportrait of a woman',
+    'avoid: kids, children',
+    'family picnic with children in the park',
+    'do not remove the kids',
+    'never remove the children, keep the garden',
+    "please don't erase the kids from the photo",
+    'nao apague as criancas da foto',
+    'mother of 2 kids: remove the background',
+    'no kids: remove the car',
+    '',
+  ])('não pede para tirar criança: %s', (text) => {
+    expect(mentionsMinorRemoval(text)).toBe(false);
+  });
+
+  it('valor vazio ou que não é texto', () => {
+    expect(mentionsMinorRemoval(null)).toBe(false);
+    expect(mentionsMinorRemoval(undefined)).toBe(false);
+    expect(mentionsMinorRemoval(42 as unknown as string)).toBe(false);
+  });
+
+  it('não muda a conferência: tirar a criança continua liberado fora de pedido adulto', () => {
+    expect(assessText('remove the children from the image, beach scenery')).toEqual({ blocked: false });
   });
 });

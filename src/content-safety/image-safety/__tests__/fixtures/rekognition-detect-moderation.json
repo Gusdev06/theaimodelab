@@ -1,0 +1,19 @@
+{
+  "ModerationLabels": [
+    {
+      "Name": "Alcohol",
+      "ParentName": "",
+      "Confidence": 81.5,
+      "TaxonomyLevel": 1
+    },
+    {
+      "Name": "Alcoholic Beverages",
+      "ParentName": "Alcohol",
+      "Confidence": 81.5,
+      "TaxonomyLevel": 2
+    }
+  ],
+  "ModerationModelVersion": "7.0",
+  "ContentTypes": [{ "Name": "Animated", "Confidence": 72.4 }],
+  "$metadata": { "httpStatusCode": 200 }
+}

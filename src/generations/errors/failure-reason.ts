@@ -34,6 +34,14 @@ export const GenerationFailureCode = {
   CONTENT_BLOCKED_NEEDS_CONSENT: 'CONTENT_BLOCKED_NEEDS_CONSENT',
   /** Provedor recusou por política de conteúdo / filtro de segurança. */
   CONTENT_SAFETY_BLOCKED: 'CONTENT_SAFETY_BLOCKED',
+  /**
+   * A checagem de segurança da PRÓPRIA plataforma barrou o pedido (foto ou vídeo de entrada, texto ou resultado).
+   * Código e texto únicos para todas as regras: a cliente nunca sabe qual detector disparou. Nunca sugere modelo sem
+   * censura.
+   */
+  IMAGE_SAFETY_BLOCKED: 'IMAGE_SAFETY_BLOCKED',
+  /** A checagem de segurança da plataforma ficou indisponível além da espera: nada foi ao provedor; tente de novo. */
+  SAFETY_CHECK_UNAVAILABLE: 'SAFETY_CHECK_UNAVAILABLE',
   /** A imagem enviada foi recusada pelo provedor (não o prompt). */
   INPUT_IMAGE_REJECTED: 'INPUT_IMAGE_REJECTED',
   /** Não achou pessoa/rosto no vídeo ou na imagem de entrada. */
@@ -82,6 +90,14 @@ export const CONTENT_BLOCKED_USER_MESSAGE =
 /** Texto para o usuário de CONTENT_BLOCKED_NEEDS_CONSENT (o site traduz pelo código; este é o pt-BR gravado). */
 export const CONTENT_BLOCKED_NEEDS_CONSENT_MESSAGE =
   'O filtro do modelo bloqueou esta geração. Para tentar no Unlocked com a sua foto, marque a autorização de imagem e gere de novo.';
+
+/** Texto genérico de IMAGE_SAFETY_BLOCKED (o mesmo para entrada, texto e resultado). */
+export const IMAGE_SAFETY_BLOCKED_MESSAGE =
+  'O pedido não passou na checagem de segurança.';
+
+/** Texto de SAFETY_CHECK_UNAVAILABLE. */
+export const SAFETY_CHECK_UNAVAILABLE_MESSAGE =
+  'A checagem de segurança está indisponível. Tente de novo em instantes.';
 
 /**
  * Erro de provedor que já vem com uma mensagem amigável, mas guarda o motivo
@@ -268,6 +284,10 @@ export function failureUserMessage(
       return CONTENT_BLOCKED_NEEDS_CONSENT_MESSAGE;
     case GenerationFailureCode.CONTENT_SAFETY_BLOCKED:
       return CONTENT_BLOCKED_USER_MESSAGE;
+    case GenerationFailureCode.IMAGE_SAFETY_BLOCKED:
+      return IMAGE_SAFETY_BLOCKED_MESSAGE;
+    case GenerationFailureCode.SAFETY_CHECK_UNAVAILABLE:
+      return SAFETY_CHECK_UNAVAILABLE_MESSAGE;
     default:
       return error.message;
   }
