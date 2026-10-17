@@ -1,10 +1,10 @@
 /**
- * CÓPIA da trava do site (FUNVMAKE/web/lib/influencer-safety.ts, v3 de 15/10/2026, red team de 8 lentes e corpus de
- * 1.099 casos em __tests__/safety-corpus.json). Mudou lá, muda aqui. Adaptações para a API (sem elas, o comportamento
+ * CÓPIA da trava do site (FUNVMAKE/web/lib/influencer-safety.ts, v3 de 15/10/2026, red team de 8 lentes). O corpus do
+ * red team fica fora deste repositório e o teste o lê por SAFETY_CORPUS_PATH. Mudou lá, muda aqui. Adaptações para a API (sem elas, o comportamento
  * é o do construtor, conferido pelo corpus):
  *  - `floor`: piso de idade (padrão 25 como no construtor; a API usa 18, a idade legal de toda geração);
- *  - `free`: pedido livre de geração. Medido em 16/10 contra os 50.433 prompts reais do backup de 11/10, o modo do
- *    construtor recusava 11,8% das gerações ("tiny blemishes", "fazendo uma pose", "only one woman", "seed": 1,
+ *  - `free`: pedido livre de geração. Medido contra prompts reais do histórico (só contagens), o modo do construtor
+ *    recusava muito pedido adulto legítimo ("tiny blemishes", "fazendo uma pose", "only one woman", "seed": 1,
  *    "turned three-quarters"). No modo livre: artigo não é número ("um vestido", "one woman"), número seguido de coisa
  *    contada não é idade ("2 women", "1 metro"), verbo vago ("only", "about", "face") só vale com o número fechando o
  *    trecho, número sozinho só com pessoa ou nome antes, pista infantil de corpo/estilo (petite, tiny, braces) só
@@ -1179,6 +1179,18 @@ const PLURAL_PEOPLE = new Set(['women', 'men', 'people', 'feet', 'teeth', 'child
 /** Rótulo de idade antes de um número sozinho ("age: 16", "idade, 16"). */
 const AGE_LABELS = new Set(['age', 'aged', 'ages', 'idade', 'edad', 'yo']);
 
+/** Hora e duração abreviadas depois do número ("4pm", "16h", "5 min"); o "s" fica de fora porque "under 18s" é menor. */
+const TIME_ABBREVIATIONS = new Set(['am', 'pm', 'h', 'hr', 'hrs', 'hs', 'oclock', 'min', 'mins', 'sec', 'secs', 'seg', 'segs']);
+
+/** Pedido livre: depois do número vem hora ou duração ("under 4 pm daylight", "4 p.m.", "5 o'clock", "under 5 min"). */
+function timeAt(tokens: readonly string[], index: number): boolean {
+  const token = tokens[index] ?? '';
+  const next = tokens[index + 1] ?? '';
+  if (TIME_ABBREVIATIONS.has(token)) return true;
+  // "p.m." e "a.m." chegam como "p m" e "a m"; "o'clock" chega como "o clock"
+  return ((token === 'p' || token === 'a') && next === 'm') || (token === 'o' && next === 'clock');
+}
+
 /** Pedido livre: o número conta alguma coisa ("2 women", "três pessoas", "1 metro", "turned three quarters"), não é idade. */
 function countsSomething(token: string): boolean {
   if (!token || token === ',' || UNITS.has(token)) return false;
@@ -1413,7 +1425,12 @@ function underageNumber(text: string, strict: boolean, labelOnCommerce: boolean)
     if (comparator !== -1) {
       const found = numberAt(tokens, comparator);
       // pedido livre: "under/younger than/menor de" + número que não conta nada; "less than/below/menos de" só fechando o trecho
-      const freeAge = !freeMode || (STRONG_COMPARATORS.has(token) ? !countsSomething(at((found?.end ?? 0) + 1)) : found !== null && closesAsAge(tokens, found.end));
+      // ("under 4 pm daylight" é horário)
+      const freeAge =
+        !freeMode ||
+        (STRONG_COMPARATORS.has(token)
+          ? !countsSomething(at((found?.end ?? 0) + 1)) && !timeAt(tokens, (found?.end ?? 0) + 1)
+          : found !== null && closesAsAge(tokens, found.end));
       if (freeAge && found && !found.decimal && found.value >= 1 && found.value <= 25 && !COUNT_NOUNS.has(at(found.end + 1))) return phrase(index, found.end);
     }
     if (token === 'between' || token === 'entre') {

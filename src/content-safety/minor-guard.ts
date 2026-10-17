@@ -18,7 +18,7 @@ import { canonical, checkAdultOnly, hasAdultTerms } from './adult-only-rules';
  *  - não conta o que é negação, remoção ou condição ("no kids", "remove the children", "kids, if present: remove",
  *    "mother of 2 kids", "avoid: underage") — só quando o termo aparece escrito por extenso (ofuscado nunca é exceção);
  *  - deixa "cor secundária" e "personagem secundário" passarem, mas não "de secundaria" ou "ensino secundário".
- * Calibrada em 16/10 contra os 50.433 prompts reais do backup de 11/10 (só agregados). Função pura: sem rede, sem banco.
+ * Calibrada contra prompts reais do histórico (só contagens). Função pura: sem rede, sem banco.
  */
 
 export interface MinorAssessment {
@@ -60,7 +60,8 @@ const TECHNICAL_TOKENS: readonly RegExp[] = [
   /\bf\s*\/\s*\d{1,2}(?:[.,]\d+)?\b/gi, // f/1.8
   /\biso\s*\d{2,5}\b/gi, // ISO 400
   /\b\d{1,3}(?:[.,]\d+)?\s*fps\b/gi, // 24fps, 29.97 fps
-  /\b\d{1,3}(?:[.,]\d+)?\s*(?:s|secs?|seconds?|segundos?)\b/gi, // 5s, 1.5 seconds, 10 segundos
+  // 5s, 1.5 seconds, 10 segundos; "under 16s" fica (é "menores de 16" no inglês britânico, não duração)
+  /(?<!\b(?:under|u|sub|below)[\s-]*)\b\d{1,3}(?:[.,]\d+)?\s*(?:s|secs?|seconds?|segundos?)\b/gi,
   /\b\d{1,3}(?:[.,]\d+)?\s*%/g, // 50%
   /\b\d{1,2}\s*\/\s*\d{1,2}\b/g, // 3/4, 8/10
   /\b[1-4]\s*d\b/gi, // 2D, 3D
@@ -175,7 +176,7 @@ interface ScriptGuard {
   age: RegExp;
 }
 
-/** Alfabetos que os clientes usam (backup de 11/10: hebraico 285 prompts, chinês 28, tailandês 26, cirílico 17, árabe 9). */
+/** Alfabetos que aparecem nos pedidos reais (hebraico, chinês, tailandês, cirílico, árabe). */
 const SCRIPT_GUARDS: readonly ScriptGuard[] = [
   {
     // hebraico: prefixos colados (ה, ו, ש, ב, ל, מ, כ) antes do termo; "בת 15" / "בן 15" / "בגיל 15" = idade
