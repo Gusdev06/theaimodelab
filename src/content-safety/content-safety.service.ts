@@ -8,6 +8,7 @@ import {
 import { ContentSafetyEvent, ContentSafetyEventKind } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CURRENT_TERMS_VERSION } from '../users/terms.constants';
+import type { PreflightStatus } from './preflight-status';
 
 /** Nota da liberação de um bloqueio por menor: o jurídico explica por quê (fica na trilha). */
 export const SAFETY_RELEASE_NOTE_MIN_LENGTH = 10;
@@ -118,6 +119,17 @@ export class ContentSafetyService {
       where: { generationId, kind: ContentSafetyEventKind.CONSENT_ATTESTED },
     });
     return count > 0;
+  }
+
+  /**
+   * Veredito do porteiro de imagem para a mídia de entrada da geração: ponto único de leitura para os desvios
+   * depois de uma recusa do provedor. Ainda não existe checagem de imagem gravada, então devolve sempre
+   * `unavailable` (todo desvio com foto do usuário encerra a geração). Onda 1: ler a tabela de checagens
+   * (content_safety_scans, etapas de entrada) desta geração e passar o resultado por toPreflightStatus.
+   */
+  preflightStatusForGeneration(generationId: string): Promise<PreflightStatus> {
+    void generationId;
+    return Promise.resolve('unavailable');
   }
 
   /** Quantos pedidos com referência a menor o usuário teve recusados nas últimas `hours` horas (sem os liberados). */

@@ -7,9 +7,11 @@ import {
   ContentSafetyError,
   MINOR_BLOCK_USER_MESSAGE,
   MinorSafetyBlockError,
+  UnverifiedContentBlockError,
 } from '../../errors/content-safety.error';
 import {
   CONTENT_BLOCKED_NEEDS_CONSENT_MESSAGE,
+  CONTENT_BLOCKED_USER_MESSAGE,
   GenerationFailureCode,
 } from '../../errors/failure-reason';
 
@@ -127,6 +129,28 @@ describe('UnlimitedProcessor · bloqueio de segurança', () => {
         data: expect.objectContaining({
           errorCode: GenerationFailureCode.CONTENT_BLOCKED_NEEDS_CONSENT,
           errorMessage: CONTENT_BLOCKED_NEEDS_CONSENT_MESSAGE,
+        }),
+      }),
+    );
+    expect(generationProcessor.recordProviderMinorBlock).not.toHaveBeenCalled();
+  });
+
+  it('foto sem checagem limpa da imagem: CONTENT_SAFETY_BLOCKED genérico, sem nova tentativa nem MINOR_BLOCKED', async () => {
+    const blocked = new UnverifiedContentBlockError(
+      new ContentSafetyError('content policy violation'),
+      'gpt-image-2',
+      'unverified_media',
+    );
+    generationProcessor.dispatch.mockRejectedValue(blocked);
+    generationProcessor.terminalSafetyBlockOf.mockReturnValue(blocked);
+
+    await expect(processor.process(job())).resolves.toBeUndefined();
+
+    expect(prisma.generation.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          errorCode: GenerationFailureCode.CONTENT_SAFETY_BLOCKED,
+          errorMessage: CONTENT_BLOCKED_USER_MESSAGE,
         }),
       }),
     );

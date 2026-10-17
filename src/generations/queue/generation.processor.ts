@@ -36,14 +36,26 @@ import { ContentSafetyService } from '../../content-safety/content-safety.servic
 import {
   ConsentRequiredSafetyError,
   ContentSafetyError,
-  decideSafetyFallback,
   isMinorSafetyBlock,
   isTerminalSafetyBlock,
   MinorSafetyBlockError,
-  minorSupportCodeOf,
+  minorBlockAuditOf,
+  safetyFallbackVerdict,
   type SafetyFallbackTarget,
   type TerminalSafetyBlockError,
+  UnverifiedContentBlockError,
 } from '../errors/content-safety.error';
+import type { PreflightStatus } from '../../content-safety/preflight-status';
+import {
+  jobCarriesUserMedia,
+  mediaUrlForLog,
+  providerMessageForLog,
+  refinedPromptBlockOf,
+  requestTextsOfJob,
+  stackFramesForLog,
+  textFingerprintForLog,
+  withRefreshedMediaUrls,
+} from './safety-fallback-guard';
 import {
   failureCodeOf,
   failureUserMessage,
@@ -112,8 +124,8 @@ interface SafetyFallbackRequest {
    */
   target: SafetyFallbackTarget;
   /**
-   * Só conta para 'uncensored': o job já sabe que leva foto/frame/referência/vídeo do usuário. Falso ou ausente,
-   * a guarda olha as imagens guardadas da geração (é o que o fallbackToSeedream manda ao Unlocked).
+   * O job já sabe que leva foto/frame/referência/vídeo do usuário (jobCarriesUserMedia). Falso ou ausente, a guarda
+   * olha as imagens guardadas da geração (é o que o fallbackToSeedream manda ao Unlocked) e o atestado.
    */
   userMedia?: boolean;
 }
@@ -153,6 +165,13 @@ export function willBeRetried(
 ): boolean {
   if (job.finishedOn) return false;
   return job.attemptsMade < (job.opts.attempts ?? 1);
+}
+
+/** Id da geração do job (dado sem tipo do BullMQ); '' quando falta. */
+function jobGenerationIdOf(jobData: unknown): string {
+  if (!jobData || typeof jobData !== 'object') return '';
+  const { generationId } = jobData as { generationId?: unknown };
+  return typeof generationId === 'string' ? generationId : '';
 }
 
 /** Modelo do job para a trilha de auditoria (vídeo usa resolvedModel, Seedance usa modelId); '' = o da geração. */
@@ -222,8 +241,14 @@ export class GenerationProcessor extends WorkerHost {
   /**
    * Switch público compartilhado com o UnlimitedProcessor. Mantém os
    * métodos de processamento privados sem duplicar lógica entre filas.
+   * Cada chamada (inclusive a nova tentativa do BullMQ) reassina as URLs de entrada do job: a assinada no upload
+   * vence enquanto o job espera na fila.
    */
-  async dispatch(jobName: string, data: unknown): Promise<void> {
+  async dispatch(jobName: string, jobData: unknown): Promise<void> {
+    const generationId = jobGenerationIdOf(jobData);
+    const data = await withRefreshedMediaUrls(jobData, (url) =>
+      this.freshInputUrl(generationId, url),
+    );
     switch (jobName) {
       case GenerationJobName.IMAGE:
         return this.processImage(data as ImageJobData);
@@ -302,6 +327,7 @@ export class GenerationProcessor extends WorkerHost {
         data.creditsConsumed,
         error as Error,
         data.usedFreeGeneration,
+        requestTextsOfJob(data),
       );
     }
   }
@@ -316,6 +342,7 @@ export class GenerationProcessor extends WorkerHost {
         data.creditsConsumed,
         error as Error,
         data.usedFreeGeneration,
+        requestTextsOfJob(data),
       );
     }
   }
@@ -332,6 +359,7 @@ export class GenerationProcessor extends WorkerHost {
         data.creditsConsumed,
         error as Error,
         data.usedFreeGeneration,
+        requestTextsOfJob(data),
       );
     }
   }
@@ -341,7 +369,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[IMAGE] ${data.generationId} model=${data.model} resolution=${data.resolution} aspectRatio=${data.aspectRatio} hasInputImages=${data.hasInputImages} prompt="${data.prompt}"`,
+      `[IMAGE] ${data.generationId} model=${data.model} resolution=${data.resolution} aspectRatio=${data.aspectRatio} hasInputImages=${data.hasInputImages} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     if (data.model === 'sem-censura') {
@@ -351,9 +379,10 @@ export class GenerationProcessor extends WorkerHost {
           where: { generationId: data.generationId },
           orderBy: { order: 'asc' },
         });
-        imageUrls = inputImages
-          .map((img) => img.url)
-          .filter((url): url is string => !!url);
+        imageUrls = await this.freshInputUrls(
+          data.generationId,
+          inputImages.map((img) => img.url),
+        );
       }
 
       const result = await this.seedreamProvider.generateImage({
@@ -378,9 +407,10 @@ export class GenerationProcessor extends WorkerHost {
           where: { generationId: data.generationId },
           orderBy: { order: 'asc' },
         });
-        imageUrls = inputImages
-          .map((img) => img.url)
-          .filter((url): url is string => !!url);
+        imageUrls = await this.freshInputUrls(
+          data.generationId,
+          inputImages.map((img) => img.url),
+        );
       }
 
       try {
@@ -428,9 +458,10 @@ export class GenerationProcessor extends WorkerHost {
         where: { generationId: data.generationId },
         orderBy: { order: 'asc' },
       });
-      const imageUrls = inputImages
-        .map((img) => img.url)
-        .filter((url): url is string => !!url);
+      const imageUrls = await this.freshInputUrls(
+        data.generationId,
+        inputImages.map((img) => img.url),
+      );
 
       const result = await this.seedreamProvider.generateImage({
         id: data.generationId,
@@ -491,7 +522,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[IMAGE_FALLBACK] ${data.generationId} model=${data.model} resolution=${data.resolution} aspectRatio=${data.aspectRatio} hasInputImages=${data.hasInputImages} prompt="${data.prompt}"`,
+      `[IMAGE_FALLBACK] ${data.generationId} model=${data.model} resolution=${data.resolution} aspectRatio=${data.aspectRatio} hasInputImages=${data.hasInputImages} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     if (data.model === 'sem-censura') {
@@ -501,9 +532,10 @@ export class GenerationProcessor extends WorkerHost {
           where: { generationId: data.generationId },
           orderBy: { order: 'asc' },
         });
-        imageUrls = inputImages
-          .map((img) => img.url)
-          .filter((url): url is string => !!url);
+        imageUrls = await this.freshInputUrls(
+          data.generationId,
+          inputImages.map((img) => img.url),
+        );
       }
 
       const result = await this.seedreamProvider.generateImage({
@@ -528,9 +560,10 @@ export class GenerationProcessor extends WorkerHost {
           where: { generationId: data.generationId },
           orderBy: { order: 'asc' },
         });
-        imageUrls = inputImages
-          .map((img) => img.url)
-          .filter((url): url is string => !!url);
+        imageUrls = await this.freshInputUrls(
+          data.generationId,
+          inputImages.map((img) => img.url),
+        );
       }
 
       try {
@@ -580,9 +613,10 @@ export class GenerationProcessor extends WorkerHost {
         where: { generationId: data.generationId },
         orderBy: { order: 'asc' },
       });
-      const imageUrls = inputImages
-        .map((img) => img.url)
-        .filter((url): url is string => !!url);
+      const imageUrls = await this.freshInputUrls(
+        data.generationId,
+        inputImages.map((img) => img.url),
+      );
 
       const result = await this.seedreamProvider.generateImage({
         id: data.generationId,
@@ -641,7 +675,7 @@ export class GenerationProcessor extends WorkerHost {
       }
 
       this.logger.warn(
-        `The AI Model Lab failed for ${data.generationId}, falling back to Nano Banana: ${(theaimodelabError as Error).message}`,
+        `The AI Model Lab failed for ${data.generationId}, falling back to Nano Banana: ${providerMessageForLog(theaimodelabError, [data.prompt])}`,
       );
 
       // Check if CRON already marked this generation as FAILED — skip KIE to avoid paying for nothing
@@ -662,9 +696,10 @@ export class GenerationProcessor extends WorkerHost {
       const inputImages = await this.prisma.generationInputImage.findMany({
         where: { generationId: data.generationId },
       });
-      const imageUrls = inputImages
-        .map((img) => img.url)
-        .filter(Boolean) as string[];
+      const imageUrls = await this.freshInputUrls(
+        data.generationId,
+        inputImages.map((img) => img.url),
+      );
 
       const nanaBananaModel = mapGeminiToNanoBanana(data.model);
       try {
@@ -718,9 +753,10 @@ export class GenerationProcessor extends WorkerHost {
         where: { generationId: data.generationId },
         orderBy: { order: 'asc' },
       });
-      imageUrls = inputImages
-        .map((img) => img.url)
-        .filter((url): url is string => !!url);
+      imageUrls = await this.freshInputUrls(
+        data.generationId,
+        inputImages.map((img) => img.url),
+      );
     }
 
     try {
@@ -760,7 +796,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[NANO_BANANA] ${data.generationId} model=${data.model} resolution=${data.resolution} aspectRatio=${data.aspectRatio} outputFormat=${data.outputFormat} googleSearch=${data.googleSearch} imageUrls=${data.imageUrls?.length ?? 0} prompt="${data.prompt}"`,
+      `[NANO_BANANA] ${data.generationId} model=${data.model} resolution=${data.resolution} aspectRatio=${data.aspectRatio} outputFormat=${data.outputFormat} googleSearch=${data.googleSearch} imageUrls=${data.imageUrls?.length ?? 0} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     try {
@@ -803,7 +839,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[TEXT_TO_VIDEO] ${data.generationId} model=${data.model} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} audio=${data.generateAudio} samples=${data.sampleCount} prompt="${data.prompt}"`,
+      `[TEXT_TO_VIDEO] ${data.generationId} model=${data.model} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} audio=${data.generateAudio} samples=${data.sampleCount} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     const buildInput = (prompt: string) => ({
@@ -825,10 +861,11 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
-        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para)
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: data.model,
           target: 'same_provider',
+          userMedia: jobCarriesUserMedia(data),
         });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
@@ -849,7 +886,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[IMAGE_TO_VIDEO] ${data.generationId} model=${data.resolvedModel} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} audio=${data.generateAudio} samples=${data.sampleCount} prompt="${data.prompt}"`,
+      `[IMAGE_TO_VIDEO] ${data.generationId} model=${data.resolvedModel} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} audio=${data.generateAudio} samples=${data.sampleCount} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     const inputImages = await this.prisma.generationInputImage.findMany({
@@ -868,9 +905,12 @@ export class GenerationProcessor extends WorkerHost {
       throw new Error('First frame image not found for image-to-video');
     }
 
-    const firstFrameBase64 = await this.downloadToBase64(firstFrameImg.url);
+    const firstFrameBase64 = await this.downloadToBase64(
+      firstFrameImg.url,
+      data.generationId,
+    );
     const lastFrameBase64 = lastFrameImg?.url
-      ? await this.downloadToBase64(lastFrameImg.url)
+      ? await this.downloadToBase64(lastFrameImg.url, data.generationId)
       : undefined;
 
     const buildInput = (prompt: string) => ({
@@ -896,11 +936,11 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
-        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para).
-        // O primeiro frame é foto do usuário, mas ela já está neste provedor: refazer aqui não a leva a lugar novo.
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: data.resolvedModel,
           target: 'same_provider',
+          userMedia: jobCarriesUserMedia(data),
         });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
@@ -923,7 +963,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[REFERENCE_VIDEO] ${data.generationId} model=${data.resolvedModel} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} audio=${data.generateAudio} samples=${data.sampleCount} prompt="${data.prompt}"`,
+      `[REFERENCE_VIDEO] ${data.generationId} model=${data.resolvedModel} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} audio=${data.generateAudio} samples=${data.sampleCount} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     const inputImages = await this.prisma.generationInputImage.findMany({
@@ -936,7 +976,9 @@ export class GenerationProcessor extends WorkerHost {
 
     const referenceImages = await Promise.all(
       inputImages.map(async (img) => ({
-        base64: img.url ? await this.downloadToBase64(img.url) : '',
+        base64: img.url
+          ? await this.downloadToBase64(img.url, data.generationId)
+          : '',
         mimeType: img.mimeType ?? 'image/jpeg',
         referenceType: (img.referenceType ?? 'asset') as 'asset' | 'style',
       })),
@@ -962,10 +1004,11 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
-        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para)
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: data.resolvedModel,
           target: 'same_provider',
+          userMedia: jobCarriesUserMedia(data),
         });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
@@ -989,7 +1032,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[MOTION_CONTROL] ${data.generationId} resolution=${data.resolution} videoUrl=${data.videoUrl} imageUrl=${data.imageUrl}`,
+      `[MOTION_CONTROL] ${data.generationId} resolution=${data.resolution} videoUrl=${mediaUrlForLog(data.videoUrl)} imageUrl=${mediaUrlForLog(data.imageUrl)}`,
     );
 
     const result = await this.wanProvider.generateAnimateReplace({
@@ -1050,7 +1093,7 @@ export class GenerationProcessor extends WorkerHost {
       }
 
       this.logger.warn(
-        `The AI Model Lab failed for virtual try-on ${data.generationId}, falling back to Nano Banana: ${(theaimodelabError as Error).message}`,
+        `The AI Model Lab failed for virtual try-on ${data.generationId}, falling back to Nano Banana: ${providerMessageForLog(theaimodelabError, [data.prompt])}`,
       );
 
       const preCheck = await this.prisma.generation.findUnique({
@@ -1071,9 +1114,10 @@ export class GenerationProcessor extends WorkerHost {
         where: { generationId: data.generationId },
         orderBy: { order: 'asc' },
       });
-      const imageUrls = inputImages
-        .map((img) => img.url)
-        .filter(Boolean) as string[];
+      const imageUrls = await this.freshInputUrls(
+        data.generationId,
+        inputImages.map((img) => img.url),
+      );
 
       const nanoBananaModel = mapGeminiToNanoBanana(data.model);
       try {
@@ -1121,7 +1165,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[FACE_SWAP] ${data.generationId} resolution=${data.resolution} nsfw=${data.nsfw ?? false} sourceImage=${data.sourceImageUrl} targetImage=${data.targetImageUrl}`,
+      `[FACE_SWAP] ${data.generationId} resolution=${data.resolution} nsfw=${data.nsfw ?? false} sourceImage=${mediaUrlForLog(data.sourceImageUrl)} targetImage=${mediaUrlForLog(data.targetImageUrl)}`,
     );
 
     // Unlocked (NSFW): rota direto pelo Seedream sem censura. Não passa pelo
@@ -1183,7 +1227,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[TEXT_TO_VIDEO_KIE] ${data.generationId} model=${data.model} resolution=${data.resolution} aspectRatio=${data.aspectRatio} audio=${data.generateAudio} prompt="${data.prompt}"`,
+      `[TEXT_TO_VIDEO_KIE] ${data.generationId} model=${data.model} resolution=${data.resolution} aspectRatio=${data.aspectRatio} audio=${data.generateAudio} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     const result = await this.veoProvider.generateTextToVideo({
@@ -1204,7 +1248,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[IMAGE_TO_VIDEO_KIE] ${data.generationId} model=${data.model} resolution=${data.resolution} aspectRatio=${data.aspectRatio} audio=${data.generateAudio} imageUrls=${data.imageUrls.length} prompt="${data.prompt}"`,
+      `[IMAGE_TO_VIDEO_KIE] ${data.generationId} model=${data.model} resolution=${data.resolution} aspectRatio=${data.aspectRatio} audio=${data.generateAudio} imageUrls=${data.imageUrls.length} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     const result = await this.veoProvider.generateImageToVideo({
@@ -1226,7 +1270,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[REFERENCE_TO_VIDEO_KIE] ${data.generationId} model=veo3_fast resolution=${data.resolution} aspectRatio=${data.aspectRatio} audio=${data.generateAudio} imageUrls=${data.imageUrls.length} prompt="${data.prompt}"`,
+      `[REFERENCE_TO_VIDEO_KIE] ${data.generationId} model=veo3_fast resolution=${data.resolution} aspectRatio=${data.aspectRatio} audio=${data.generateAudio} imageUrls=${data.imageUrls.length} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     const result = await this.veoProvider.generateReferenceToVideo({
@@ -1252,7 +1296,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[IMAGE_TO_VIDEO_GROK] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} mode=${data.mode ?? 'normal'} imageUrls=${data.imageUrls.length} prompt="${data.prompt ?? ''}"`,
+      `[IMAGE_TO_VIDEO_GROK] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} mode=${data.mode ?? 'normal'} imageUrls=${data.imageUrls.length} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     const buildInput = (prompt: string | undefined) => ({
@@ -1273,10 +1317,11 @@ export class GenerationProcessor extends WorkerHost {
     } catch (error) {
       // Se foi bloqueado por safety E tem prompt, tenta refinar e gerar de novo.
       if (this.isSafetyRelatedError(error) && data.prompt) {
-        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para)
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: 'grok-imagine',
           target: 'same_provider',
+          userMedia: jobCarriesUserMedia(data),
         });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
@@ -1299,7 +1344,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[TEXT_TO_VIDEO_GROK] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} mode=${data.mode ?? 'normal'} prompt="${data.prompt}"`,
+      `[TEXT_TO_VIDEO_GROK] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} mode=${data.mode ?? 'normal'} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     const buildInput = (prompt: string) => ({
@@ -1318,10 +1363,11 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
-        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para)
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: 'grok-imagine',
           target: 'same_provider',
+          userMedia: jobCarriesUserMedia(data),
         });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
@@ -1344,7 +1390,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[OMNI_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} images=${data.imageUrls?.length ?? 0} videos=${data.videoList?.length ?? 0} hasVideo=${data.hasVideoInput} prompt="${data.prompt}"`,
+      `[OMNI_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} images=${data.imageUrls?.length ?? 0} videos=${data.videoList?.length ?? 0} hasVideo=${data.hasVideoInput} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     const buildInput = (prompt: string) => ({
@@ -1364,10 +1410,11 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
-        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para)
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: 'gemini-omni',
           target: 'same_provider',
+          userMedia: jobCarriesUserMedia(data),
         });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
@@ -1390,7 +1437,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[SEEDANCE_VIDEO] ${data.generationId} model=${data.modelId ?? 'bytedance/seedance-2'} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} refImages=${data.referenceImageUrls?.length ?? 0} refVideos=${data.referenceVideoUrls?.length ?? 0} refAudios=${data.referenceAudioUrls?.length ?? 0} firstFrame=${!!data.firstFrameUrl} lastFrame=${!!data.lastFrameUrl} audio=${data.generateAudio} prompt="${data.prompt}"`,
+      `[SEEDANCE_VIDEO] ${data.generationId} model=${data.modelId ?? 'bytedance/seedance-2'} resolution=${data.resolution} duration=${data.durationSeconds}s aspectRatio=${data.aspectRatio} refImages=${data.referenceImageUrls?.length ?? 0} refVideos=${data.referenceVideoUrls?.length ?? 0} refAudios=${data.referenceAudioUrls?.length ?? 0} firstFrame=${!!data.firstFrameUrl} lastFrame=${!!data.lastFrameUrl} audio=${data.generateAudio} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     const buildInput = (prompt: string) => ({
@@ -1414,10 +1461,11 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
-        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para)
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: data.modelId ?? 'bytedance/seedance-2',
           target: 'same_provider',
+          userMedia: jobCarriesUserMedia(data),
         });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
@@ -1444,7 +1492,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[KLING_IMAGE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s imageUrls=${data.imageUrls.length} prompt="${data.prompt ?? ''}"`,
+      `[KLING_IMAGE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s imageUrls=${data.imageUrls.length} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     const buildInput = (prompt: string | undefined) => ({
@@ -1464,10 +1512,11 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error) && data.prompt) {
-        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para)
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: 'kling-v3-turbo',
           target: 'same_provider',
+          userMedia: jobCarriesUserMedia(data),
         });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
@@ -1492,7 +1541,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[COMFYDEPLOY_IMAGE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s prompt="${data.prompt}"`,
+      `[COMFYDEPLOY_IMAGE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     const result = await this.comfyDeployProvider.generateImageToVideo({
@@ -1513,7 +1562,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[WAVESPEED_IMAGE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s prompt="${data.prompt}"`,
+      `[WAVESPEED_IMAGE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     // Resolução DB -> resolução aceita pelo LTX (480p/720p/1080p).
@@ -1543,7 +1592,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[WAVESPEED_SEEDANCE_IMAGE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s audio=${data.generateAudio} prompt="${data.prompt}"`,
+      `[WAVESPEED_SEEDANCE_IMAGE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s audio=${data.generateAudio} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     // Resolução DB -> resolução aceita pelo Seedance (480p/720p/1080p/4k).
@@ -1584,7 +1633,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[MINIMAX_H3_TEXT_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s aspect=${data.aspectRatio ?? '16:9'} prompt="${data.prompt}"`,
+      `[MINIMAX_H3_TEXT_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s aspect=${data.aspectRatio ?? '16:9'} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     const result = await this.wavespeedVideoProvider.generateMinimaxH3TextToVideo({
@@ -1605,7 +1654,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[MINIMAX_H3_IMAGE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s lastFrame=${data.lastImageUrl ? 'yes' : 'no'} prompt="${data.prompt}"`,
+      `[MINIMAX_H3_IMAGE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s lastFrame=${data.lastImageUrl ? 'yes' : 'no'} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     const result = await this.wavespeedVideoProvider.generateMinimaxH3ImageToVideo({
@@ -1627,7 +1676,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[MINIMAX_H3_REFERENCE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s aspect=${data.aspectRatio ?? '16:9'} refImages=${data.referenceImageUrls?.length ?? 0} refVideos=${data.referenceVideoUrls?.length ?? 0} refAudios=${data.referenceAudioUrls?.length ?? 0} prompt="${data.prompt}"`,
+      `[MINIMAX_H3_REFERENCE_TO_VIDEO] ${data.generationId} resolution=${data.resolution} duration=${data.durationSeconds}s aspect=${data.aspectRatio ?? '16:9'} refImages=${data.referenceImageUrls?.length ?? 0} refVideos=${data.referenceVideoUrls?.length ?? 0} refAudios=${data.referenceAudioUrls?.length ?? 0} prompt ${textFingerprintForLog(data.prompt)}`,
     );
 
     const result =
@@ -1650,7 +1699,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[TEXT_TO_SPEECH] ${data.generationId} voice=${data.voiceId} language=${data.language ?? 'auto'} speed=${data.speed ?? 1} text="${data.text.slice(0, 80)}"`,
+      `[TEXT_TO_SPEECH] ${data.generationId} voice=${data.voiceId} language=${data.language ?? 'auto'} speed=${data.speed ?? 1} text ${textFingerprintForLog(data.text)}`,
     );
 
     const result = await this.wavespeedAudioProvider.generateTextToSpeech({
@@ -1669,7 +1718,7 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[VOICE_CLONE] ${data.generationId} audio=${data.audioUrl} language=${data.language ?? 'auto'} text="${data.text.slice(0, 80)}"`,
+      `[VOICE_CLONE] ${data.generationId} audio=${mediaUrlForLog(data.audioUrl)} language=${data.language ?? 'auto'} text ${textFingerprintForLog(data.text)}`,
     );
 
     const result = await this.wavespeedAudioProvider.generateVoiceClone({
@@ -1687,16 +1736,18 @@ export class GenerationProcessor extends WorkerHost {
   private isSafetyRelatedError(error: unknown): boolean {
     if (error instanceof ContentSafetyError) return true;
     if (error instanceof Error) {
+      // a mensagem crua do provedor pode repetir o prompt: o log leva só o motivo e o tamanho
       if (error.message.includes('no video data returned')) {
         this.logger.warn(
-          `Treating "${error.message}" as potential silent safety block`,
+          `Treating "no video data returned" (len=${error.message.length}) as potential silent safety block`,
         );
         return true;
       }
       // Safety net: raw Error with a safety-related message slipped past provider conversion
-      if (ContentSafetyError.fromErrorMessage(error.message)) {
+      const detected = ContentSafetyError.fromErrorMessage(error.message);
+      if (detected) {
         this.logger.warn(
-          `Detected safety pattern in raw Error message: "${error.message}"`,
+          `Detected safety pattern in raw Error message (len=${error.message.length}${detected.supportCode ? ` support code ${detected.supportCode}` : ''})`,
         );
         return true;
       }
@@ -1709,18 +1760,33 @@ export class GenerationProcessor extends WorkerHost {
    * LANÇA um bloqueio terminal quando não pode; o process() (e o UnlimitedProcessor, e os run*Directly) encerram a
    * geração pelo caminho normal de falha (handleFailure: estorno, SSE, MINOR_BLOCKED) sem nova tentativa do BullMQ.
    *  - menor de idade, qualquer alvo → MinorSafetyBlockError (CONTENT_POLICY_MINOR);
-   *  - alvo 'same_provider' (retryWithRefinedPrompt) → segue: a foto já está nesse provedor com filtro;
-   *  - alvo 'uncensored' (fallbackToSeedream) com foto do usuário (pode ser pessoa real) sem atestado de imagem →
-   *    ConsentRequiredSafetyError (CONTENT_BLOCKED_NEEDS_CONSENT): nada de modelo sem censura com a foto;
-   *  - alvo 'uncensored' só com texto, ou com foto atestada → segue o desvio de sempre.
-   * Erro de banco na leitura das fotos ou do atestado nunca libera o desvio (conta como foto sem atestado).
+   *  - mídia do usuário (foto, frame, referência, vídeo, ou atestado gravado) sem veredito 'clean' do porteiro de
+   *    imagem, qualquer alvo → UnverifiedContentBlockError (CONTENT_SAFETY_BLOCKED): nem modelo sem censura nem
+   *    prompt reescrito com a foto. Até o porteiro existir o veredito é sempre 'unavailable';
+   *  - alvo 'same_provider' (retryWithRefinedPrompt) só com texto ou com foto limpa → segue (a reescrita ainda passa
+   *    pela trava de texto dentro do retryWithRefinedPrompt);
+   *  - alvo 'uncensored' (fallbackToSeedream) com foto limpa sem atestado → ConsentRequiredSafetyError
+   *    (CONTENT_BLOCKED_NEEDS_CONSENT);
+   *  - alvo 'uncensored' só com texto, ou com foto limpa e atestada → segue o desvio de sempre.
+   * Erro de banco na leitura das fotos, do atestado ou do veredito nunca libera o desvio (conta como foto do usuário,
+   * sem atestado e sem checagem).
    *
    * PR API #3 (fix/creditos-auditoria) reescreve este processor (dispatchWithFallback + generation-fallback.ts).
    * Ao mergear, reaplicar aqui: (1) esta guarda antes de todo fallbackToSeedream (alvo 'uncensored') e de todo
-   * retryWithRefinedPrompt (alvo 'same_provider'); (2) a mesma guarda, alvo 'uncensored', antes do fallback
-   * automático de modelo por bloqueio de conteúdo (vídeo kie → MiniMax H3), que também leva prompt e fotos a outro
-   * provedor; (3) o catch de bloqueio terminal no process() e no UnlimitedProcessor.process() (sem relançar);
-   * (4) failureCodeOf/failureUserMessage no handleFailure e no markFailed do ilimitado.
+   * retryWithRefinedPrompt (alvo 'same_provider'); (2) a mesma guarda, alvo 'uncensored', antes de TODO fallback
+   * automático de modelo cujo alvo seja sem censura (isUncensoredModel, ex.: vídeo kie → MiniMax H3), com kind
+   * 'safety' E 'provider' ("entrada recusada" conta como 'safety'): com foto, só segue com preflight 'clean';
+   * (3) o catch de bloqueio terminal no process() e no UnlimitedProcessor.process() (sem relançar);
+   * (4) failureCodeOf/failureUserMessage no handleFailure e no markFailed do ilimitado;
+   * (5) no catch do dispatchWithFallback, ANTES de calcular o kind: `const unwrapped = unwrapJobError(original); if
+   * (isTerminalSafetyBlock(unwrapped) || isMinorSafetyBlock(unwrapped)) throw new GenerationUnrecoverableError(original)`.
+   * Os bloqueios desta guarda (menor, reescrita barrada, mídia sem checagem) estendem ContentSafetyError e cairiam como
+   * kind 'safety' no desvio; a guarda de (2) fica dentro do tryFallback mas FORA do try/catch de orquestração, que
+   * engole o erro e devolve 'none';
+   * (6) o tryFallback relê inputImageUrls do banco: passar por freshInputUrls (a assinada no upload vence);
+   * (7) uma lista só de mídia do usuário: o hasUserMedia do generation-fallback.ts chama jobCarriesUserMedia e a
+   * USER_MEDIA_FIELDS sai (conferir que os campos dela estão em safety-fallback-guard.ts);
+   * (8) o log "[FALLBACK] … motivo=" usa providerMessageForLog (sem prompt nem URL assinada).
    * Na #3 o erro chega embrulhado em GenerationUnrecoverableError: o catch de (3) passa por unwrapJobError antes de
    * terminalSafetyBlockOf, senão a recusa por menor não é reconhecida. O "unsafe image upload" da #3 entra no
    * CONTENT_BLOCK_PATTERN de errors/failure-reason.ts. Merge de teste: conflito neste arquivo, no unlimited.processor.ts,
@@ -1732,26 +1798,42 @@ export class GenerationProcessor extends WorkerHost {
     request: SafetyFallbackRequest,
   ): Promise<void> {
     const isMinor = isMinorSafetyBlock(error);
-    const checksMedia = !isMinor && request.target === 'uncensored';
-    const hasUserImages =
-      checksMedia &&
-      (request.userMedia === true ||
-        (await this.hasStoredInputImages(generationId)));
+    // o atestado só existe em pedido com foto: também conta como mídia do usuário
     const hasConsent =
-      hasUserImages && (await this.hasConsentForGeneration(generationId));
-    const decision = decideSafetyFallback({
+      !isMinor && (await this.hasConsentForGeneration(generationId));
+    const hasUserImages =
+      !isMinor &&
+      (request.userMedia === true ||
+        hasConsent ||
+        (await this.hasStoredInputImages(generationId)));
+    const preflight: PreflightStatus = hasUserImages
+      ? await this.preflightStatusFor(generationId)
+      : 'unavailable';
+    const { decision, reason } = safetyFallbackVerdict({
       target: request.target,
       isMinor,
       hasUserImages,
       hasConsent,
+      preflight,
     });
 
     if (decision === 'allow_fallback') return;
 
+    if (reason === 'unverified_media') {
+      this.logger.warn(
+        `[SAFETY_GUARD] gen=${generationId} model=${request.model} target=${request.target}: bloqueio com mídia do usuário sem checagem limpa da imagem (preflight=${preflight}) — encerrada sem desvio`,
+      );
+      throw new UnverifiedContentBlockError(
+        error,
+        request.model,
+        'unverified_media',
+      );
+    }
+
     if (decision === 'fail_minor') {
       const minorError = new MinorSafetyBlockError(error, request.model);
       this.logger.warn(
-        `[SAFETY_GUARD] gen=${generationId} model=${request.model}: provedor recusou por MENOR de idade — geração encerrada sem desvio ("${minorError.providerDetail.slice(0, 200)}")`,
+        `[SAFETY_GUARD] gen=${generationId} model=${request.model}: provedor recusou por MENOR de idade — geração encerrada sem desvio (${minorError.supportCode ? `support code ${minorError.supportCode}` : `len=${minorError.providerDetail.length}`})`,
       );
       throw minorError;
     }
@@ -1812,6 +1894,7 @@ export class GenerationProcessor extends WorkerHost {
         meta.creditsConsumed,
         error,
         meta.usedFreeGeneration,
+        requestTextsOfJob(jobData),
       );
     } catch (finalizeError) {
       this.logger.error(
@@ -1879,6 +1962,22 @@ export class GenerationProcessor extends WorkerHost {
     }
   }
 
+  /** Veredito do porteiro de imagem para as entradas da geração. Falha de leitura = sem checagem ('unavailable'). */
+  private async preflightStatusFor(
+    generationId: string,
+  ): Promise<PreflightStatus> {
+    try {
+      return await this.contentSafety.preflightStatusForGeneration(
+        generationId,
+      );
+    } catch (error) {
+      this.logger.error(
+        `[SAFETY_GUARD] gen=${generationId}: falha ao ler a checagem da imagem (${(error as Error).message}) — tratando como sem checagem`,
+      );
+      return 'unavailable';
+    }
+  }
+
   /**
    * Evento MINOR_BLOCKED de uma geração encerrada por recusa do provedor por menor. Chamado UMA vez, por quem grava
    * o FAILED (handleFailure / markFailed do ilimitado), depois da trava de idempotência. Modelo = o que recusou
@@ -1912,11 +2011,14 @@ export class GenerationProcessor extends WorkerHost {
         `[SAFETY_GUARD] gen=${generationId}: geração não lida para o registro (${(lookupError as Error).message})`,
       );
     }
+    // recusa do provedor = `provider:<modelo>` + código de criança; reescrita acusada pela trava = `refiner:<modelo>`
+    const audit = minorBlockAuditOf(error);
     await this.recordMinorBlock({
       userId,
       generationId,
+      source: audit.source,
       model: model || 'desconhecido',
-      match: minorSupportCodeOf(error) ?? 'provider',
+      match: audit.match,
       excerpt: prompt,
     });
   }
@@ -1925,6 +2027,7 @@ export class GenerationProcessor extends WorkerHost {
   private async recordMinorBlock(event: {
     userId: string;
     generationId: string;
+    source: 'provider' | 'refiner';
     model: string;
     match: string;
     excerpt: string | null;
@@ -1933,7 +2036,7 @@ export class GenerationProcessor extends WorkerHost {
       await this.contentSafety.record({
         userId: event.userId,
         kind: ContentSafetyEventKind.MINOR_BLOCKED,
-        route: `provider:${event.model}`,
+        route: `${event.source}:${event.model}`,
         match: event.match,
         excerpt: event.excerpt,
         generationId: event.generationId,
@@ -1955,7 +2058,7 @@ export class GenerationProcessor extends WorkerHost {
     context: string,
   ): Promise<{ outputUrls: string[]; modelUsed: string }> {
     this.logger.warn(
-      `[FALLBACK_SEEDREAM_SAFETY] ${context} gen=${generationId} originalError="${(originalError as Error).message}"`,
+      `[FALLBACK_SEEDREAM_SAFETY] ${context} gen=${generationId} originalError="${providerMessageForLog(originalError, [prompt])}"`,
     );
 
     // Skip if CRON already finalized this generation
@@ -1978,9 +2081,10 @@ export class GenerationProcessor extends WorkerHost {
       where: { generationId },
       orderBy: { order: 'asc' },
     });
-    const imageUrls = inputImages
-      .map((img) => img.url)
-      .filter((url): url is string => !!url);
+    const imageUrls = await this.freshInputUrls(
+      generationId,
+      inputImages.map((img) => img.url),
+    );
 
     let result: { outputUrls: string[]; modelUsed: string };
     try {
@@ -1997,7 +2101,7 @@ export class GenerationProcessor extends WorkerHost {
       // O motivo que o usuário precisa ver é o bloqueio original, não o erro do
       // Unlocked — senão a falha aparece como "erro do provedor".
       this.logger.error(
-        `[FALLBACK_SEEDREAM_SAFETY] ${context} gen=${generationId} Unlocked também falhou: ${(fallbackError as Error).message}`,
+        `[FALLBACK_SEEDREAM_SAFETY] ${context} gen=${generationId} Unlocked também falhou: ${providerMessageForLog(fallbackError, [prompt])}`,
       );
       // Se o próprio Unlocked recusou por menor, esse é o motivo: bloqueio terminal (CONTENT_POLICY_MINOR, sem nova
       // tentativa do BullMQ), registrado como provider:sem-censura.
@@ -2051,7 +2155,7 @@ export class GenerationProcessor extends WorkerHost {
       refinedPrompt = await this.promptEnhancer.refinePromptForSafety(originalPrompt);
     } catch (refineError) {
       this.logger.error(
-        `Prompt refinement failed for ${generationId}: ${(refineError as Error).message}`,
+        `Prompt refinement failed for ${generationId}: ${providerMessageForLog(refineError, [originalPrompt])}`,
       );
       return null;
     }
@@ -2061,6 +2165,20 @@ export class GenerationProcessor extends WorkerHost {
         `Prompt refinement returned null for ${generationId} — content is unrefinable`,
       );
       return null;
+    }
+
+    // A reescrita passa pela trava de texto ANTES de ser gravada e de ir ao provedor; acusada = bloqueio terminal.
+    // Só vira menor (MINOR_BLOCKED) se o pedido original também for acusado: o termo da reescrita é do refinador.
+    const refinerBlock = refinedPromptBlockOf(refinedPrompt, originalPrompt);
+    if (refinerBlock) {
+      const source =
+        refinerBlock instanceof UnverifiedContentBlockError
+          ? refinerBlock.source
+          : 'refiner_minor';
+      this.logger.warn(
+        `[SAFETY_GUARD] gen=${generationId}: prompt reescrito barrado pela trava de texto (${refinerBlock.failureCode}, ${source}, termo=${refinerBlock.guardMatch ?? '-'}, refined ${textFingerprintForLog(refinedPrompt)}) — encerrada sem nova tentativa`,
+      );
+      throw refinerBlock;
     }
 
     // Save the refined prompt for audit / user visibility
@@ -2076,15 +2194,16 @@ export class GenerationProcessor extends WorkerHost {
       },
     });
 
+    // nunca o texto do pedido no log: só tamanho e sha256
     this.logger.log(
-      `Retrying generation ${generationId} with refined prompt — original: "${originalPrompt}" → refined: "${refinedPrompt}"`,
+      `Retrying generation ${generationId} with refined prompt — original ${textFingerprintForLog(originalPrompt)} → refined ${textFingerprintForLog(refinedPrompt)}`,
     );
 
     try {
       return await generateFn(refinedPrompt);
     } catch (retryError) {
       this.logger.error(
-        `Retry with refined prompt also failed for ${generationId}: ${(retryError as Error).message}`,
+        `Retry with refined prompt also failed for ${generationId}: ${providerMessageForLog(retryError, [originalPrompt, refinedPrompt])}`,
       );
       if (this.isSafetyRelatedError(retryError)) {
         // Recusa por menor sai como veio: reembalada viraria CONTENT_SAFETY_BLOCKED e o site sugeriria modelo sem
@@ -2296,7 +2415,7 @@ export class GenerationProcessor extends WorkerHost {
   @OnWorkerEvent('failed')
   async onFailed(job: Job, error: Error): Promise<void> {
     this.logger.error(
-      `Job ${job.id} [${job.name}] failed (attempt ${job.attemptsMade}/${job.opts.attempts ?? 1}): ${error.message}`,
+      `Job ${job.id} [${job.name}] failed (attempt ${job.attemptsMade}/${job.opts.attempts ?? 1}): ${providerMessageForLog(error, requestTextsOfJob(job.data))}`,
     );
 
     // Only refund after all retries are exhausted
@@ -2312,6 +2431,7 @@ export class GenerationProcessor extends WorkerHost {
         job.data.creditsConsumed,
         error,
         job.data.usedFreeGeneration,
+        requestTextsOfJob(job.data),
       );
     } catch (finalizeError) {
       // sem isso a geração ficava PROCESSING até o cron de presas (o job já não volta para a fila)
@@ -2326,12 +2446,14 @@ export class GenerationProcessor extends WorkerHost {
     }
   }
 
+  /** `requestTexts`: textos do pedido (requestTextsOfJob) que saem da mensagem do provedor no log. */
   private async handleFailure(
     generationId: string,
     userId: string,
     creditsConsumed: number,
     error: Error,
     usedFreeGeneration?: boolean,
+    requestTexts: ReadonlyArray<string> = [],
   ): Promise<void> {
     // Idempotency: skip if already completed/failed
     const current = await this.prisma.generation.findUnique({
@@ -2358,9 +2480,10 @@ export class GenerationProcessor extends WorkerHost {
 
     const userMessage = failureUserMessage(errorCode, error);
 
+    // sem a mensagem crua (pode repetir o prompt ou trazer URL assinada) nem a 1ª linha da pilha, que a repete
     this.logger.error(
-      `Generation ${generationId} failed (${errorCode}): ${error.message}`,
-      error.stack,
+      `Generation ${generationId} failed (${errorCode}): ${providerMessageForLog(error, requestTexts)}`,
+      stackFramesForLog(error),
     );
 
     await this.prisma.generation.update({
@@ -2469,19 +2592,53 @@ export class GenerationProcessor extends WorkerHost {
       inputImages
         .filter((img) => img.url)
         .map(async (img) => ({
-          base64: await this.downloadToBase64(img.url!),
+          base64: await this.downloadToBase64(img.url!, generationId),
           mimeType: img.mimeType ?? 'image/png',
         })),
     );
   }
 
-  private async downloadToBase64(url: string): Promise<string> {
-    const response = await fetch(url);
+  /** Baixa uma entrada da geração, reassinando antes a URL gravada (a assinada no upload pode ter vencido). */
+  private async downloadToBase64(
+    url: string,
+    generationId: string,
+  ): Promise<string> {
+    const response = await fetch(await this.freshInputUrl(generationId, url));
     if (!response.ok) {
       throw new Error(`Failed to download from S3: ${response.status}`);
     }
     const buffer = Buffer.from(await response.arrayBuffer());
     return buffer.toString('base64');
+  }
+
+  /**
+   * URLs das entradas guardadas da geração, reassinadas na hora do envio (refreshInputReadUrl): a assinada no upload
+   * vence na fila, na nova tentativa do BullMQ ou no desvio. Vazias saem; a ordem fica.
+   */
+  private async freshInputUrls(
+    generationId: string,
+    urls: ReadonlyArray<string | null | undefined>,
+  ): Promise<string[]> {
+    return Promise.all(
+      urls
+        .filter((url): url is string => !!url)
+        .map((url) => this.freshInputUrl(generationId, url)),
+    );
+  }
+
+  /** Uma entrada reassinada; se a assinatura falhar, segue a URL gravada (pode ainda valer) e avisa no log. */
+  private async freshInputUrl(
+    generationId: string,
+    url: string,
+  ): Promise<string> {
+    try {
+      return await this.uploadsService.refreshInputReadUrl(url, generationId);
+    } catch (error) {
+      this.logger.warn(
+        `gen=${generationId}: entrada ${mediaUrlForLog(url)} não reassinada (${(error as Error).message}) — segue a URL gravada`,
+      );
+      return url;
+    }
   }
 
   /**

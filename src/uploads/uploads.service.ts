@@ -24,6 +24,55 @@ import { PresignedUrlResponseDto } from './dto/presigned-url-response.dto';
 /** Quantas chaves recusadas entram na mensagem do erro (a lista completa fica em `failedKeys`). */
 const STRICT_DELETE_KEYS_IN_MESSAGE = 5;
 
+/** Cache da mídia pública: curto e sem `immutable`, para que apagar + purgar tire o arquivo do ar (MEDIA_CACHE_MAX_AGE). */
+export const DEFAULT_MEDIA_CACHE_MAX_AGE_SECONDS = 86_400;
+const MAX_MEDIA_CACHE_MAX_AGE_SECONDS = 31_536_000;
+
+/** Pasta das mídias que a cliente envia para uma geração (`inputs/<id da geração>/<uuid>/<arquivo>`). */
+export const GENERATION_INPUT_ROOT = 'inputs';
+/** Entrada no bucket privado: nunca vai para cache nenhum. */
+export const PRIVATE_INPUT_CACHE_CONTROL = 'private, no-store';
+/**
+ * Validade da URL assinada que o provedor recebe (SAFETY_INPUT_URL_TTL). O processor reassina a cada tentativa
+ * (refreshInputReadUrl), então ela cobre UMA tentativa: até 45 min de vídeo com consultas mais a busca assíncrona do
+ * kie/WaveSpeed. Por isso o piso é 1 h e o padrão 2 h. O teto é o máximo da assinatura SigV4 (7 dias).
+ */
+export const DEFAULT_INPUT_URL_TTL_SECONDS = 7_200;
+const MIN_INPUT_URL_TTL_SECONDS = 3_600;
+const MAX_INPUT_URL_TTL_SECONDS = 604_800;
+
+const GENERATION_ID_SEGMENT = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Mídia de entrada gravada: `url` é o que vai para o banco, a fila e o provedor. */
+export interface StoredGenerationInput {
+  url: string;
+  key: string;
+  /** true = bucket privado (S3_INPUT_PRIVATE_BUCKET) e `url` assinada com validade curta */
+  isPrivate: boolean;
+}
+
+/** Inteiro do env dentro da faixa; ausente usa o padrão, inválido usa o padrão e avisa. */
+function readBoundedInteger(
+  raw: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+): { value: number; invalid: boolean } {
+  if (raw === undefined || raw === null || raw === '') {
+    return { value: fallback, invalid: false };
+  }
+  if (typeof raw !== 'number' && typeof raw !== 'string') {
+    return { value: fallback, invalid: true };
+  }
+  const text = String(raw).trim();
+  if (!/^\d+$/.test(text)) return { value: fallback, invalid: true };
+  const value = Number(text);
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    return { value: fallback, invalid: true };
+  }
+  return { value, invalid: false };
+}
+
 /**
  * Falha do deleteByPrefixStrict: a pasta NÃO está confirmada como apagada. `deleted` diz quantos objetos o bucket
  * confirmou antes da falha; `failedKeys`, quais ele recusou (Errors[] do DeleteObjects).
@@ -51,6 +100,11 @@ export class UploadsService {
   private readonly s3Client: S3Client | null;
   private readonly bucketName: string;
   private readonly publicUrlBase: string;
+  /** Cache-Control de toda mídia gravada no bucket público */
+  private readonly publicCacheControl: string;
+  /** Bucket privado das entradas (mesmo endpoint S3); null = entradas seguem no bucket público */
+  private readonly inputPrivateBucket: string | null;
+  private readonly inputUrlTtlSeconds: number;
 
   constructor(private readonly configService: ConfigService) {
     const endpoint = this.configService.get<string>('S3_ENDPOINT');
@@ -61,6 +115,50 @@ export class UploadsService {
     this.publicUrlBase = (
       this.configService.get<string>('S3_PUBLIC_URL', '') || ''
     ).replace(/\/$/, '');
+
+    const cacheMaxAge = readBoundedInteger(
+      this.configService.get<string>('MEDIA_CACHE_MAX_AGE'),
+      DEFAULT_MEDIA_CACHE_MAX_AGE_SECONDS,
+      0,
+      MAX_MEDIA_CACHE_MAX_AGE_SECONDS,
+    );
+    if (cacheMaxAge.invalid) {
+      this.logger.warn(
+        `MEDIA_CACHE_MAX_AGE inválido (inteiro de 0 a ${MAX_MEDIA_CACHE_MAX_AGE_SECONDS}); usando ${DEFAULT_MEDIA_CACHE_MAX_AGE_SECONDS}`,
+      );
+    }
+    this.publicCacheControl = `public, max-age=${cacheMaxAge.value}`;
+
+    const inputUrlTtl = readBoundedInteger(
+      this.configService.get<string>('SAFETY_INPUT_URL_TTL'),
+      DEFAULT_INPUT_URL_TTL_SECONDS,
+      MIN_INPUT_URL_TTL_SECONDS,
+      MAX_INPUT_URL_TTL_SECONDS,
+    );
+    if (inputUrlTtl.invalid) {
+      this.logger.warn(
+        `SAFETY_INPUT_URL_TTL inválido (inteiro de ${MIN_INPUT_URL_TTL_SECONDS} a ${MAX_INPUT_URL_TTL_SECONDS}); usando ${DEFAULT_INPUT_URL_TTL_SECONDS}`,
+      );
+    }
+    this.inputUrlTtlSeconds = inputUrlTtl.value;
+
+    const privateBucket = (
+      this.configService.get<string>('S3_INPUT_PRIVATE_BUCKET') ?? ''
+    ).trim();
+    if (privateBucket && privateBucket === this.bucketName) {
+      // o mesmo bucket continuaria servindo a entrada pela URL pública: não conta como privado
+      this.logger.warn(
+        'S3_INPUT_PRIVATE_BUCKET é o próprio bucket público (S3_BUCKET_NAME): ignorado, entradas seguem públicas',
+      );
+      this.inputPrivateBucket = null;
+    } else {
+      this.inputPrivateBucket = privateBucket || null;
+    }
+    if (endpoint && !this.inputPrivateBucket) {
+      this.logger.warn(
+        `S3_INPUT_PRIVATE_BUCKET não configurado: as mídias de entrada seguem no bucket público (${GENERATION_INPUT_ROOT}/)`,
+      );
+    }
 
     if (endpoint) {
       this.s3Client = new S3Client({
@@ -159,7 +257,7 @@ export class UploadsService {
         Body: buffer,
         ContentType: contentType,
         ContentLength: buffer.length,
-        CacheControl: 'public, max-age=31536000, immutable',
+        CacheControl: this.publicCacheControl,
       }),
     );
 
@@ -197,7 +295,7 @@ export class UploadsService {
         Body: finalBuffer,
         ContentType: contentType,
         ContentLength: finalBuffer.length,
-        CacheControl: 'public, max-age=31536000, immutable',
+        CacheControl: this.publicCacheControl,
       }),
     );
 
@@ -478,7 +576,7 @@ export class UploadsService {
         Body: finalBuffer,
         ContentType: contentType,
         ContentLength: finalBuffer.length,
-        CacheControl: 'public, max-age=31536000, immutable',
+        CacheControl: this.publicCacheControl,
       }),
     );
 
@@ -486,6 +584,219 @@ export class UploadsService {
 
     const publicUrl = this.getPublicUrl(fileKey);
     return { publicUrl, signedUrl: publicUrl };
+  }
+
+  /** As entradas das gerações vão para o bucket privado (S3_INPUT_PRIVATE_BUCKET)? */
+  get privateInputsEnabled(): boolean {
+    return this.inputPrivateBucket !== null;
+  }
+
+  /** Validade, em segundos, da URL assinada de leitura das entradas privadas (SAFETY_INPUT_URL_TTL). */
+  get inputUrlTtl(): number {
+    return this.inputUrlTtlSeconds;
+  }
+
+  /**
+   * Grava uma mídia enviada pela cliente para a geração em `inputs/<id da geração>/<uuid>/<arquivo>`.
+   * Com S3_INPUT_PRIVATE_BUCKET: bucket privado, `private, no-store`, e a URL devolvida é assinada com a validade de
+   * SAFETY_INPUT_URL_TTL (é ela que vai para o banco, a fila e o provedor). Sem a env: bucket público, como antes.
+   */
+  async uploadGenerationInput(
+    buffer: Buffer,
+    generationId: string,
+    filename: string,
+    contentType: string,
+  ): Promise<StoredGenerationInput> {
+    if (!GENERATION_ID_SEGMENT.test(generationId)) {
+      throw new Error(
+        `Id de geração inválido para a pasta de entrada: "${generationId}"`,
+      );
+    }
+    if (!filename || filename.includes('/') || filename.includes('..')) {
+      throw new Error(`Nome de arquivo de entrada inválido: "${filename}"`);
+    }
+    const fileKey = `${GENERATION_INPUT_ROOT}/${generationId}/${randomUUID()}/${filename}`;
+
+    if (!this.inputPrivateBucket) {
+      if (!this.s3Client) {
+        return {
+          url: `https://mock-s3.local/${this.bucketName}/${fileKey}`,
+          key: fileKey,
+          isPrivate: false,
+        };
+      }
+      const size = await this.putObject(
+        this.bucketName,
+        fileKey,
+        buffer,
+        contentType,
+        this.publicCacheControl,
+      );
+      this.logger.log(`Uploaded (public input) ${fileKey} (${size} bytes)`);
+      return {
+        url: this.getPublicUrl(fileKey),
+        key: fileKey,
+        isPrivate: false,
+      };
+    }
+
+    if (this.s3Client) {
+      const size = await this.putObject(
+        this.inputPrivateBucket,
+        fileKey,
+        buffer,
+        contentType,
+        PRIVATE_INPUT_CACHE_CONTROL,
+      );
+      this.logger.log(`Uploaded (private input) ${fileKey} (${size} bytes)`);
+    }
+    return {
+      url: await this.getInputReadUrl(fileKey),
+      key: fileKey,
+      isPrivate: true,
+    };
+  }
+
+  /**
+   * URL de leitura de uma entrada já gravada: assinada no bucket privado (validade padrão SAFETY_INPUT_URL_TTL) ou a
+   * pública, quando as entradas ainda estão no bucket público. Serve para reassinar a evidência guardada.
+   */
+  async getInputReadUrl(
+    fileKey: string,
+    expiresInSeconds: number = this.inputUrlTtlSeconds,
+  ): Promise<string> {
+    if (
+      !fileKey.startsWith(`${GENERATION_INPUT_ROOT}/`) ||
+      fileKey.includes('..')
+    ) {
+      throw new Error(`Chave fora da pasta de entradas: "${fileKey}"`);
+    }
+    if (!this.inputPrivateBucket) return this.getPublicUrl(fileKey);
+
+    const ttl = Math.min(
+      Math.max(Math.floor(expiresInSeconds), 1),
+      MAX_INPUT_URL_TTL_SECONDS,
+    );
+    if (!this.s3Client) {
+      return `https://mock-s3.local/${this.inputPrivateBucket}/${fileKey}?X-Amz-Expires=${ttl}`;
+    }
+    return getSignedUrl(
+      this.s3Client,
+      new GetObjectCommand({ Bucket: this.inputPrivateBucket, Key: fileKey }),
+      { expiresIn: ttl },
+    );
+  }
+
+  /**
+   * URL nova para uma entrada da geração, a cada envio ao provedor: a assinada no upload vence (fila longa, nova
+   * tentativa do BullMQ, desvio de modelo) e a chave não. Só reassina a URL do bucket PRIVADO dentro de
+   * `inputs/<generationId>/`; pública, de outra geração, fora de `inputs/` ou ilegível volta igual (a de antes do bucket
+   * privado continua no público, e reassinar no privado daria 404).
+   */
+  async refreshInputReadUrl(
+    url: string,
+    generationId: string,
+  ): Promise<string> {
+    if (!this.inputPrivateBucket || !url) return url;
+    if (this.publicUrlBase && url.startsWith(`${this.publicUrlBase}/`)) {
+      return url;
+    }
+    let pathname: string;
+    try {
+      pathname = new URL(url).pathname;
+    } catch {
+      return url;
+    }
+    const marker = `/${this.inputPrivateBucket}/`;
+    const at = pathname.indexOf(marker);
+    if (at === -1) return url;
+    let key: string;
+    try {
+      key = decodeURIComponent(pathname.slice(at + marker.length));
+    } catch {
+      return url;
+    }
+    if (
+      !GENERATION_ID_SEGMENT.test(generationId) ||
+      !key.startsWith(`${GENERATION_INPUT_ROOT}/${generationId}/`) ||
+      key.includes('..')
+    ) {
+      return url;
+    }
+    return this.getInputReadUrl(key);
+  }
+
+  /**
+   * Chave de uma entrada a partir da URL gravada no banco (assinada do bucket privado, pública ou simulada).
+   * A URL assinada vence; a chave não. Devolve null para o que não é da pasta de entradas.
+   */
+  inputKeyFromUrl(url: string | null | undefined): string | null {
+    if (!url) return null;
+    const clean = url.split(/[?#]/)[0];
+    let key: string | null = null;
+    if (this.publicUrlBase && clean.startsWith(`${this.publicUrlBase}/`)) {
+      key = clean.slice(this.publicUrlBase.length + 1);
+    } else {
+      let pathname: string;
+      try {
+        pathname = new URL(clean).pathname;
+      } catch {
+        return null;
+      }
+      for (const bucket of [this.inputPrivateBucket, this.bucketName]) {
+        if (!bucket) continue;
+        const marker = `/${bucket}/`;
+        const at = pathname.indexOf(marker);
+        if (at !== -1) {
+          key = pathname.slice(at + marker.length);
+          break;
+        }
+      }
+    }
+    if (!key) return null;
+    try {
+      key = decodeURIComponent(key);
+    } catch {
+      return null;
+    }
+    return key.startsWith(`${GENERATION_INPUT_ROOT}/`) && !key.includes('..')
+      ? key
+      : null;
+  }
+
+  /** PutObject com o faststart do MP4 (moov no começo, para tocar enquanto baixa). Devolve o tamanho gravado. */
+  private async putObject(
+    bucket: string,
+    fileKey: string,
+    buffer: Buffer,
+    contentType: string,
+    cacheControl: string,
+  ): Promise<number> {
+    if (!this.s3Client) throw new Error('S3 não configurado (S3_ENDPOINT)');
+    const finalBuffer =
+      contentType === 'video/mp4' ? await this.applyFaststart(buffer) : buffer;
+    await this.s3Client.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: fileKey,
+        Body: finalBuffer,
+        ContentType: contentType,
+        ContentLength: finalBuffer.length,
+        CacheControl: cacheControl,
+      }),
+    );
+    return finalBuffer.length;
+  }
+
+  /**
+   * Buckets onde uma pasta pode ter objetos: o público sempre; o privado também quando a pasta é de entradas
+   * (o que nasceu antes do bucket privado continua no público até a limpeza).
+   */
+  private bucketsForPrefix(prefix: string): string[] {
+    return this.inputPrivateBucket &&
+      prefix.startsWith(`${GENERATION_INPUT_ROOT}/`)
+      ? [this.bucketName, this.inputPrivateBucket]
+      : [this.bucketName];
   }
 
   /**
@@ -518,12 +829,43 @@ export class UploadsService {
     }
 
     let totalDeleted = 0;
+    let firstError: Error | null = null;
+    // cada bucket é tentado mesmo que o anterior falhe; o erro sobe no fim
+    for (const bucket of this.bucketsForPrefix(prefix)) {
+      try {
+        totalDeleted += await this.deleteByPrefixIn(
+          this.s3Client,
+          bucket,
+          prefix,
+        );
+      } catch (error) {
+        firstError ??=
+          error instanceof Error ? error : new Error(String(error));
+      }
+    }
+
+    if (totalDeleted > 0) {
+      this.logger.log(
+        `Deleted ${totalDeleted} objects under prefix "${prefix}"`,
+      );
+    }
+    if (firstError) throw firstError;
+
+    return totalDeleted;
+  }
+
+  private async deleteByPrefixIn(
+    s3Client: S3Client,
+    bucket: string,
+    prefix: string,
+  ): Promise<number> {
+    let totalDeleted = 0;
     let continuationToken: string | undefined;
 
     do {
-      const listResult = await this.s3Client.send(
+      const listResult = await s3Client.send(
         new ListObjectsV2Command({
-          Bucket: this.bucketName,
+          Bucket: bucket,
           Prefix: prefix,
           ContinuationToken: continuationToken,
         }),
@@ -532,9 +874,9 @@ export class UploadsService {
       const objects = listResult.Contents;
       if (!objects?.length) break;
 
-      await this.s3Client.send(
+      await s3Client.send(
         new DeleteObjectsCommand({
-          Bucket: this.bucketName,
+          Bucket: bucket,
           Delete: { Objects: objects.map((o) => ({ Key: o.Key! })) },
         }),
       );
@@ -544,10 +886,6 @@ export class UploadsService {
         ? listResult.NextContinuationToken
         : undefined;
     } while (continuationToken);
-
-    if (totalDeleted > 0) {
-      this.logger.log(`Deleted ${totalDeleted} objects under prefix "${prefix}"`);
-    }
 
     return totalDeleted;
   }
@@ -585,6 +923,53 @@ export class UploadsService {
     }
 
     let deleted = 0;
+    const failures: StorageDeleteError[] = [];
+    // cada bucket é tentado mesmo que o anterior falhe; a pasta só conta como apagada se todos confirmarem
+    for (const bucket of this.bucketsForPrefix(prefix)) {
+      try {
+        deleted += await this.deleteByPrefixStrictIn(
+          this.s3Client,
+          bucket,
+          prefix,
+        );
+      } catch (error) {
+        failures.push(
+          error instanceof StorageDeleteError
+            ? error
+            : new StorageDeleteError(
+                `Exclusão na pasta "${prefix}" falhou: ${describeStorageFailure(error)}`,
+                prefix,
+                0,
+                [],
+              ),
+        );
+      }
+    }
+
+    if (failures.length) {
+      if (failures.length === 1 && deleted === 0) throw failures[0];
+      throw new StorageDeleteError(
+        failures.map((failure) => failure.message).join(' | '),
+        prefix,
+        deleted + failures.reduce((sum, failure) => sum + failure.deleted, 0),
+        failures.flatMap((failure) => failure.failedKeys),
+      );
+    }
+
+    if (deleted > 0) {
+      this.logger.log(
+        `Deleted ${deleted} objects under prefix "${prefix}" (strict)`,
+      );
+    }
+    return deleted;
+  }
+
+  private async deleteByPrefixStrictIn(
+    s3Client: S3Client,
+    bucket: string,
+    prefix: string,
+  ): Promise<number> {
+    let deleted = 0;
     const failedKeys: string[] = [];
     let unnamedFailures = 0;
     let continuationToken: string | undefined;
@@ -593,9 +978,9 @@ export class UploadsService {
     do {
       let listResult: ListObjectsV2CommandOutput;
       try {
-        listResult = await this.s3Client.send(
+        listResult = await s3Client.send(
           new ListObjectsV2Command({
-            Bucket: this.bucketName,
+            Bucket: bucket,
             Prefix: prefix,
             ContinuationToken: continuationToken,
           }),
@@ -618,9 +1003,9 @@ export class UploadsService {
       if (keys.length) {
         let deleteResult: DeleteObjectsCommandOutput;
         try {
-          deleteResult = await this.s3Client.send(
+          deleteResult = await s3Client.send(
             new DeleteObjectsCommand({
-              Bucket: this.bucketName,
+              Bucket: bucket,
               Delete: { Objects: keys.map((Key) => ({ Key })) },
             }),
           );
@@ -678,11 +1063,6 @@ export class UploadsService {
       );
     }
 
-    if (deleted > 0) {
-      this.logger.log(
-        `Deleted ${deleted} objects under prefix "${prefix}" (strict)`,
-      );
-    }
     return deleted;
   }
 
