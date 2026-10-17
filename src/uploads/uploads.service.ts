@@ -5,7 +5,9 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   ListObjectsV2Command,
+  ListObjectsV2CommandOutput,
   DeleteObjectsCommand,
+  DeleteObjectsCommandOutput,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
@@ -18,6 +20,30 @@ import * as path from 'path';
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 import { PresignedUrlDto } from './dto/presigned-url.dto';
 import { PresignedUrlResponseDto } from './dto/presigned-url-response.dto';
+
+/** Quantas chaves recusadas entram na mensagem do erro (a lista completa fica em `failedKeys`). */
+const STRICT_DELETE_KEYS_IN_MESSAGE = 5;
+
+/**
+ * Falha do deleteByPrefixStrict: a pasta NÃO está confirmada como apagada. `deleted` diz quantos objetos o bucket
+ * confirmou antes da falha; `failedKeys`, quais ele recusou (Errors[] do DeleteObjects).
+ */
+export class StorageDeleteError extends Error {
+  constructor(
+    message: string,
+    readonly prefix: string,
+    readonly deleted: number,
+    readonly failedKeys: string[],
+  ) {
+    super(message);
+    this.name = 'StorageDeleteError';
+  }
+}
+
+function describeStorageFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.slice(0, 300);
+}
 
 @Injectable()
 export class UploadsService {
@@ -524,6 +550,140 @@ export class UploadsService {
     }
 
     return totalDeleted;
+  }
+
+  /**
+   * Versão estrita do deleteByPrefix, para quando a exclusão precisa ser confirmada (exclusão de conta, LGPD): só
+   * devolve (o total apagado) quando o bucket confirmou cada objeto da pasta. Lança StorageDeleteError quando o S3 não
+   * está configurado, a pasta não tem a forma `<raiz>/.../` (nunca apaga o bucket inteiro), a listagem ou o
+   * DeleteObjects falham, ou o DeleteObjects devolve Errors[] para alguma chave. Depois de uma chave recusada, segue
+   * apagando as páginas seguintes e lança no fim: a pasta conta como não apagada e a próxima rodada tenta de novo.
+   */
+  async deleteByPrefixStrict(prefix: string): Promise<number> {
+    if (!this.s3Client) {
+      throw new StorageDeleteError(
+        'S3 não configurado (S3_ENDPOINT): nada foi apagado.',
+        prefix,
+        0,
+        [],
+      );
+    }
+    // pasta de verdade (`raiz/.../`): prefixo vazio, solto ou começando na raiz apagaria o bucket inteiro
+    if (
+      typeof prefix !== 'string' ||
+      prefix !== prefix.trim() ||
+      prefix.length < 2 ||
+      prefix.startsWith('/') ||
+      !prefix.endsWith('/')
+    ) {
+      throw new StorageDeleteError(
+        `Pasta inválida para exclusão: "${String(prefix)}".`,
+        String(prefix),
+        0,
+        [],
+      );
+    }
+
+    let deleted = 0;
+    const failedKeys: string[] = [];
+    let unnamedFailures = 0;
+    let continuationToken: string | undefined;
+    const seenTokens = new Set<string>();
+
+    do {
+      let listResult: ListObjectsV2CommandOutput;
+      try {
+        listResult = await this.s3Client.send(
+          new ListObjectsV2Command({
+            Bucket: this.bucketName,
+            Prefix: prefix,
+            ContinuationToken: continuationToken,
+          }),
+        );
+      } catch (error) {
+        throw new StorageDeleteError(
+          `Listagem da pasta "${prefix}" falhou: ${describeStorageFailure(error)}`,
+          prefix,
+          deleted,
+          failedKeys,
+        );
+      }
+
+      const keys = (listResult.Contents ?? [])
+        .map((object) => object.Key)
+        .filter(
+          (key): key is string => typeof key === 'string' && key.length > 0,
+        );
+
+      if (keys.length) {
+        let deleteResult: DeleteObjectsCommandOutput;
+        try {
+          deleteResult = await this.s3Client.send(
+            new DeleteObjectsCommand({
+              Bucket: this.bucketName,
+              Delete: { Objects: keys.map((Key) => ({ Key })) },
+            }),
+          );
+        } catch (error) {
+          throw new StorageDeleteError(
+            `Exclusão na pasta "${prefix}" falhou: ${describeStorageFailure(error)}`,
+            prefix,
+            deleted,
+            failedKeys,
+          );
+        }
+
+        const pageKeys = new Set(keys);
+        const refusedHere = new Set<string>();
+        for (const failure of deleteResult.Errors ?? []) {
+          if (failure?.Key && pageKeys.has(failure.Key))
+            refusedHere.add(failure.Key);
+          else unnamedFailures++;
+        }
+        failedKeys.push(...refusedHere);
+        deleted += keys.length - refusedHere.size;
+      }
+
+      if (listResult.IsTruncated) {
+        const next = listResult.NextContinuationToken;
+        // sem token (ou o mesmo de antes) a listagem pararia no meio: a pasta não fica confirmada
+        if (!next || seenTokens.has(next)) {
+          throw new StorageDeleteError(
+            `Listagem da pasta "${prefix}" veio truncada sem continuação válida.`,
+            prefix,
+            deleted,
+            failedKeys,
+          );
+        }
+        seenTokens.add(next);
+        continuationToken = next;
+      } else {
+        continuationToken = undefined;
+      }
+    } while (continuationToken);
+
+    if (failedKeys.length || unnamedFailures) {
+      const sample = failedKeys
+        .slice(0, STRICT_DELETE_KEYS_IN_MESSAGE)
+        .join(', ');
+      throw new StorageDeleteError(
+        `O bucket recusou ${failedKeys.length + unnamedFailures} objeto(s) da pasta "${prefix}"` +
+          (sample
+            ? ` (${sample}${failedKeys.length > STRICT_DELETE_KEYS_IN_MESSAGE ? ', ...' : ''})`
+            : '') +
+          `; ${deleted} apagado(s).`,
+        prefix,
+        deleted,
+        failedKeys,
+      );
+    }
+
+    if (deleted > 0) {
+      this.logger.log(
+        `Deleted ${deleted} objects under prefix "${prefix}" (strict)`,
+      );
+    }
+    return deleted;
   }
 
   /**

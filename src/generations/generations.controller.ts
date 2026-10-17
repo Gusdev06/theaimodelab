@@ -57,9 +57,13 @@ import { GenerateMinimaxH3ReferenceToVideoDto } from './dto/videos/generate-mini
 import { GenerateTextToSpeechDto } from './dto/generate-text-to-speech.dto';
 import { GenerateVoiceCloneDto } from './dto/generate-voice-clone.dto';
 import { UnlimitedStatusResponseDto } from './dto/unlimited-status.dto';
+import { UseInterceptors } from '@nestjs/common';
+import { ContentSafetyInterceptor } from '../content-safety/content-safety.interceptor';
 
 @ApiTags('generations')
 @ApiBearerAuth()
+// segurança de conteúdo: recusa referência a menor e exige atestado de consentimento nas ferramentas de foto
+@UseInterceptors(ContentSafetyInterceptor)
 @Controller('api/v1/generations')
 export class GenerationsController {
   constructor(

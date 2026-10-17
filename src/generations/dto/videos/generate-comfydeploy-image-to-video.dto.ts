@@ -4,6 +4,7 @@ import {
   IsNumber,
   IsIn,
   MaxLength,
+  IsBoolean,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -59,4 +60,12 @@ export class GenerateComfyDeployImageToVideoDto {
   @IsOptional()
   @IsString()
   model_variant?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Atestado de imagem (ContentSafetyInterceptor): a foto/vídeo enviado é de uma pessoa gerada por IA ou de um adulto que autorizou o uso da própria imagem. Obrigatório (true) quando há mídia de entrada, porque o provedor não tem filtro; sem ele, 400 CONSENT_REQUIRED.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  consent_confirmed?: boolean;
 }
