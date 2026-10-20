@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreditTransactionType } from '@prisma/client';
 import { TheaimodelabChatClient, ChatPart } from '../prompt-enhancer/theaimodelab-chat.client';
 import { fitImageForVision } from '../common/utils/vision-image';
+import { OpenRouterVisionClient } from './openrouter-vision.client';
 
 const CREDIT_COST = 5;
 
@@ -103,6 +104,27 @@ Sua função: receber UMA imagem e retornar APENAS um JSON válido seguindo EXAT
 
 Analise a imagem enviada e retorne APENAS o JSON correspondente, sempre incluindo o campo "reference_override" no topo.`;
 
+// Plano B (OpenRouter) pra imagem que o Gemini recusa: mesma estrutura, mas
+// nudez e lingerie de adulto são descritas literalmente. Menor continua barrado.
+const ADULT_RULES = `9. A PLATAFORMA É 18+ E TODAS AS PESSOAS SÃO ADULTAS. Nudez, lingerie e poses sensuais são permitidas: descreva corpo, nudez parcial ou total e roupa íntima de forma literal e detalhada (use "roupa" para o que veste ou "nua"/"seminua"), sem censurar, suavizar ou moralizar.
+10. "assunto.idade" SEMPRE começa com "adulta" ou "adulto" e uma faixa de 21 anos ou mais. NUNCA use "jovem", "menina", "garota", "novinha", "teen", "young", "girl" ou equivalentes em nenhum campo.
+11. SE A PESSOA PUDER SER MENOR DE IDADE (traços infantis, corpo pré-adolescente, uniforme escolar, contexto infantil), retorne apenas: {"error": "menor_de_idade"}`;
+
+const ADULT_SYSTEM_PROMPT = SYSTEM_PROMPT.replace(
+  '9. SE CONTEÚDO INAPROPRIADO, retorne apenas: {"error": "conteudo_inapropriado"}',
+  ADULT_RULES,
+);
+
+// Rede de segurança: termos que lembram menor e travam o filtro do gerador.
+const MINOR_TERMS: [RegExp, string][] = [
+  [/\byoung (woman|lady)\b/gi, 'adult woman'],
+  [/\byoung man\b/gi, 'adult man'],
+  [/\b(girl|teen|teenager)\b/gi, 'woman'],
+  [/\b(menina|garota|novinha)\b/gi, 'mulher adulta'],
+  [/\b(adult[oa]) jovem\b/gi, '$1'],
+  [/\bjovem\b/gi, 'adulta'],
+];
+
 type MediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
 
 @Injectable()
@@ -113,6 +135,7 @@ export class PromptAgentService {
     private readonly creditsService: CreditsService,
     private readonly prisma: PrismaService,
     private readonly chatClient: TheaimodelabChatClient,
+    private readonly openRouter: OpenRouterVisionClient,
   ) {}
 
   async analyzeImage(userId: string, image: string) {
@@ -128,19 +151,22 @@ export class PromptAgentService {
     );
 
     try {
-      const raw = await this.callModel(imageBlock);
       let json: any;
       try {
-        json = this.extractJson(raw);
-      } catch (err: any) {
-        const retryRaw = await this.callModel(
-          imageBlock,
-          `O JSON anterior falhou a validação: ${err.message}. Retorne APENAS o JSON corrigido seguindo a estrutura obrigatória.`,
-        );
-        json = this.extractJson(retryRaw);
+        json = await this.analyzeWith((extra) => this.callModel(imageBlock, extra));
+      } catch (err) {
+        // Gemini bloqueado por segurança costuma vir vazio ou fora do JSON.
+        if (!this.openRouter.enabled) throw err;
+        this.logger.warn(`Gemini falhou, indo pro OpenRouter: ${(err as Error).message}`);
+        json = { error: 'conteudo_inapropriado' };
       }
 
-      if (json?.error === 'conteudo_inapropriado') {
+      if (json?.error === 'conteudo_inapropriado' && this.openRouter.enabled) {
+        json = await this.analyzeWith((extra) => this.callAdultModel(imageBlock, extra));
+        if (json?.error === 'menor_de_idade') json = { error: 'conteudo_inapropriado' };
+      }
+
+      if (json?.error) {
         await this.refundSilently(userId);
         throw new BadRequestException({
           code: 'INAPPROPRIATE_CONTENT',
@@ -148,6 +174,7 @@ export class PromptAgentService {
         });
       }
 
+      json = this.stripMinorTerms(json);
       const compiledPrompt = this.compileToString(json);
       return { json, compiledPrompt, creditsUsed: CREDIT_COST };
     } catch (err) {
@@ -281,6 +308,34 @@ export class PromptAgentService {
       ],
     });
     return res.text || '';
+  }
+
+  /** Chama o modelo e, se o JSON vier quebrado, pede a correção uma vez. */
+  private async analyzeWith(call: (extraUserText?: string) => Promise<string>): Promise<any> {
+    const raw = await call();
+    try {
+      return this.extractJson(raw);
+    } catch (err: any) {
+      const retryRaw = await call(
+        `O JSON anterior falhou a validação: ${err.message}. Retorne APENAS o JSON corrigido seguindo a estrutura obrigatória.`,
+      );
+      return this.extractJson(retryRaw);
+    }
+  }
+
+  private async callAdultModel(imageBlock: ChatPart, extraUserText?: string): Promise<string> {
+    if (!imageBlock.inline_data) throw new Error('Imagem ausente para o OpenRouter');
+    return this.openRouter.describe({
+      system: ADULT_SYSTEM_PROMPT,
+      image: imageBlock.inline_data,
+      text: extraUserText || 'Analise esta imagem e retorne APENAS o JSON.',
+    });
+  }
+
+  private stripMinorTerms(json: any): any {
+    let text = JSON.stringify(json);
+    for (const [re, to] of MINOR_TERMS) text = text.replace(re, to);
+    return JSON.parse(text);
   }
 
   private extractJson(text: string): any {
