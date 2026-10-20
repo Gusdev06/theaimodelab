@@ -50,6 +50,7 @@ export class GalleryService {
           isFavorited: true,
           createdAt: true,
           completedAt: true,
+          expiresAt: true,
           outputs: {
             select: { url: true, thumbnailUrl: true, blurDataUrl: true },
             orderBy: { order: 'asc' },
@@ -85,6 +86,7 @@ export class GalleryService {
       folder: gen.generationFolders?.[0]?.folder ?? undefined,
       createdAt: gen.createdAt,
       completedAt: gen.completedAt ?? undefined,
+      expiresAt: gen.expiresAt ?? null,
     }));
 
     return new PaginatedResponseDto(data, total, filters.page, filters.limit);
