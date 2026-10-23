@@ -1,9 +1,10 @@
-import { Controller, Get, HttpCode, HttpStatus, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { ListReferralsQueryDto } from './dto/list-referrals.query';
+import { UpdateReferralSettingsDto } from './dto/update-referral-settings.dto';
 import { ReferralsService } from './referrals.service';
 
 @ApiTags('referrals')
@@ -21,9 +22,21 @@ export class ReferralsAdminController {
   }
 
   @Get('stats')
-  @ApiOperation({ summary: 'Totais da indicação: por status e créditos pagos' })
+  @ApiOperation({ summary: 'Totais da indicação: por status, créditos pagos, revisão parada e configuração' })
   async stats() {
     return this.referralsService.adminStats();
+  }
+
+  @Get('settings')
+  @ApiOperation({ summary: 'Valor por indicação e tetos em vigor' })
+  async settings() {
+    return this.referralsService.getSettings();
+  }
+
+  @Patch('settings')
+  @ApiOperation({ summary: 'Muda valor e tetos sem deploy (rewardCredits 0 desliga a indicação)' })
+  async updateSettings(@Body() dto: UpdateReferralSettingsDto) {
+    return this.referralsService.updateSettings(dto);
   }
 
   @Post(':id/approve')

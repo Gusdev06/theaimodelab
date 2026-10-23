@@ -1309,11 +1309,14 @@ enum ReferralStatus {
 
 /// Código de indicação do usuário. Tabela própria para não mexer na `users`.
 model ReferralCode {
-  id        String   @id @default(cuid())
-  userId    String   @unique @map("user_id")
-  code      String   @unique
-  createdAt DateTime @default(now()) @map("created_at")
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id            String   @id @default(cuid())
+  userId        String   @unique @map("user_id")
+  code          String   @unique
+  /// Indicações já pagas a este usuário. Incrementado na transação do pagamento, com a linha travada:
+  /// é o teto total atômico e a trava que impede duas concessões do mesmo indicador ao mesmo tempo.
+  rewardedCount Int      @default(0) @map("rewarded_count")
+  createdAt     DateTime @default(now()) @map("created_at")
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("referral_codes")
 }
@@ -1331,6 +1334,8 @@ model Referral {
   signupIpHash     String?        @map("signup_ip_hash")
   /// sha256 do e-mail normalizado (sem +tag; Gmail sem pontos): pega alias do mesmo dono.
   emailFingerprint String?        @map("email_fingerprint")
+  /// sha256 do domínio quando é próprio (não provedor público): pega farm por catch-all.
+  emailDomainKey   String?        @map("email_domain_key")
   creditsAwarded   Int            @default(0) @map("credits_awarded")
   rewardedAt       DateTime?      @map("rewarded_at")
   reviewedById     String?        @map("reviewed_by_id")
@@ -1344,5 +1349,6 @@ model Referral {
   @@index([status, createdAt])
   @@index([referrerId, signupIpHash])
   @@index([referrerId, emailFingerprint])
+  @@index([referrerId, emailDomainKey])
   @@map("referrals")
 }

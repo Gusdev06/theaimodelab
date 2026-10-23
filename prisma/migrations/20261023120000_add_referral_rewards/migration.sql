@@ -6,6 +6,7 @@ CREATE TABLE "referral_codes" (
     "id" TEXT NOT NULL,
     "user_id" TEXT NOT NULL,
     "code" TEXT NOT NULL,
+    "rewarded_count" INTEGER NOT NULL DEFAULT 0,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "referral_codes_pkey" PRIMARY KEY ("id")
@@ -21,6 +22,7 @@ CREATE TABLE "referrals" (
     "reason" TEXT,
     "signup_ip_hash" TEXT,
     "email_fingerprint" TEXT,
+    "email_domain_key" TEXT,
     "credits_awarded" INTEGER NOT NULL DEFAULT 0,
     "rewarded_at" TIMESTAMP(3),
     "reviewed_by_id" TEXT,
@@ -51,6 +53,9 @@ CREATE INDEX "referrals_referrer_id_signup_ip_hash_idx" ON "referrals"("referrer
 
 -- CreateIndex
 CREATE INDEX "referrals_referrer_id_email_fingerprint_idx" ON "referrals"("referrer_id", "email_fingerprint");
+
+-- CreateIndex
+CREATE INDEX "referrals_referrer_id_email_domain_key_idx" ON "referrals"("referrer_id", "email_domain_key");
 
 -- AddForeignKey
 ALTER TABLE "referral_codes" ADD CONSTRAINT "referral_codes_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;

@@ -16,11 +16,19 @@ export const SETTING_KEYS = {
   referralMaxRewardsPerReferrer: 'referral_max_rewards_per_referrer',
   /** Indicações premiadas por indicador em 24 h; o excedente espera o dia seguinte. */
   referralMaxRewardsPerDay: 'referral_max_rewards_per_day',
+  /** Indicações premiadas na plataforma inteira em 24 h; acima disso tudo vai para revisão (disjuntor anti-farm). */
+  referralMaxRewardsGlobalPerDay: 'referral_max_rewards_global_per_day',
 } as const;
 
 @Injectable()
 export class SettingsService {
   constructor(private readonly prisma: PrismaService) {}
+
+  /** Valor cru da chave; undefined = a linha não existe (o chamador separa "ausente" de "inválido"). */
+  async getRaw(key: string): Promise<string | undefined> {
+    const row = await this.prisma.appSetting.findUnique({ where: { key } });
+    return row ? row.value : undefined;
+  }
 
   async getBool(key: string, defaultValue: boolean): Promise<boolean> {
     const row = await this.prisma.appSetting.findUnique({ where: { key } });
