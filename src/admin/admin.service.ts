@@ -1,4 +1,12 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreditTransactionType,
@@ -33,6 +41,18 @@ import {
   readHoldAccount,
   scanReportsCitingAccount,
 } from '../users/account-erasure.service';
+import {
+  SAFETY_REVIEW_MARKER,
+  createHoldingReportsCache,
+  safetyMaskedGenerationIds,
+  type MaskableGeneration,
+} from '../content-safety/reviewer/media-masking';
+import {
+  IMAGE_SAFETY_CONFIG,
+  type ImageSafetyConfig,
+} from '../content-safety/image-safety/image-safety.config';
+import { hasOpenSafetySuspension } from '../content-safety/strikes/strikes.types';
+import { invalidateActiveUser } from '../auth/strategies/jwt.strategy';
 
 const PROMPT_THUMB_WIDTH = 400;
 const PROMPT_THUMB_HEIGHT = 500;
@@ -117,11 +137,20 @@ const PAID_SUBS_CTE = Prisma.sql`paid_subs AS (
 @Injectable()
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
+  /** denúncias que seguram evidência, lidas no máximo a cada 60 s (a máscara roda em toda página do admin) */
+  private readonly holdingReports = createHoldingReportsCache();
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly modelsService: ModelsService,
     private readonly uploadsService: UploadsService,
+    /** modos da checagem de imagem e de texto (módulo global); ausente = os dois desligados */
+    @Optional()
+    @Inject(IMAGE_SAFETY_CONFIG)
+    private readonly safetyConfig: Pick<
+      ImageSafetyConfig,
+      'imageMode' | 'textMode'
+    > | null = null,
   ) {}
 
   /**
@@ -406,6 +435,13 @@ export class AdminService {
       throw new NotFoundException('Usuário não encontrado');
     }
 
+    const masked = await this.safetyMaskedIds(
+      user.generations.map((gen) => ({
+        ...gen,
+        user: { id: user.id, email: user.email },
+      })),
+    );
+
     const freeGenerations = Object.values(FreeGenerationType).reduce(
       (acc, t) => ({ ...acc, [t]: 0 }),
       {} as Record<FreeGenerationType, number>,
@@ -453,15 +489,43 @@ export class AdminService {
         prompt: gen.prompt,
         resolution: gen.resolution,
         creditsConsumed: gen.creditsConsumed,
-        outputs: gen.outputs?.map((o) => ({
-          url: o.url,
-          thumbnailUrl: o.thumbnailUrl,
-          mimeType: o.mimeType,
-        })) ?? [],
+        outputs: masked.has(gen.id)
+          ? []
+          : (gen.outputs?.map((o) => ({
+              url: o.url,
+              thumbnailUrl: o.thumbnailUrl,
+              mimeType: o.mimeType,
+            })) ?? []),
+        safetyReview: masked.has(gen.id) ? SAFETY_REVIEW_MARKER : null,
         createdAt: gen.createdAt,
         completedAt: gen.completedAt,
       })),
     };
+  }
+
+  /**
+   * Gerações cuja mídia o admin comum não vê (em revisão de segurança, em evidência ou em retenção legal): a lista
+   * devolve o marcador no lugar das URLs; só o revisor designado abre, pela URL assinada de 120 s. Erro de leitura
+   * mascara a página inteira.
+   *
+   * A retenção legal da PR #4 (bloqueio por menor não liberado e denúncia que segura evidência) vale em QUALQUER modo,
+   * inclusive com as duas checagens desligadas (padrão): é correção de segurança, não depende do leitor de imagem. Só
+   * as checagens com evidência guardada (content_safety_scans, camada nova) ficam para quando um dos modos está ligado.
+   */
+  private async safetyMaskedIds(
+    generations: MaskableGeneration[],
+  ): Promise<Set<string>> {
+    const imageOn = (this.safetyConfig?.imageMode ?? 'off') !== 'off';
+    const textOn = (this.safetyConfig?.textMode ?? 'off') !== 'off';
+    return safetyMaskedGenerationIds(
+      this.prisma,
+      generations,
+      (error) =>
+        this.logger.error(
+          `Máscara de segurança da galeria do admin não lida (${(error as Error).message?.slice(0, 200)}): página inteira mascarada`,
+        ),
+      { scans: imageOn || textOn, holdingReports: this.holdingReports },
+    );
   }
 
   async adjustCredits(
@@ -629,6 +693,7 @@ export class AdminService {
       this.prisma.generation.count({ where }),
     ]);
 
+    const masked = await this.safetyMaskedIds(generations);
     const data = generations.map((gen) => ({
       id: gen.id,
       user: gen.user,
@@ -640,7 +705,10 @@ export class AdminService {
       hasAudio: gen.hasAudio,
       modelUsed: gen.modelUsed,
       creditsConsumed: gen.creditsConsumed,
-      outputUrls: gen.outputs?.map((o) => o.url) ?? [],
+      outputUrls: masked.has(gen.id)
+        ? []
+        : (gen.outputs?.map((o) => o.url) ?? []),
+      safetyReview: masked.has(gen.id) ? SAFETY_REVIEW_MARKER : null,
       errorMessage: gen.errorMessage,
       processingTimeMs: gen.processingTimeMs,
       createdAt: gen.createdAt,
@@ -668,6 +736,30 @@ export class AdminService {
       throw new NotFoundException('Usuário não encontrado');
     }
 
+    // conta suspensa pela camada 6 (sinal de menor): só o revisor designado reativa, com motivo e na trilha. A conta
+    // desativada à mão (sem a linha suspend) continua reativando aqui como antes. Erro ao ler a trilha = não reativa.
+    if (isActive && user.isActive === false) {
+      let suspended: boolean;
+      try {
+        suspended = await hasOpenSafetySuspension(this.prisma, userId);
+      } catch (error) {
+        this.logger.error(
+          `Reativação da conta ${userId} recusada: a trilha de segurança não foi lida (${(error as Error).message?.slice(0, 200)})`,
+        );
+        throw new ServiceUnavailableException(
+          'Não foi possível conferir a suspensão de segurança da conta agora; nada foi alterado.',
+        );
+      }
+      if (suspended) {
+        throw new ConflictException({
+          code: 'ACCOUNT_SAFETY_SUSPENDED',
+          message:
+            'Conta suspensa pela revisão de segurança: a reativação é feita pelo revisor designado ' +
+            '(POST /api/v1/admin/content-safety/users/:id/reactivate).',
+        });
+      }
+    }
+
     await this.prisma.$transaction(async (tx) => {
       await tx.user.update({
         where: { id: userId },
@@ -682,6 +774,8 @@ export class AdminService {
         });
       }
     });
+    // o cache de conta ativa do JWT (60 s) não segura a mudança: vale na próxima requisição, nos dois sentidos
+    invalidateActiveUser(userId);
   }
 
   async deleteUser(userId: string): Promise<void> {
@@ -780,6 +874,12 @@ export class AdminService {
       this.prisma.generation.count({ where }),
     ]);
 
+    const masked = await this.safetyMaskedIds(
+      generations.map((gen) => ({
+        ...gen,
+        user: { id: user.id, email: user.email },
+      })),
+    );
     const data = generations.map((gen) => ({
       id: gen.id,
       type: gen.type,
@@ -791,12 +891,15 @@ export class AdminService {
       hasAudio: gen.hasAudio,
       modelUsed: gen.modelUsed,
       creditsConsumed: gen.creditsConsumed,
-      outputs: gen.outputs.map((o) => ({
-        id: o.id,
-        url: o.url,
-        thumbnailUrl: o.thumbnailUrl,
-        mimeType: o.mimeType,
-      })),
+      outputs: masked.has(gen.id)
+        ? []
+        : gen.outputs.map((o) => ({
+            id: o.id,
+            url: o.url,
+            thumbnailUrl: o.thumbnailUrl,
+            mimeType: o.mimeType,
+          })),
+      safetyReview: masked.has(gen.id) ? SAFETY_REVIEW_MARKER : null,
       inputImages: [],
       isFavorited: gen.isFavorited,
       isDeleted: gen.isDeleted,

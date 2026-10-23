@@ -14,6 +14,7 @@ import { HeyGenWebhookController } from './webhooks/heygen-webhook.controller';
 import { HeyGenWebhookService } from './webhooks/heygen-webhook.service';
 import { StuckAvatarsService } from './cron/stuck-avatars.service';
 import { WavespeedAudioProvider } from '../generations/providers/wavespeed-audio.provider';
+import { ExternalMediaCheck } from '../content-safety/image-safety/external-media-check';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { WavespeedAudioProvider } from '../generations/providers/wavespeed-audio
     HeyGenWebhookService,
     StuckAvatarsService,
     WavespeedAudioProvider,
+    ExternalMediaCheck,
   ],
   exports: [AvatarsService, HeyGenProvider, AvatarEventsService],
 })

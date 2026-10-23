@@ -1,6 +1,9 @@
 import { Logger } from '@nestjs/common';
 import type { PrismaService } from '../../prisma/prisma.service';
-import type { ImageSafetyConfig } from './image-safety.config';
+import {
+  enforcesMediaPreflight,
+  type ImageSafetyConfig,
+} from './image-safety.config';
 import {
   preflightStatusFromScans,
   uncensoredFallbackStatus,
@@ -12,9 +15,10 @@ import type {
 
 /**
  * Leitor do status do preflight para o ContentSafetyService (desvio depois de uma recusa do provedor): lê as checagens
- * de entrada e de texto gravadas da geração. Com IMAGE_SAFETY_MODE=off não lê nada e devolve `unavailable` (Onda 0);
- * erro de leitura também é `unavailable` (nunca libera o desvio). Para o desvio SEM CENSURA, a entrada é reavaliada
- * como pedido sexual (uncensoredFallbackStatus): o 'clean' do pedido original não vale para o destino sem filtro.
+ * de entrada e de texto gravadas da geração. Com IMAGE_SAFETY_MODE=off não lê nada e devolve `unavailable`, e
+ * `enforcesMediaPreflight` é false: a guarda do desvio nem consulta o veredito (regra de antes da checagem). Erro de
+ * leitura também é `unavailable` (nunca libera o desvio). Para o desvio SEM CENSURA, a entrada é reavaliada como pedido
+ * sexual (uncensoredFallbackStatus): o 'clean' do pedido original não vale para o destino sem filtro.
  */
 export function createPreflightStatusReader(
   prisma: PrismaService,
@@ -22,6 +26,7 @@ export function createPreflightStatusReader(
 ): PreflightStatusReader {
   const logger = new Logger('PreflightStatusReader');
   return {
+    enforcesMediaPreflight: enforcesMediaPreflight(config),
     async statusFor(generationId, target?: PreflightStatusTarget) {
       if (config.imageMode === 'off' || !generationId) return 'unavailable';
       try {

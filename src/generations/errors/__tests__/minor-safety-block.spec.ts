@@ -79,16 +79,21 @@ describe('decideSafetyFallback', () => {
   const TARGETS = ['uncensored', 'same_provider'] as const;
   const PREFLIGHTS = ['clean', 'gray', 'flagged', 'unavailable'] as const;
   const NOT_CLEAN = ['gray', 'flagged', 'unavailable'] as const;
+  /** porteiro de imagem desligado (off, o padrão) e ligado (shadow ou enforce) */
+  const MODES = [false, true] as const;
 
-  describe('recusa por menor: encerra em qualquer alvo, com ou sem foto, com qualquer veredito', () => {
-    const cases = TARGETS.flatMap((target) =>
-      PREFLIGHTS.flatMap((preflight) =>
-        [true, false].map((hasUserImages) => ({
-          target,
-          preflight,
-          hasUserImages,
-          hasConsent: hasUserImages,
-        })),
+  describe('recusa por menor: encerra em qualquer alvo e modo, com ou sem foto, com qualquer veredito', () => {
+    const cases = MODES.flatMap((enforceMediaPreflight) =>
+      TARGETS.flatMap((target) =>
+        PREFLIGHTS.flatMap((preflight) =>
+          [true, false].map((hasUserImages) => ({
+            target,
+            preflight,
+            hasUserImages,
+            hasConsent: hasUserImages,
+            enforceMediaPreflight,
+          })),
+        ),
       ),
     );
     it.each(cases)('%j → fail_minor', (input) => {
@@ -99,64 +104,144 @@ describe('decideSafetyFallback', () => {
     });
   });
 
-  describe('com mídia do usuário e sem checagem limpa da imagem: terminal nos DOIS alvos, com ou sem atestado', () => {
-    const cases = TARGETS.flatMap((target) =>
-      NOT_CLEAN.flatMap((preflight) =>
-        [true, false].map((hasConsent) => ({ target, preflight, hasConsent })),
+  describe('porteiro de imagem DESLIGADO (IMAGE_SAFETY_MODE=off): regra de antes da checagem', () => {
+    const off = { isMinor: false, enforceMediaPreflight: false } as const;
+
+    it.each(
+      PREFLIGHTS.flatMap((preflight) =>
+        [true, false].map((hasConsent) => ({ preflight, hasConsent })),
       ),
+    )(
+      "reescrita no mesmo provedor com mídia, %j: segue (a reescrita ainda passa pela trava de texto)",
+      (input) => {
+        expect(
+          safetyFallbackVerdict({
+            ...off,
+            ...input,
+            target: 'same_provider',
+            hasUserImages: true,
+          }),
+        ).toEqual({ decision: 'allow_fallback', reason: null });
+      },
     );
-    it.each(cases)('%j → fail_blocked (unverified_media)', (input) => {
-      const verdict = safetyFallbackVerdict({
-        ...input,
-        isMinor: false,
-        hasUserImages: true,
-      });
-      expect(verdict).toEqual({
-        decision: 'fail_blocked',
-        reason: 'unverified_media',
-      });
+
+    it.each(PREFLIGHTS)(
+      "sem censura com mídia atestada, veredito '%s' (não conta): segue para o Unlocked",
+      (preflight) => {
+        expect(
+          safetyFallbackVerdict({
+            ...off,
+            target: 'uncensored',
+            hasUserImages: true,
+            hasConsent: true,
+            preflight,
+          }),
+        ).toEqual({ decision: 'allow_fallback', reason: null });
+      },
+    );
+
+    it.each(PREFLIGHTS)(
+      "sem censura com mídia sem atestado, veredito '%s': encerra pedindo o atestado",
+      (preflight) => {
+        expect(
+          safetyFallbackVerdict({
+            ...off,
+            target: 'uncensored',
+            hasUserImages: true,
+            hasConsent: false,
+            preflight,
+          }),
+        ).toEqual({ decision: 'fail_blocked', reason: 'needs_consent' });
+      },
+    );
+
+    it.each(TARGETS)('só texto, alvo %s: segue', (target) => {
       expect(
-        decideSafetyFallback({ ...input, isMinor: false, hasUserImages: true }),
-      ).toBe('fail_blocked');
+        decideSafetyFallback({
+          ...off,
+          target,
+          hasUserImages: false,
+          hasConsent: false,
+          preflight: 'unavailable',
+        }),
+      ).toBe('allow_fallback');
     });
   });
 
-  describe("com mídia do usuário e checagem 'clean'", () => {
-    it.each([
-      ['uncensored', true, 'allow_fallback', null],
-      ['uncensored', false, 'fail_blocked', 'needs_consent'],
-      // reescrever o prompt e reenviar a mesma foto não existe, nem com a foto limpa (camada 4, regra 3)
-      ['same_provider', true, 'fail_blocked', 'unverified_media'],
-      ['same_provider', false, 'fail_blocked', 'unverified_media'],
-    ] as const)(
-      'alvo %s, atestado=%s → %s (%s)',
-      (target, hasConsent, decision, reason) => {
-        expect(
-          safetyFallbackVerdict({
-            target,
-            isMinor: false,
-            hasUserImages: true,
-            hasConsent,
-            preflight: 'clean',
-          }),
-        ).toEqual({ decision, reason });
-      },
-    );
-  });
+  describe('porteiro de imagem LIGADO (shadow ou enforce): regra da checagem da mídia', () => {
+    const on = { enforceMediaPreflight: true } as const;
 
-  describe('só texto: o veredito da imagem não conta (comportamento de antes)', () => {
-    const cases = TARGETS.flatMap((target) =>
-      PREFLIGHTS.map((preflight) => ({ target, preflight })),
-    );
-    it.each(cases)('%j → allow_fallback', (input) => {
-      expect(
-        decideSafetyFallback({
+    describe('com mídia do usuário e sem checagem limpa da imagem: terminal nos DOIS alvos, com ou sem atestado', () => {
+      const cases = TARGETS.flatMap((target) =>
+        NOT_CLEAN.flatMap((preflight) =>
+          [true, false].map((hasConsent) => ({
+            target,
+            preflight,
+            hasConsent,
+          })),
+        ),
+      );
+      it.each(cases)('%j → fail_blocked (unverified_media)', (input) => {
+        const verdict = safetyFallbackVerdict({
+          ...on,
           ...input,
           isMinor: false,
-          hasUserImages: false,
-          hasConsent: false,
-        }),
-      ).toBe('allow_fallback');
+          hasUserImages: true,
+        });
+        expect(verdict).toEqual({
+          decision: 'fail_blocked',
+          reason: 'unverified_media',
+        });
+        expect(
+          decideSafetyFallback({
+            ...on,
+            ...input,
+            isMinor: false,
+            hasUserImages: true,
+          }),
+        ).toBe('fail_blocked');
+      });
+    });
+
+    describe("com mídia do usuário e checagem 'clean'", () => {
+      it.each([
+        ['uncensored', true, 'allow_fallback', null],
+        ['uncensored', false, 'fail_blocked', 'needs_consent'],
+        // reescrever o prompt e reenviar a mesma foto não existe, nem com a foto limpa (camada 4, regra 3)
+        ['same_provider', true, 'fail_blocked', 'unverified_media'],
+        ['same_provider', false, 'fail_blocked', 'unverified_media'],
+      ] as const)(
+        'alvo %s, atestado=%s → %s (%s)',
+        (target, hasConsent, decision, reason) => {
+          expect(
+            safetyFallbackVerdict({
+              ...on,
+              target,
+              isMinor: false,
+              hasUserImages: true,
+              hasConsent,
+              preflight: 'clean',
+            }),
+          ).toEqual({ decision, reason });
+        },
+      );
+    });
+
+    describe('só texto: o veredito da imagem não conta (comportamento de antes)', () => {
+      const cases = TARGETS.flatMap((target) =>
+        PREFLIGHTS.map((preflight) => ({ target, preflight })),
+      );
+      it.each(cases)('%j → allow_fallback', (input) => {
+        expect(
+          decideSafetyFallback({
+            ...on,
+            ...input,
+            isMinor: false,
+            hasUserImages: false,
+            hasConsent: false,
+          }),
+        ).toBe('allow_fallback');
+      });
     });
   });
 });

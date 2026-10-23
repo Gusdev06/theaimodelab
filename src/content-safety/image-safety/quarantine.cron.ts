@@ -17,6 +17,8 @@ import {
   ImageSafetyService,
   type HoldState,
   type OutputCompletion,
+  type SafetyHoldRecord,
+  type StagedPromotion,
 } from './image-safety.service';
 
 /** Quem conclui ou encerra a geração segurada (o GenerationProcessor: miniaturas, saídas, estorno, SSE). */
@@ -26,9 +28,11 @@ export interface HeldGenerationFinisher {
     outputUrls: string[],
     completion: OutputCompletion,
   ): Promise<boolean>;
+  /** `from` padrão 'held' (troca IN_REVIEW → PROCESSING); 'processing' = quem chama já ganhou essa troca */
   failForSafety(
     generationId: string,
     error: TerminalSafetyBlockError,
+    from?: 'held' | 'processing',
   ): Promise<void>;
 }
 
@@ -210,12 +214,13 @@ export class QuarantineCron {
     // resultado aguardando checagem: tenta de novo
     const outcome = await this.imageSafety.recheckHeldOutput(generationId);
     if (outcome?.action === 'promote' && state.hold) {
-      const done = await finisher.completeHeldGeneration(
+      return this.completePromoted(
         generationId,
         outcome.outputs,
+        outcome.staged ?? [],
         state.hold,
+        finisher,
       );
-      return done ? 'completed' : 'waiting';
     }
     if (outcome?.action === 'blocked') {
       await finisher.failForSafety(generationId, outcome.error);
@@ -231,17 +236,18 @@ export class QuarantineCron {
       this.config.trustedFilterModels.has(model) &&
       age >= SAFETY_TIMING.trustedFilterReleaseMs
     ) {
-      const outputs = await this.imageSafety.releaseUncheckedOutput(
+      const released = await this.imageSafety.releaseUncheckedOutput(
         generationId,
         `provedor com filtro de confiança (${model}) sem checagem há mais de ${Math.round(SAFETY_TIMING.trustedFilterReleaseMs / 60_000)} min`,
       );
-      if (outputs) {
-        const done = await finisher.completeHeldGeneration(
+      if (released) {
+        return this.completePromoted(
           generationId,
-          outputs,
+          released.outputs,
+          released.staged,
           after.hold,
+          finisher,
         );
-        return done ? 'completed' : 'waiting';
       }
     }
 
@@ -257,6 +263,27 @@ export class QuarantineCron {
       return 'failed';
     }
     return 'waiting';
+  }
+
+  /**
+   * Conclui o resultado aprovado (cópias públicas já feitas, quarentena inteira) e só então resolve a 2ª fase: venceu a
+   * troca IN_REVIEW → PROCESSING = a quarentena sai; perdeu (o revisor confirmou ou liberou antes) = as cópias públicas
+   * saem e a quarentena fica para quem venceu. Conclusão que lança deixa as duas (nada se perde) e sobe para o log.
+   */
+  private async completePromoted(
+    generationId: string,
+    outputs: string[],
+    staged: StagedPromotion[],
+    hold: SafetyHoldRecord,
+    finisher: HeldGenerationFinisher,
+  ): Promise<QuarantineAction> {
+    const done = await finisher.completeHeldGeneration(
+      generationId,
+      outputs,
+      hold,
+    );
+    await this.imageSafety.settleHeldPromotion(generationId, staged, done);
+    return done ? 'completed' : 'waiting';
   }
 
   /**

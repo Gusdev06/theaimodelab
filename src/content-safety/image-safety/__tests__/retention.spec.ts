@@ -1,5 +1,11 @@
-import { BadRequestException, Logger } from '@nestjs/common';
 import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Logger,
+} from '@nestjs/common';
+import {
+  computeLegalHold,
   countMinorBlocks,
   minorBlockedGenerationIds,
 } from '../../../users/account-erasure.service';
@@ -95,6 +101,62 @@ describe('retenção dos eventos da checagem de imagem', () => {
     expect(tally.recent).toBe(0);
   });
 
+  it('caso de texto confirmado pelo revisor segura a conta em qualquer data, fora das tentativas e sem override', async () => {
+    const db = fakeDb([
+      {
+        userId: 'u1',
+        kind: 'MINOR_BLOCKED',
+        route: 'review:text',
+        match: 'REVIEW_CONFIRMED/STRONG',
+        excerpt: null,
+        createdAt: OLD,
+        generationId: 'g1',
+      },
+      // liberado pelo revisor: não conta
+      {
+        userId: 'u1',
+        kind: 'MINOR_BLOCKED',
+        route: 'review:text',
+        createdAt: OLD,
+        generationId: 'g2',
+        releasedAt: NOW,
+      },
+      // filtro de texto antigo: fora da janela
+      {
+        userId: 'u1',
+        kind: 'MINOR_BLOCKED',
+        route: '/api/v1/generations/image',
+        createdAt: OLD,
+        generationId: null,
+      },
+    ]);
+    const tally = await countMinorBlocks(db as never, 'u1', NOW);
+    expect(tally).toMatchObject({ reviewConfirmed: 1, recent: 0, provider: 0 });
+
+    const account = {
+      userId: 'u1',
+      email: null,
+      generations: [],
+      posts: [],
+      avatarIds: [],
+      voiceProfileIds: [],
+    };
+    const hold = computeLegalHold({
+      reports: [],
+      account,
+      minorBlockedEvents: tally.recent,
+      minorBlockedAttempts: tally.recentAttempts,
+      providerMinorBlockedEvents: tally.provider,
+      reviewConfirmedEvents: tally.reviewConfirmed,
+      ignoreSafetyEvents: true,
+    });
+    expect(hold).toMatchObject({
+      active: true,
+      kinds: ['review_confirmed'],
+      reviewConfirmedEvents: 1,
+    });
+  });
+
   it('o cron da galeria não apaga geração com evento de imagem não liberado', async () => {
     const db = fakeDb([
       { kind: 'OUTPUT_MINOR_BLOCKED', generationId: 'g1' },
@@ -116,31 +178,101 @@ describe('retenção dos eventos da checagem de imagem', () => {
     );
     afterEach(() => jest.restoreAllMocks());
 
-    const prismaWith = (event: Row) => ({
-      contentSafetyEvent: {
-        findUnique: jest.fn(async () => event),
-        updateMany: jest.fn(async () => ({ count: 1 })),
-      },
-    });
+    const prismaWith = (event: Row, generationStatus = 'FAILED') => {
+      const order: string[] = [];
+      return {
+        order,
+        contentSafetyEvent: {
+          findUnique: jest.fn(async () => event),
+          updateMany: jest.fn(async () => {
+            order.push('release');
+            return { count: 1 };
+          }),
+        },
+        generation: {
+          findUnique: jest.fn(async () => ({ status: generationStatus })),
+        },
+        contentSafetyAccessLog: {
+          create: jest.fn(async ({ data }: { data: Row }) => {
+            order.push('access_log');
+            return { id: 'log-1', ...data };
+          }),
+        },
+      };
+    };
+    const inputHeld = {
+      id: 'e1',
+      kind: 'INPUT_HELD',
+      route: 'input:generate',
+      userId: 'u1',
+      generationId: 'g1',
+      releasedAt: null,
+    };
 
-    it('aceita os eventos de imagem (o revisor libera falso positivo)', async () => {
-      const prisma = prismaWith({
-        id: 'e1',
-        kind: 'INPUT_HELD',
-        route: 'input:generate',
-        userId: 'u1',
-        releasedAt: null,
-      });
+    it('o revisor designado libera evento de imagem; a trilha é gravada antes de liberar', async () => {
+      const prisma = prismaWith(inputHeld);
       const service = new ContentSafetyService(prisma as never);
       await service.releaseMinorBlock(
         'e1',
         'falso positivo conferido pelo revisor',
-        { id: 'adm' },
+        { id: 'adm', ip: '203.0.113.4', reviewer: true },
       );
       expect(prisma.contentSafetyEvent.updateMany).toHaveBeenCalledWith({
         where: { id: 'e1', kind: 'INPUT_HELD', releasedAt: null },
         data: expect.objectContaining({ releasedBy: 'adm' }),
       });
+      expect(prisma.contentSafetyAccessLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          actorId: 'adm',
+          action: 'release',
+          targetType: 'event',
+          targetId: 'e1',
+          ip: '203.0.113.4',
+        }),
+      });
+      expect(prisma.order).toEqual(['access_log', 'release']);
+    });
+
+    it('ADMIN fora da lista de revisores: 403 para evidência de imagem e caso confirmado, nada liberado nem gravado', async () => {
+      for (const event of [
+        inputHeld,
+        { ...inputHeld, kind: 'OUTPUT_MINOR_BLOCKED', route: 'output:x' },
+        { ...inputHeld, kind: 'MINOR_BLOCKED', route: 'review:text' },
+      ]) {
+        const prisma = prismaWith(event);
+        const service = new ContentSafetyService(prisma as never);
+        await expect(
+          service.releaseMinorBlock('e1', 'nota longa o bastante', { id: 'adm' }),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(prisma.contentSafetyEvent.updateMany).not.toHaveBeenCalled();
+        expect(prisma.contentSafetyAccessLog.create).not.toHaveBeenCalled();
+      }
+    });
+
+    it('entrada ainda segurada (geração em revisão): 409, decidir pela checagem', async () => {
+      const prisma = prismaWith(inputHeld, 'IN_REVIEW');
+      const service = new ContentSafetyService(prisma as never);
+      await expect(
+        service.releaseMinorBlock('e1', 'nota longa o bastante', {
+          id: 'adm',
+          reviewer: true,
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(prisma.contentSafetyEvent.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('bloqueio de texto/provedor (PR #4): qualquer ADMIN libera, com trilha', async () => {
+      const prisma = prismaWith({
+        ...inputHeld,
+        kind: 'MINOR_BLOCKED',
+        route: 'provider:veo3',
+      });
+      const service = new ContentSafetyService(prisma as never);
+      await service.releaseMinorBlock('e1', 'falso positivo do provedor', {
+        id: 'adm',
+      });
+      expect(prisma.contentSafetyEvent.updateMany).toHaveBeenCalled();
+      expect(prisma.contentSafetyAccessLog.create).toHaveBeenCalled();
     });
 
     it('recusa o que não é bloqueio nem retenção (atestado)', async () => {

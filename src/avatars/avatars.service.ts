@@ -19,7 +19,13 @@ import {
   UserAvatar,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { UploadsService } from '../uploads/uploads.service';
+import {
+  StorageReadError,
+  UploadsService,
+  contentTypeOfKey,
+} from '../uploads/uploads.service';
+import { BusinessException } from '../common/exceptions/business.exception';
+import { ExternalMediaCheck } from '../content-safety/image-safety/external-media-check';
 import { CreditsService } from '../credits/credits.service';
 import { ModelsService } from '../models/models.service';
 import { HeyGenProvider } from './providers/heygen.provider';
@@ -37,6 +43,15 @@ import {
 } from './avatars.constants';
 import { AVATAR_QUEUE, AvatarJobName } from './queue/avatar-queue.constants';
 
+/** Teto da leitura da mídia que vai à HeyGen quando a checagem de imagem está ligada. */
+const HEYGEN_IMAGE_MAX_BYTES = 40 * 1024 * 1024;
+const HEYGEN_VIDEO_MAX_BYTES = 300 * 1024 * 1024;
+/** Prazo da leitura no storage dentro do pedido (vídeo grande precisa de mais). */
+const HEYGEN_IMAGE_READ_TIMEOUT_MS = 15_000;
+const HEYGEN_VIDEO_READ_TIMEOUT_MS = 60_000;
+/** O vídeo do digital twin passa por até 12 quadros: o prazo da checagem é maior que os 5 s da foto. */
+const HEYGEN_VIDEO_CHECK_TIMEOUT_MS = 45_000;
+
 @Injectable()
 export class AvatarsService {
   private readonly logger = new Logger(AvatarsService.name);
@@ -49,6 +64,7 @@ export class AvatarsService {
     private readonly configService: ConfigService,
     private readonly modelsService: ModelsService,
     @InjectQueue(AVATAR_QUEUE) private readonly avatarQueue: Queue,
+    private readonly mediaCheck: ExternalMediaCheck,
   ) {}
 
   // ─── Public API (used by controller) ──────────────────────────────────────
@@ -100,8 +116,16 @@ export class AvatarsService {
         'sourceMediaKey inválido. Faça upload via /uploads/presigned-url com purpose "avatar_source".',
       );
     }
-    const sourceMediaUrl = this.uploadsService.getPublicUrl(dto.sourceMediaKey);
     const avatarType: 'photo' | 'digital_twin' = dto.type ?? 'photo';
+    // checagem da foto ou do vídeo ANTES de debitar e de mandar à HeyGen (422 barrada, 503 indisponível); com ela
+    // desligada, a chave enviada de sempre
+    const source = await this.checkedHeygenMedia(
+      userId,
+      dto.sourceMediaKey,
+      avatarType === 'digital_twin' ? 'video' : 'image',
+      { folder: 'avatar_source', replaceOriginal: true },
+    );
+    const sourceMediaUrl = source.url;
 
     const trainingCost = this.getTrainingCost(avatarType);
 
@@ -114,7 +138,7 @@ export class AvatarsService {
         status: AvatarStatus.PENDING,
         // Photo avatars never require consent; digital twins do
         consentStatus: AvatarConsentStatus.NOT_REQUIRED,
-        sourceVideoKey: dto.sourceMediaKey, // schema field name kept for compat
+        sourceVideoKey: source.key, // schema field name kept for compat
         sourceVideoUrl: sourceMediaUrl,
         creditsConsumed: trainingCost,
       },
@@ -226,6 +250,25 @@ export class AvatarsService {
       engine = 'avatar_iv';
     }
 
+    // a imagem de fundo também vai à HeyGen: com a checagem ligada, só arquivo do nosso storage público, checado
+    let backgroundImageUrl = dto.backgroundImageUrl ?? null;
+    if (backgroundImageUrl && this.mediaCheck.enabled) {
+      const location = this.uploadsService.locateStoredMedia(backgroundImageUrl);
+      if (location?.area !== 'public') {
+        throw new BadRequestException({
+          code: 'BACKGROUND_IMAGE_NOT_STORED',
+          message: 'A imagem de fundo precisa ser um arquivo enviado à plataforma.',
+        });
+      }
+      const background = await this.checkedHeygenMedia(userId, location.key, 'image', {
+        folder: 'avatar_background',
+        replaceOriginal: false,
+        model: `heygen-${engine}`,
+        prompt: dto.script ?? null,
+      });
+      backgroundImageUrl = background.url;
+    }
+
     // Cost calculation:
     //  - Custom audio mode → exact (we know the duration up front)
     //  - Script/TTS mode → estimate (script length × cps); webhook reconciles
@@ -265,7 +308,7 @@ export class AvatarsService {
           resolution: dto.resolution,
           aspectRatio: dto.aspectRatio,
           backgroundColor: dto.backgroundColor ?? null,
-          backgroundImageUrl: dto.backgroundImageUrl ?? null,
+          backgroundImageUrl,
         },
         // Link to the cloned VoiceProfile so it shows up in usage history
         ...(dto.voiceProfileId && { voiceProfileId: dto.voiceProfileId }),
@@ -370,6 +413,95 @@ export class AvatarsService {
         removeOnFail: { age: 7 * 24 * 3600 },
       },
     );
+  }
+
+  /**
+   * Mídia guardada que vai à HeyGen fora da fila de geração. Com a checagem de imagem desligada: a mesma chave e a URL
+   * pública de sempre. Ligada: lê os bytes, checa (422 barrada, 503 indisponível) e grava a cópia CHECADA numa chave
+   * nova em `folder`, que a URL pré-assinada do envio (válida por 15 min) não alcança; a HeyGen recebe exatamente o
+   * que foi checado. `replaceOriginal` apaga o envio original (upload de uso único), nunca item da galeria.
+   */
+  private async checkedHeygenMedia(
+    userId: string,
+    key: string,
+    kind: 'image' | 'video',
+    options: {
+      folder: string;
+      replaceOriginal: boolean;
+      model?: string | null;
+      prompt?: string | null;
+    },
+  ): Promise<{ key: string; url: string }> {
+    if (!this.mediaCheck.enabled) {
+      return { key, url: this.uploadsService.getPublicUrl(key) };
+    }
+    const stored = await this.readForCheck(key, kind);
+    const mimeType = stored.contentType ?? contentTypeOfKey(key);
+    await this.mediaCheck.assertSafe(
+      [{ kind, mimeType, buffer: stored.body, area: 'public', key }],
+      {
+        userId,
+        tool: 'avatar',
+        model: options.model ?? null,
+        prompt: options.prompt ?? null,
+        timeoutMs: kind === 'video' ? HEYGEN_VIDEO_CHECK_TIMEOUT_MS : undefined,
+      },
+    );
+    const filename = key.split('/').pop() || 'media';
+    const pinnedUrl = await this.uploadsService.uploadBuffer(
+      stored.body,
+      options.folder,
+      filename,
+      mimeType,
+    );
+    const pinned = this.uploadsService.locateStoredMedia(pinnedUrl);
+    if (!pinned) {
+      this.logger.error(`Cópia checada de ${key} sem chave reconhecível — mídia não enviada`);
+      throw new BusinessException('SAFETY_CHECK_UNAVAILABLE');
+    }
+    if (options.replaceOriginal) {
+      await this.uploadsService.deleteStoredObject('public', key).catch((err) => {
+        this.logger.warn(
+          `Envio original ${key} não apagado: ${err instanceof Error ? err.message : err}`,
+        );
+      });
+    }
+    return { key: pinned.key, url: pinnedUrl };
+  }
+
+  /** Bytes da mídia para a checagem: arquivo ausente ou grande demais é erro de quem pede; o resto é 503. */
+  private async readForCheck(
+    key: string,
+    kind: 'image' | 'video',
+  ): Promise<{ body: Buffer; contentType: string | null }> {
+    try {
+      return await this.uploadsService.readStoredObject(
+        'public',
+        key,
+        kind === 'video' ? HEYGEN_VIDEO_MAX_BYTES : HEYGEN_IMAGE_MAX_BYTES,
+        {
+          timeoutMs:
+            kind === 'video' ? HEYGEN_VIDEO_READ_TIMEOUT_MS : HEYGEN_IMAGE_READ_TIMEOUT_MS,
+        },
+      );
+    } catch (err) {
+      if (err instanceof StorageReadError && err.reason === 'not_found') {
+        throw new BadRequestException({
+          code: 'MEDIA_NOT_FOUND',
+          message: 'Arquivo enviado não encontrado. Envie de novo.',
+        });
+      }
+      if (err instanceof StorageReadError && err.reason === 'too_large') {
+        throw new BadRequestException({
+          code: 'MEDIA_TOO_LARGE',
+          message: 'Arquivo grande demais para o avatar. Envie um arquivo menor.',
+        });
+      }
+      this.logger.warn(
+        `Leitura de ${key} para a checagem falhou: ${err instanceof Error ? err.message : err}`,
+      );
+      throw new BusinessException('SAFETY_CHECK_UNAVAILABLE');
+    }
   }
 
   private async findOwnedOrThrow(userId: string, id: string): Promise<UserAvatar> {

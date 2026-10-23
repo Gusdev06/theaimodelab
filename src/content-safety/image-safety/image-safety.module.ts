@@ -1,6 +1,11 @@
 import { Global, Module } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UploadsModule } from '../../uploads/uploads.module';
+import { ActiveUserInvalidationBus } from '../strikes/active-user-invalidation';
+import { StrikesService } from '../strikes/strikes.service';
+import { STRIKES, SUSPENSION_EFFECTS } from '../strikes/strikes.types';
+import { createSuspensionEffects } from '../strikes/suspension-effects';
 import { textClassifierProviders } from '../text-classifier/text-classifier.providers';
 import { TextClassifierService } from '../text-classifier/text-classifier.service';
 import { BlocklistService } from './blocklist.service';
@@ -64,6 +69,15 @@ import { createStylizedJudge } from './stylized-judge.client';
       useFactory: createPreflightStatusReader,
     },
     ...textClassifierProviders,
+    // camada 6: pontos e suspensão (efeitos na fila, no processor e no e-mail buscados na hora pelo ModuleRef)
+    {
+      provide: SUSPENSION_EFFECTS,
+      inject: [ModuleRef],
+      useFactory: createSuspensionEffects,
+    },
+    StrikesService,
+    { provide: STRIKES, useExisting: StrikesService },
+    ActiveUserInvalidationBus,
     ImageSafetyService,
     QuarantineCron,
     ScanRetentionCron,
@@ -75,6 +89,8 @@ import { createStylizedJudge } from './stylized-judge.client';
     TextClassifierService,
     BlocklistService,
     BLOCKLIST,
+    StrikesService,
+    STRIKES,
   ],
 })
 export class ImageSafetyModule {}

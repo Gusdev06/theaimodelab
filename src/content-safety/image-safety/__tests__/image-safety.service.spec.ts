@@ -1386,6 +1386,105 @@ describe('ImageSafetyService', () => {
       expect(ctx.blocklist.add).not.toHaveBeenCalled();
     });
 
+    it('confirmação que já ganhou a trava (geração em PROCESSING): usa o hold lido antes e leva o resultado para a evidência', async () => {
+      const ctx = setup({
+        generation: {
+          status: GenerationStatus.PROCESSING,
+          modelUsed: 'sem-censura',
+          parameters: heldParameters('quarantine'),
+        },
+      });
+      const known = heldParameters('quarantine').safetyHold as never;
+      await ctx.service.expireReviewedOutput(GEN, known);
+      expect(ctx.uploads.moveToEvidence).toHaveBeenCalledWith(
+        'quarantine',
+        `generations/${GEN}/q/a.png`,
+        null,
+        expect.anything(),
+      );
+      // sem o hold lido antes, holdStateOf não enxerga a geração fora de IN_REVIEW e nada seria movido
+      const blind = setup({
+        generation: {
+          status: GenerationStatus.PROCESSING,
+          parameters: heldParameters('quarantine'),
+        },
+      });
+      await blind.service.expireReviewedOutput(GEN);
+      expect(blind.uploads.moveToEvidence).not.toHaveBeenCalled();
+    });
+
+    it('nova checagem do cron que aprova: só copia para o público; a quarentena fica até a conclusão (settleHeldPromotion)', async () => {
+      const ctx = setup({
+        generation: {
+          status: GenerationStatus.IN_REVIEW,
+          parameters: heldParameters('quarantine'),
+        },
+      });
+      const outcome = await ctx.service.recheckHeldOutput(GEN);
+      expect(outcome).toEqual({
+        action: 'promote',
+        outputs: [`https://cdn.test/generations/${GEN}/pub/a.png`],
+        staged: [
+          {
+            quarantineKey: `generations/${GEN}/q/a.png`,
+            publicKey: `generations/${GEN}/pub/a.png`,
+          },
+        ],
+      });
+      expect(ctx.uploads.copyQuarantineToPublic).toHaveBeenCalled();
+      expect(ctx.uploads.deleteQuarantineObject).not.toHaveBeenCalled();
+    });
+
+    it('liberação sem checagem (provedor de confiança): também só copia; a quarentena sai depois', async () => {
+      const ctx = setup({
+        generation: {
+          status: GenerationStatus.IN_REVIEW,
+          parameters: heldParameters('quarantine'),
+        },
+      });
+      const released = await ctx.service.releaseUncheckedOutput(GEN, 'motivo');
+      expect(released).toEqual({
+        outputs: [`https://cdn.test/generations/${GEN}/pub/a.png`],
+        staged: [
+          {
+            quarantineKey: `generations/${GEN}/q/a.png`,
+            publicKey: `generations/${GEN}/pub/a.png`,
+          },
+        ],
+      });
+      expect(ctx.uploads.deleteQuarantineObject).not.toHaveBeenCalled();
+    });
+
+    it('settleHeldPromotion: quem venceu apaga a quarentena; quem perdeu apaga só as próprias cópias públicas', async () => {
+      const staged = [
+        {
+          quarantineKey: `generations/${GEN}/q/a.png`,
+          publicKey: `generations/${GEN}/pub/a.png`,
+        },
+      ];
+      const won = setup();
+      await won.service.settleHeldPromotion(GEN, staged, true);
+      expect(won.uploads.deleteQuarantineObject).toHaveBeenCalledWith(
+        `generations/${GEN}/q/a.png`,
+      );
+      expect(won.uploads.deleteStoredObject).not.toHaveBeenCalled();
+
+      const lost = setup();
+      await lost.service.settleHeldPromotion(GEN, staged, false);
+      expect(lost.uploads.deleteStoredObject).toHaveBeenCalledWith(
+        'public',
+        `generations/${GEN}/pub/a.png`,
+      );
+      expect(lost.uploads.deleteQuarantineObject).not.toHaveBeenCalled();
+
+      // falha no storage vira log, nunca lança
+      const failing = setup();
+      failing.uploads.deleteStoredObject.mockRejectedValueOnce(new Error('S3 fora'));
+      await expect(
+        failing.service.settleHeldPromotion(GEN, staged, false),
+      ).resolves.toBeUndefined();
+    });
+
     it('resultado sem checagem que venceu sem bucket de quarentena: o arquivo público também é apagado', async () => {
       const ctx = setup({
         generation: {

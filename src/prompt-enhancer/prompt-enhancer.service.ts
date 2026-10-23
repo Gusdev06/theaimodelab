@@ -1,5 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import * as sharp from 'sharp';
+import {
+  ExternalMediaCheck,
+  inlineImagesOf,
+} from '../content-safety/image-safety/external-media-check';
 import { EnhanceInfluencerDto } from './dto/enhance-influencer.dto';
 import { TheaimodelabChatClient, ChatPart } from './theaimodelab-chat.client';
 
@@ -714,7 +718,10 @@ export class PromptEnhancerService {
 
   private static readonly MAX_IMAGE_BYTES = 4.5 * 1024 * 1024; // 4.5MB to stay safely under 5MB limit
 
-  constructor(private readonly chatClient: TheaimodelabChatClient) {}
+  constructor(
+    private readonly chatClient: TheaimodelabChatClient,
+    private readonly mediaCheck: ExternalMediaCheck,
+  ) {}
 
   private async compressImageForVision(
     base64Data: string,
@@ -742,10 +749,12 @@ export class PromptEnhancerService {
     };
   }
 
+  /** `userId`: dono do pedido quando há imagens (a checagem da foto registra por conta). */
   async enhance(
     prompt: string,
     context?: GenerationContext,
     images?: { base64: string; mime_type: string }[],
+    userId: string | null = null,
   ): Promise<{ prompt: string; negativePrompt: string }> {
     let textMessage = prompt;
 
@@ -777,6 +786,14 @@ export class PromptEnhancerService {
       for (const img of compressedImages) {
         parts.push({ inline_data: { base64: img.base64, mime_type: img.mime_type } });
       }
+      // as imagens (bytes que vão sair) passam pela checagem antes do modelo de visão: 422 barrada, 503 indisponível
+      await this.mediaCheck.assertSafe(() => inlineImagesOf(parts), {
+        userId,
+        tool: 'generate',
+        model: context?.model ?? null,
+        prompt,
+        negativePrompt: context?.negativePrompt ?? null,
+      });
     }
     parts.push({ text: textMessage });
 
@@ -985,7 +1002,11 @@ An original fictional character [DESCRIÇÃO DO PERSONAGEM].
     return refinedPrompt;
   }
 
-  async enhanceInfluencer(selections: EnhanceInfluencerDto): Promise<string> {
+  /** `userId`: dono do pedido (a checagem da foto de referência registra por conta). */
+  async enhanceInfluencer(
+    selections: EnhanceInfluencerDto,
+    userId: string | null = null,
+  ): Promise<string> {
     const { referenceImageBase64, referenceImageMimeType, ...characterSelections } = selections;
     const hasReferenceImage = !!referenceImageBase64;
 
@@ -997,6 +1018,17 @@ An original fictional character [DESCRIÇÃO DO PERSONAGEM].
     if (hasReferenceImage) {
       // Compress the reference image for vision
       const compressed = await this.compressImageForVision(referenceImageBase64);
+      // a foto de referência (bytes que vão sair) passa pela checagem antes do modelo de visão
+      await this.mediaCheck.assertSafe(
+        () => [
+          {
+            kind: 'image',
+            mimeType: compressed.mime_type,
+            buffer: Buffer.from(compressed.base64, 'base64'),
+          },
+        ],
+        { userId, tool: 'influencer_builder' },
+      );
 
       systemPrompt = INFLUENCER_SYSTEM_PROMPT + `\n\n## REFERENCE IMAGE MODE\n\nThe user has provided a reference image instead of selecting characteristics manually. You MUST:\n1. Analyze the person in the reference image carefully\n2. Generate a NEW, ORIGINAL character inspired by the person in the image\n3. Capture the overall aesthetic, facial structure, and vibe but create a UNIQUE individual — NOT a copy or clone\n4. Retain the general energy, style, and look while introducing subtle differences\n5. IGNORE the characterSelections JSON — use ONLY the reference image as inspiration\n6. Still follow ALL other rules (candid iPhone photo, variety, eye contact, etc.)\n7. NEVER use words like: deepfake, clone, replica, copy, identical, same person`;
 

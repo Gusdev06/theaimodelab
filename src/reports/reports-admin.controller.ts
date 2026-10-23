@@ -1,5 +1,6 @@
 import {
-  BadRequestException, Body, Controller, DefaultValuePipe, Get, Param, ParseIntPipe, Patch, Query, UseGuards, UsePipes, ValidationPipe,
+  BadRequestException, Body, Controller, DefaultValuePipe, Get, Param, ParseIntPipe, Patch, Query, Req, UseGuards, UsePipes,
+  ValidationPipe,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ContentReportStatus } from '@prisma/client';
@@ -7,6 +8,8 @@ import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decor
 import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { UpdateReportDto } from './dto/create-report.dto';
+import { auditClientIp } from '../access-log/access-log.config';
+import type { ReportRequest } from './reports.controller';
 import { REPORTS_SORTS, ReportsService, ReportsSort } from './reports.service';
 
 /**
@@ -51,9 +54,10 @@ export class ReportsAdminController {
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
   @ApiOperation({
     summary:
-      'Muda o andamento de uma denúncia (em análise, removido, descartado), a nota e libera a evidência (evidenceReleased: true, só com a denúncia removida/ACTIONED; troca de status desfaz a liberação; 409 se outro admin mudou a denúncia no meio) (admin)',
+      'Muda o andamento de uma denúncia (em análise, removido, descartado), a nota e libera a evidência (evidenceReleased: true, só com a denúncia removida/ACTIONED; troca de status desfaz a liberação; 409 se outro admin mudou a denúncia no meio). Fica no registro de acesso. Com a revisão de segurança em uso (checagem ligada ou SAFETY_REVIEWER_IDS preenchido), descartar ou liberar a evidência de denúncia que segura evidência (menor, crime, imagem íntima, pessoa retratada) é só do revisor designado (403 para o resto). Marcar removido aqui não tira arquivo do ar: a remoção é POST /api/v1/admin/takedowns/reports/:id (admin)',
   })
-  async update(@Param('id') id: string, @Body() dto: UpdateReportDto, @CurrentUser() admin: JwtPayload) {
-    return this.reports.update(id, dto, { id: admin.sub, email: admin.email });
+  async update(@Param('id') id: string, @Body() dto: UpdateReportDto, @CurrentUser() admin: JwtPayload, @Req() req?: ReportRequest) {
+    // IP da trilha pela regra do registro de acesso (com proxy declarado, o x-forwarded-for não é forjável)
+    return this.reports.update(id, dto, { id: admin.sub, email: admin.email, ip: req ? auditClientIp(req) : undefined });
   }
 }

@@ -148,6 +148,7 @@ describe('GenerationProcessor · segurança de imagem (preflight e saída)', () 
     record: jest.Mock;
     hasConsentForGeneration: jest.Mock;
     preflightStatusForGeneration: jest.Mock;
+    enforcesMediaPreflight: jest.Mock;
   };
   let promptEnhancer: { refinePromptForSafety: jest.Mock };
   let gptImage: { generateImage: jest.Mock };
@@ -161,6 +162,8 @@ describe('GenerationProcessor · segurança de imagem (preflight e saída)', () 
     checkOutput: jest.Mock;
     checkRefinedPrompt: jest.Mock;
     discardFailedOutputs: jest.Mock;
+    haltIfGenerationOwnerSuspended: jest.Mock;
+    haltIfAccountSuspended: jest.Mock;
   };
 
   async function build(safety: unknown = imageSafety) {
@@ -213,6 +216,8 @@ describe('GenerationProcessor · segurança de imagem (preflight e saída)', () 
       record: jest.fn().mockResolvedValue('evt-1'),
       hasConsentForGeneration: jest.fn().mockResolvedValue(false),
       preflightStatusForGeneration: jest.fn().mockResolvedValue('unavailable'),
+      // porteiro ligado: o desvio com mídia depende da checagem
+      enforcesMediaPreflight: jest.fn().mockReturnValue(true),
     };
     promptEnhancer = { refinePromptForSafety: jest.fn() };
     gptImage = {
@@ -255,6 +260,9 @@ describe('GenerationProcessor · segurança de imagem (preflight e saída)', () 
       })),
       checkRefinedPrompt: jest.fn().mockResolvedValue(null),
       discardFailedOutputs: jest.fn().mockResolvedValue(undefined),
+      // camada 6: conta ativa (a suspensão no meio do job é coberta em strikes/__tests__/suspension.processor.spec.ts)
+      haltIfGenerationOwnerSuspended: jest.fn().mockResolvedValue(undefined),
+      haltIfAccountSuspended: jest.fn().mockResolvedValue(undefined),
     };
     await build();
   });

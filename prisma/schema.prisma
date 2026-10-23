@@ -1311,6 +1311,8 @@ enum ContentReportCategory {
   COPYRIGHT
   ILLEGAL
   OTHER
+  /// "sou a pessoa da imagem": a própria pessoa retratada pede a remoção (TAKE IT DOWN, prazo de 48 h)
+  SELF_DEPICTED
 }
 
 enum ContentReportStatus {
@@ -1348,13 +1350,63 @@ model ContentReport {
   /// caso encerrado e evidência entregue/liberada: a denúncia deixa de segurar a exclusão LGPD da conta denunciada
   evidenceReleasedAt DateTime?           @map("evidence_released_at")
   evidenceReleasedBy String?             @map("evidence_released_by")
+  /// prazo legal da remoção pedida pela própria pessoa retratada (48 h, TAKE IT DOWN); null nas outras denúncias
+  takedownDueAt    DateTime?             @map("takedown_due_at")
+  /// quando a remoção ficou completa (arquivos fora do público); a purga do CDN tem estado próprio em cada item
+  takedownDoneAt   DateTime?             @map("takedown_done_at")
   createdAt        DateTime              @default(now()) @map("created_at")
   updatedAt        DateTime              @updatedAt @map("updated_at")
 
   @@index([status, createdAt])
   @@index([category])
   @@index([urgent, status])
+  @@index([takedownDueAt])
   @@map("content_reports")
+}
+
+/// Cada arquivo tirado do ar por uma remoção (denúncia confirmada pelo revisor, ou caso de checagem confirmado pelo
+/// revisor com o resultado já publicado): de onde saiu, para onde foi (apagado ou evidência) e a purga do CDN. Sem FK de
+/// propósito, como content_reports: a trilha sobrevive à exclusão da conta. Nunca guarda URL assinada nem a imagem.
+model ContentTakedownItem {
+  id            String    @id @default(cuid())
+  /// denúncia da remoção; null quando o arquivo saiu pela confirmação de uma checagem (scanId)
+  reportId      String?   @map("report_id")
+  /// checagem confirmada pelo revisor (source = review); null nas remoções por denúncia
+  scanId        String?   @map("scan_id")
+  generationId  String?   @map("generation_id")
+  /// report (geração citada ou indicada pelo revisor) | identical_copy (mesmo sha256 em outra geração) | post (cópia na comunidade) | review (caso confirmado na checagem)
+  source        String
+  /// output | thumbnail | input | post
+  role          String
+  /// área do storage (public, input-private, quarantine, evidence); null quando o arquivo não é do nosso storage
+  area          String?
+  mediaKey      String?   @map("media_key")
+  /// endereço que o CDN servia (o que é purgado); null quando o arquivo não era público
+  publicUrl     String?   @map("public_url")
+  sha256        String?
+  /// pHash da imagem ou dos quadros do vídeo (16 hexadecimais cada)
+  phashes       String[]  @default([])
+  /// linhas de content_hash_blocks criadas para as cópias futuras
+  blockIds      String[]  @default([]) @map("block_ids")
+  /// deleted | moved_to_evidence | already_evidence | not_found | external | failed
+  action        String
+  /// motivo curto (falha, guarda legal que levou à evidência); nunca o texto da denúncia
+  detail        String?
+  evidenceKey   String?   @map("evidence_key")
+  /// none (não era público) | pending | done | failed
+  purgeStatus   String    @map("purge_status")
+  purgeError    String?   @map("purge_error")
+  purgeAttempts Int       @default(0) @map("purge_attempts")
+  purgedAt      DateTime? @map("purged_at")
+  actorId       String    @map("actor_id")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@index([reportId])
+  @@index([scanId])
+  @@index([generationId])
+  @@index([purgeStatus, updatedAt])
+  @@map("content_takedown_items")
 }
 
 enum ContentSafetyEventKind {

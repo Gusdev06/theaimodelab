@@ -74,6 +74,7 @@ import {
   GenerationStatus,
   GenerationType,
   GenerationImageRole,
+  Prisma,
   Resolution,
 } from '@prisma/client';
 import {
@@ -208,7 +209,10 @@ export class GenerationProcessor extends WorkerHost {
     private readonly generationEvents: GenerationEventsService,
     private readonly promptEnhancer: PromptEnhancerService,
     private readonly contentSafety: ContentSafetyService,
-    /** segurança de imagem e texto (módulo global); ausente ou com os modos off = comportamento da Onda 0 */
+    /**
+     * segurança de imagem e texto (módulo global); ausente ou com os modos off, nada roda (o desvio depois de uma
+     * recusa segue a regra de antes da checagem: ContentSafetyService.enforcesMediaPreflight)
+     */
     @Optional() private readonly imageSafety?: ImageSafetyService,
   ) {
     super();
@@ -702,6 +706,8 @@ export class GenerationProcessor extends WorkerHost {
         );
         return;
       }
+      // conta suspensa no meio do job (camada 6): o desvio técnico também não chama mais um provedor
+      await this.imageSafety?.haltIfAccountSuspended(data);
 
       const inputImages = await this.prisma.generationInputImage.findMany({
         where: { generationId: data.generationId },
@@ -871,7 +877,7 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
-        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário e o porteiro ligado, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: data.model,
           target: 'same_provider',
@@ -946,7 +952,7 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
-        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário e o porteiro ligado, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: data.resolvedModel,
           target: 'same_provider',
@@ -1014,7 +1020,7 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
-        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário e o porteiro ligado, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: data.resolvedModel,
           target: 'same_provider',
@@ -1122,6 +1128,8 @@ export class GenerationProcessor extends WorkerHost {
         );
         return;
       }
+      // conta suspensa no meio do job (camada 6): o desvio técnico também não chama mais um provedor
+      await this.imageSafety?.haltIfAccountSuspended(data);
 
       const inputImages = await this.prisma.generationInputImage.findMany({
         where: { generationId: data.generationId },
@@ -1330,7 +1338,7 @@ export class GenerationProcessor extends WorkerHost {
     } catch (error) {
       // Se foi bloqueado por safety E tem prompt, tenta refinar e gerar de novo.
       if (this.isSafetyRelatedError(error) && data.prompt) {
-        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário e o porteiro ligado, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: 'grok-imagine',
           target: 'same_provider',
@@ -1376,7 +1384,7 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
-        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário e o porteiro ligado, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: 'grok-imagine',
           target: 'same_provider',
@@ -1423,7 +1431,7 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
-        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário e o porteiro ligado, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: 'gemini-omni',
           target: 'same_provider',
@@ -1474,7 +1482,7 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
-        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário e o porteiro ligado, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: data.modelId ?? 'bytedance/seedance-2',
           target: 'same_provider',
@@ -1525,7 +1533,7 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error) && data.prompt) {
-        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário sem checagem limpa, encerra
+        // alvo 'same_provider': prompt reescrito no MESMO provedor; com mídia do usuário e o porteiro ligado, encerra
         await this.assertSafetyFallbackAllowed(data.generationId, error, {
           model: 'kling-v3-turbo',
           target: 'same_provider',
@@ -1792,17 +1800,22 @@ export class GenerationProcessor extends WorkerHost {
    * Guarda que roda ANTES de todo desvio de um bloqueio de segurança. Passa calada quando o desvio pode seguir e
    * LANÇA um bloqueio terminal quando não pode; o process() (e o UnlimitedProcessor, e os run*Directly) encerram a
    * geração pelo caminho normal de falha (handleFailure: estorno, SSE, MINOR_BLOCKED) sem nova tentativa do BullMQ.
-   *  - menor de idade, qualquer alvo → MinorSafetyBlockError (CONTENT_POLICY_MINOR);
-   *  - alvo 'same_provider' (retryWithRefinedPrompt) com mídia do usuário → UnverifiedContentBlockError
-   *    (CONTENT_SAFETY_BLOCKED) com QUALQUER veredito: reescrever o prompt para passar no filtro e reenviar a mesma foto
-   *    não existe (seção 2, camada 4, regra 3); só com texto → segue (a reescrita passa pelas camadas 1 e 2 dentro do
-   *    retryWithRefinedPrompt);
-   *  - alvo 'uncensored' com mídia do usuário sem veredito 'clean' do porteiro de imagem → UnverifiedContentBlockError.
-   *    O veredito é o da entrada reavaliada como pedido sexual (o destino não tem filtro: zona de dúvida e estilizado
-   *    sem juiz não passam). Com IMAGE_SAFETY_MODE=off o veredito é sempre 'unavailable';
-   *  - alvo 'uncensored' (fallbackToSeedream) com foto limpa sem atestado → ConsentRequiredSafetyError
-   *    (CONTENT_BLOCKED_NEEDS_CONSENT);
-   *  - alvo 'uncensored' só com texto, ou com foto limpa e atestada → segue o desvio de sempre.
+   * Só junta os fatos; a regra mora em safetyFallbackVerdict (content-safety.error.ts):
+   *  - menor de idade, qualquer alvo e qualquer modo → MinorSafetyBlockError (CONTENT_POLICY_MINOR);
+   *  - porteiro de imagem DESLIGADO (IMAGE_SAFETY_MODE=off, o padrão): regra de antes da checagem. 'same_provider'
+   *    segue, com ou sem mídia (a reescrita passa pela trava de texto dentro do retryWithRefinedPrompt); 'uncensored'
+   *    com mídia do usuário sem atestado → ConsentRequiredSafetyError (CONTENT_BLOCKED_NEEDS_CONSENT); o resto segue
+   *    o desvio de sempre. O veredito do porteiro nem é lido;
+   *  - porteiro LIGADO (shadow ou enforce):
+   *    - alvo 'same_provider' (retryWithRefinedPrompt) com mídia do usuário → UnverifiedContentBlockError
+   *      (CONTENT_SAFETY_BLOCKED) com QUALQUER veredito: reescrever o prompt para passar no filtro e reenviar a mesma
+   *      foto não existe (seção 2, camada 4, regra 3); só com texto → segue (a reescrita passa pelas camadas 1 e 2
+   *      dentro do retryWithRefinedPrompt);
+   *    - alvo 'uncensored' com mídia do usuário sem veredito 'clean' → UnverifiedContentBlockError. O veredito é o da
+   *      entrada reavaliada como pedido sexual (o destino não tem filtro: zona de dúvida e estilizado sem juiz não
+   *      passam);
+   *    - alvo 'uncensored' (fallbackToSeedream) com foto limpa sem atestado → ConsentRequiredSafetyError;
+   *    - alvo 'uncensored' só com texto, ou com foto limpa e atestada → segue o desvio de sempre.
    * Erro de banco na leitura das fotos, do atestado ou do veredito nunca libera o desvio (conta como foto do usuário,
    * sem atestado e sem checagem).
    *
@@ -1810,7 +1823,8 @@ export class GenerationProcessor extends WorkerHost {
    * Ao mergear, reaplicar aqui: (1) esta guarda antes de todo fallbackToSeedream (alvo 'uncensored') e de todo
    * retryWithRefinedPrompt (alvo 'same_provider'); (2) a mesma guarda, alvo 'uncensored', antes de TODO fallback
    * automático de modelo cujo alvo seja sem censura (isUncensoredModel, ex.: vídeo kie → MiniMax H3), com kind
-   * 'safety' E 'provider' ("entrada recusada" conta como 'safety'): com foto, só segue com preflight 'clean';
+   * 'safety' E 'provider' ("entrada recusada" conta como 'safety'): com foto, porteiro ligado só segue com preflight
+   * 'clean' e desligado só com o atestado;
    * (3) o catch de bloqueio terminal no process() e no UnlimitedProcessor.process() (sem relançar);
    * (4) failureCodeOf/failureUserMessage no handleFailure e no markFailed do ilimitado;
    * (5) no catch do dispatchWithFallback, ANTES de calcular o kind: `const unwrapped = unwrapJobError(original); if
@@ -1821,7 +1835,9 @@ export class GenerationProcessor extends WorkerHost {
    * (6) o tryFallback relê inputImageUrls do banco: passar por freshInputUrls (a assinada no upload vence);
    * (7) uma lista só de mídia do usuário: o hasUserMedia do generation-fallback.ts chama jobCarriesUserMedia e a
    * USER_MEDIA_FIELDS sai (conferir que os campos dela estão em safety-fallback-guard.ts);
-   * (8) o log "[FALLBACK] … motivo=" usa providerMessageForLog (sem prompt nem URL assinada).
+   * (8) o log "[FALLBACK] … motivo=" usa providerMessageForLog (sem prompt nem URL assinada);
+   * (9) camada 6: `await this.imageSafety?.haltIfGenerationOwnerSuspended(generationId)` antes de cada tentativa do
+   * tryFallback (desvio técnico ou de segurança), como aqui no allow_fallback e antes da Nano Banana.
    * Na #3 o erro chega embrulhado em GenerationUnrecoverableError: o catch de (3) passa por unwrapJobError antes de
    * terminalSafetyBlockOf, senão a recusa por menor não é reconhecida. O "unsafe image upload" da #3 entra no
    * CONTENT_BLOCK_PATTERN de errors/failure-reason.ts. Merge de teste: conflito neste arquivo, no unlimited.processor.ts,
@@ -1835,6 +1851,8 @@ export class GenerationProcessor extends WorkerHost {
     // bloqueio terminal que chegou a um catch de provedor (checagem da plataforma, guarda anterior) nunca desvia
     if (isTerminalSafetyBlock(error)) throw error;
     const isMinor = isMinorSafetyBlock(error);
+    // porteiro de imagem ligado (config dele): só então a mídia do usuário depende do veredito
+    const enforceMediaPreflight = this.contentSafety.enforcesMediaPreflight();
     // o atestado só existe em pedido com foto: também conta como mídia do usuário
     const hasConsent =
       !isMinor && (await this.hasConsentForGeneration(generationId));
@@ -1843,9 +1861,10 @@ export class GenerationProcessor extends WorkerHost {
       (request.userMedia === true ||
         hasConsent ||
         (await this.hasStoredInputImages(generationId)));
-    // só o desvio sem censura consulta o porteiro: com foto, a reescrita no mesmo provedor encerra com qualquer veredito
+    // só o desvio sem censura com o porteiro ligado consulta o veredito: com foto, a reescrita no mesmo provedor encerra
+    // com qualquer veredito, e com o porteiro desligado ele não conta
     const preflight: PreflightStatus =
-      hasUserImages && request.target === 'uncensored'
+      enforceMediaPreflight && hasUserImages && request.target === 'uncensored'
         ? await this.preflightStatusFor(generationId, request.target)
         : 'unavailable';
     const { decision, reason } = safetyFallbackVerdict({
@@ -1853,10 +1872,15 @@ export class GenerationProcessor extends WorkerHost {
       isMinor,
       hasUserImages,
       hasConsent,
+      enforceMediaPreflight,
       preflight,
     });
 
-    if (decision === 'allow_fallback') return;
+    if (decision === 'allow_fallback') {
+      // conta suspensa no meio do job (camada 6): o desvio não chama mais um provedor (com o modo off, nada é lido)
+      await this.imageSafety?.haltIfGenerationOwnerSuspended(generationId);
+      return;
+    }
 
     if (reason === 'unverified_media') {
       this.logger.warn(
@@ -2675,14 +2699,38 @@ export class GenerationProcessor extends WorkerHost {
       stackFramesForLog(error),
     );
 
-    await this.prisma.generation.update({
-      where: { id: generationId },
-      data: {
-        status: GenerationStatus.FAILED,
-        errorMessage: userMessage,
-        errorCode,
-      },
-    });
+    // a troca para FAILED é a trava: duas chamadas ao mesmo tempo (duas suspensões varrendo a fila, o preflight e a
+    // suspensão) passam pela leitura acima, mas só uma acha a geração aberta; a outra (P2025) não estorna nem avisa
+    try {
+      await this.prisma.generation.update({
+        where: {
+          id: generationId,
+          status: {
+            notIn: [
+              GenerationStatus.COMPLETED,
+              GenerationStatus.FAILED,
+              GenerationStatus.IN_REVIEW,
+            ],
+          },
+        },
+        data: {
+          status: GenerationStatus.FAILED,
+          errorMessage: userMessage,
+          errorCode,
+        },
+      });
+    } catch (claimError) {
+      if (
+        claimError instanceof Prisma.PrismaClientKnownRequestError &&
+        claimError.code === 'P2025'
+      ) {
+        this.logger.warn(
+          `Generation ${generationId} encerrada por outro caminho no meio do encerramento, skipping handleFailure`,
+        );
+        return;
+      }
+      throw claimError;
+    }
 
     // MINOR_BLOCKED uma vez por geração: só aqui, depois da trava de idempotência acima
     if (isMinorBlock) {

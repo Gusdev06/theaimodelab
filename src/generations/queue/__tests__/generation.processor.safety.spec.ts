@@ -1,6 +1,6 @@
 import { Test } from '@nestjs/testing';
 import type { Job } from 'bullmq';
-import { ContentSafetyEventKind, GenerationStatus } from '@prisma/client';
+import { ContentSafetyEventKind, GenerationStatus, Prisma } from '@prisma/client';
 import { GenerationProcessor, willBeRetried } from '../generation.processor';
 import { GenerationJobName } from '../generation-queue.constants';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -163,6 +163,7 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
     record: jest.Mock;
     hasConsentForGeneration: jest.Mock;
     preflightStatusForGeneration: jest.Mock;
+    enforcesMediaPreflight: jest.Mock;
   };
   let promptEnhancer: { refinePromptForSafety: jest.Mock };
   let gptImage: { generateImage: jest.Mock };
@@ -183,8 +184,10 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
     contentSafety = {
       record: jest.fn().mockResolvedValue('evt-1'),
       hasConsentForGeneration: jest.fn().mockResolvedValue(false),
-      // até o porteiro de imagem existir, o veredito é sempre 'unavailable'
+      // sem checagem gravada, o veredito é 'unavailable'
       preflightStatusForGeneration: jest.fn().mockResolvedValue('unavailable'),
+      // padrão IMAGE_SAFETY_MODE=off: o desvio segue a regra de antes da checagem
+      enforcesMediaPreflight: jest.fn().mockReturnValue(false),
     };
     promptEnhancer = { refinePromptForSafety: jest.fn() };
     gptImage = { generateImage: jest.fn() };
@@ -329,7 +332,7 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
     });
 
     it('a nova tentativa com o prompt reescrito é recusada por menor: encerra sem voltar para a fila', async () => {
-      // só texto: a reescrita no mesmo provedor só existe sem foto
+      // só texto: com o porteiro ligado, a reescrita no mesmo provedor só existe sem foto
       grok.generateTextToVideo
         .mockRejectedValueOnce(
           new ContentSafetyError('content policy violation'),
@@ -402,9 +405,48 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
         expect.objectContaining({ generationId: GEN_ID, status: 'failed' }),
       );
     });
+
+    it('outro encerramento venceu a troca para FAILED no meio (P2025): sem estorno, sem SSE e sem MINOR_BLOCKED em dobro', async () => {
+      gptImage.generateImage.mockRejectedValue(
+        new ContentSafetyError('Request blocked (support code: 58061214)'),
+      );
+      prisma.generation.update.mockImplementation(
+        (arg: { where: Record<string, unknown>; data: Record<string, unknown> }) =>
+          arg.data.status === GenerationStatus.FAILED
+            ? Promise.reject(
+                new Prisma.PrismaClientKnownRequestError('No record was found for an update.', {
+                  code: 'P2025',
+                  clientVersion: 'teste',
+                }),
+              )
+            : Promise.resolve({}),
+      );
+
+      await expect(processor.process(imageJob())).resolves.toBeUndefined();
+
+      // a troca só vale com a geração ainda aberta
+      expect(failedUpdateOf(prisma)).toMatchObject({
+        where: {
+          id: GEN_ID,
+          status: {
+            notIn: [GenerationStatus.COMPLETED, GenerationStatus.FAILED, GenerationStatus.IN_REVIEW],
+          },
+        },
+      });
+      expect(credits.refund).not.toHaveBeenCalled();
+      expect(credits.refundFreeGeneration).not.toHaveBeenCalled();
+      expect(contentSafety.record).not.toHaveBeenCalled();
+      expect(events.emit).not.toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'failed' }),
+      );
+      // nem a reserva (failStuckGeneration) roda: não houve erro, só outra chamada antes
+      expect(prisma.generation.updateMany).not.toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ status: GenerationStatus.FAILED }) }),
+      );
+    });
   });
 
-  describe('foto do usuário, atestado e checagem da imagem (desvio terminal com foto)', () => {
+  describe('foto do usuário, atestado e checagem da imagem (desvio depois da recusa)', () => {
     const NOT_CLEAN = ['gray', 'flagged', 'unavailable'] as const;
     const ALL = ['clean', ...NOT_CLEAN] as const;
 
@@ -418,197 +460,420 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
       expect(contentSafety.record).not.toHaveBeenCalled();
     };
 
-    describe("alvo 'uncensored' (Unlocked com a foto)", () => {
+    describe('porteiro de imagem DESLIGADO (IMAGE_SAFETY_MODE=off, o padrão): regra de antes da checagem', () => {
       beforeEach(() => {
-        prisma.generationInputImage.findMany.mockResolvedValue([
-          { url: 'https://cdn.test/foto.png' },
-        ]);
-        prisma.generationInputImage.count.mockResolvedValue(1);
-        gptImage.generateImage.mockRejectedValue(
-          new ContentSafetyError(
-            'Your request was rejected by the safety system',
-          ),
-        );
-        seedream.generateImage.mockResolvedValue({
-          outputUrls: ['https://cdn.test/saida.png'],
-          modelUsed: 'seedream',
-        });
+        contentSafety.enforcesMediaPreflight.mockReturnValue(false);
       });
 
-      it.each(
-        NOT_CLEAN.flatMap(
-          (preflight) =>
-            [
-              [preflight, true],
-              [preflight, false],
-            ] as const,
-        ),
-      )(
-        "com foto, checagem '%s', atestado=%s: CONTENT_SAFETY_BLOCKED, sem Unlocked e sem nova tentativa",
-        async (preflight, consent) => {
-          contentSafety.preflightStatusForGeneration.mockResolvedValue(
-            preflight,
+      describe("alvo 'uncensored' (o bloqueio cai no Unlocked com a foto)", () => {
+        beforeEach(() => {
+          prisma.generationInputImage.findMany.mockResolvedValue([
+            { url: 'https://cdn.test/foto.png' },
+          ]);
+          prisma.generationInputImage.count.mockResolvedValue(1);
+          gptImage.generateImage.mockRejectedValue(
+            new ContentSafetyError(
+              'Your request was rejected by the safety system',
+            ),
           );
-          contentSafety.hasConsentForGeneration.mockResolvedValue(consent);
+          seedream.generateImage.mockResolvedValue({
+            outputUrls: ['https://cdn.test/saida.png'],
+            modelUsed: 'seedream',
+          });
+        });
+
+        it.each(ALL)(
+          "com foto atestada, veredito '%s' (nem é lido): segue para o Unlocked com a foto",
+          async (preflight) => {
+            contentSafety.preflightStatusForGeneration.mockResolvedValue(
+              preflight,
+            );
+            contentSafety.hasConsentForGeneration.mockResolvedValue(true);
+
+            await expect(
+              processor.process(imageJob({ hasInputImages: true })),
+            ).resolves.toBeUndefined();
+
+            expect(seedream.generateImage).toHaveBeenCalledWith(
+              expect.objectContaining({
+                imageUrls: ['https://cdn.test/foto.png'],
+              }),
+            );
+            expect(
+              contentSafety.preflightStatusForGeneration,
+            ).not.toHaveBeenCalled();
+            expect(completeGeneration).toHaveBeenCalled();
+            expect(failedUpdateOf(prisma)).toBeUndefined();
+          },
+        );
+
+        it('com foto sem atestado: CONTENT_BLOCKED_NEEDS_CONSENT, sem Unlocked e sem nova tentativa', async () => {
+          await expect(
+            processor.process(imageJob({ hasInputImages: true })),
+          ).resolves.toBeUndefined();
+
+          expect(seedream.generateImage).not.toHaveBeenCalled();
+          expect(failedUpdateOf(prisma)?.data).toEqual({
+            status: GenerationStatus.FAILED,
+            errorCode: GenerationFailureCode.CONTENT_BLOCKED_NEEDS_CONSENT,
+            errorMessage: CONTENT_BLOCKED_NEEDS_CONSENT_MESSAGE,
+          });
+          expect(credits.refund).toHaveBeenCalledWith(USER_ID, CREDITS, GEN_ID);
+          expect(contentSafety.record).not.toHaveBeenCalled();
+        });
+
+        it('foto só nas imagens guardadas (job sem o marcador) e sem atestado: também pede o atestado', async () => {
+          await expect(
+            processor.process(imageJob({ hasInputImages: false })),
+          ).resolves.toBeUndefined();
+
+          expect(seedream.generateImage).not.toHaveBeenCalled();
+          expect(failedUpdateOf(prisma)?.data.errorCode).toBe(
+            GenerationFailureCode.CONTENT_BLOCKED_NEEDS_CONSENT,
+          );
+        });
+
+        it('com foto atestada e recusa por MENOR: encerra como menor, sem Unlocked (vale em qualquer modo)', async () => {
+          contentSafety.hasConsentForGeneration.mockResolvedValue(true);
+          gptImage.generateImage.mockRejectedValue(
+            new ContentSafetyError('Request blocked (support code: 58061214)'),
+          );
 
           await expect(
             processor.process(imageJob({ hasInputImages: true })),
           ).resolves.toBeUndefined();
 
           expect(seedream.generateImage).not.toHaveBeenCalled();
-          // o desvio sem censura pede o veredito da entrada reavaliada como pedido sexual
-          expect(
-            contentSafety.preflightStatusForGeneration,
-          ).toHaveBeenCalledWith(GEN_ID, 'uncensored');
-          expectGenericTerminalBlock();
-        },
-      );
-
-      it('com foto limpa e atestado: segue para o Unlocked com a foto', async () => {
-        contentSafety.preflightStatusForGeneration.mockResolvedValue('clean');
-        contentSafety.hasConsentForGeneration.mockResolvedValue(true);
-
-        await expect(
-          processor.process(imageJob({ hasInputImages: true })),
-        ).resolves.toBeUndefined();
-
-        expect(seedream.generateImage).toHaveBeenCalledWith(
-          expect.objectContaining({ imageUrls: ['https://cdn.test/foto.png'] }),
-        );
-        expect(completeGeneration).toHaveBeenCalled();
-        expect(failedUpdateOf(prisma)).toBeUndefined();
-      });
-
-      it('com foto limpa sem atestado: CONTENT_BLOCKED_NEEDS_CONSENT, sem Unlocked', async () => {
-        contentSafety.preflightStatusForGeneration.mockResolvedValue('clean');
-
-        await expect(
-          processor.process(imageJob({ hasInputImages: true })),
-        ).resolves.toBeUndefined();
-
-        expect(seedream.generateImage).not.toHaveBeenCalled();
-        expect(failedUpdateOf(prisma)?.data).toEqual({
-          status: GenerationStatus.FAILED,
-          errorCode: GenerationFailureCode.CONTENT_BLOCKED_NEEDS_CONSENT,
-          errorMessage: CONTENT_BLOCKED_NEEDS_CONSENT_MESSAGE,
+          expect(failedUpdateOf(prisma)?.data).toEqual({
+            status: GenerationStatus.FAILED,
+            errorCode: GenerationFailureCode.CONTENT_POLICY_MINOR,
+            errorMessage: MINOR_BLOCK_USER_MESSAGE,
+          });
+          expect(contentSafety.record).toHaveBeenCalledWith(
+            expect.objectContaining({
+              kind: ContentSafetyEventKind.MINOR_BLOCKED,
+              route: 'provider:gpt-image-2',
+            }),
+          );
         });
-      });
 
-      it('foto só nas imagens guardadas (job sem o marcador) também conta como foto', async () => {
-        await expect(
-          processor.process(imageJob({ hasInputImages: false })),
-        ).resolves.toBeUndefined();
-
-        expect(seedream.generateImage).not.toHaveBeenCalled();
-        expectGenericTerminalBlock();
-      });
-
-      it('atestado gravado sem imagem guardada também conta como foto', async () => {
-        prisma.generationInputImage.count.mockResolvedValue(0);
-        contentSafety.hasConsentForGeneration.mockResolvedValue(true);
-
-        await expect(
-          processor.process(imageJob({ hasInputImages: false })),
-        ).resolves.toBeUndefined();
-
-        expect(seedream.generateImage).not.toHaveBeenCalled();
-        expectGenericTerminalBlock();
-      });
-
-      it('leitura da checagem que falha conta como sem checagem (nunca libera)', async () => {
-        contentSafety.preflightStatusForGeneration.mockRejectedValue(
-          new Error('banco fora'),
-        );
-        contentSafety.hasConsentForGeneration.mockResolvedValue(true);
-
-        await expect(
-          processor.process(imageJob({ hasInputImages: true })),
-        ).resolves.toBeUndefined();
-
-        expect(seedream.generateImage).not.toHaveBeenCalled();
-        expectGenericTerminalBlock();
-      });
-
-      it.each(ALL)(
-        "só texto, checagem '%s': segue para o Unlocked (o veredito da imagem nem é lido)",
-        async (preflight) => {
+        it('só texto: segue para o Unlocked', async () => {
           prisma.generationInputImage.findMany.mockResolvedValue([]);
           prisma.generationInputImage.count.mockResolvedValue(0);
-          contentSafety.preflightStatusForGeneration.mockResolvedValue(
-            preflight,
-          );
 
           await expect(processor.process(imageJob())).resolves.toBeUndefined();
 
           expect(seedream.generateImage).toHaveBeenCalledTimes(1);
-          expect(
-            contentSafety.preflightStatusForGeneration,
-          ).not.toHaveBeenCalled();
           expect(failedUpdateOf(prisma)).toBeUndefined();
-        },
-      );
-    });
-
-    describe("alvo 'same_provider' (agente refinador: prompt reescrito no mesmo provedor)", () => {
-      beforeEach(() => {
-        promptEnhancer.refinePromptForSafety.mockResolvedValue(
-          'caminhando na praia, vestida',
-        );
+        });
       });
 
-      it.each(ALL)(
-        "com foto, checagem '%s' (inclusive limpa): encerra sem reescrever o prompt e sem reenviar a foto",
-        async (preflight) => {
-          contentSafety.preflightStatusForGeneration.mockResolvedValue(
-            preflight,
+      describe("alvo 'same_provider' (agente refinador: prompt reescrito no mesmo provedor)", () => {
+        it.each(ALL)(
+          "com foto, veredito '%s' (nem é lido): refaz com o prompt reescrito e a mesma foto",
+          async (preflight) => {
+            contentSafety.preflightStatusForGeneration.mockResolvedValue(
+              preflight,
+            );
+            promptEnhancer.refinePromptForSafety.mockResolvedValue(
+              'caminhando na praia, vestida',
+            );
+            grok.generateImageToVideo
+              .mockRejectedValueOnce(
+                new ContentSafetyError('content policy violation'),
+              )
+              .mockResolvedValueOnce({
+                outputUrls: ['https://cdn.test/video.mp4'],
+                modelUsed: 'grok',
+              });
+
+            await expect(processor.process(grokJob())).resolves.toBeUndefined();
+
+            expect(promptEnhancer.refinePromptForSafety).toHaveBeenCalledTimes(
+              1,
+            );
+            expect(grok.generateImageToVideo).toHaveBeenCalledTimes(2);
+            expect(grok.generateImageToVideo).toHaveBeenLastCalledWith(
+              expect.objectContaining({
+                prompt: 'caminhando na praia, vestida',
+                imageUrls: ['https://cdn.test/foto.png'],
+              }),
+            );
+            expect(
+              contentSafety.preflightStatusForGeneration,
+            ).not.toHaveBeenCalled();
+            expect(failedUpdateOf(prisma)).toBeUndefined();
+          },
+        );
+
+        it('com foto: a reescrita continua passando pela trava de texto antes do provedor (acusada = terminal)', async () => {
+          // "garota de 25 anos" passa na trava; o refinador escreve "young girl", que a trava acusa
+          promptEnhancer.refinePromptForSafety.mockResolvedValue(
+            'An original fictional character, a young girl in a two-piece swimsuit on the beach',
           );
-          grok.generateImageToVideo.mockRejectedValue(
+          grok.generateImageToVideo.mockRejectedValueOnce(
             new ContentSafetyError('content policy violation'),
           );
 
-          await expect(processor.process(grokJob())).resolves.toBeUndefined();
+          await expect(
+            processor.process(
+              grokJob({ prompt: 'garota de 25 anos sexy de biquini na praia' }),
+            ),
+          ).resolves.toBeUndefined();
 
-          expect(promptEnhancer.refinePromptForSafety).not.toHaveBeenCalled();
           expect(grok.generateImageToVideo).toHaveBeenCalledTimes(1);
-          // com foto a reescrita não existe: o veredito do porteiro nem é lido
-          expect(
-            contentSafety.preflightStatusForGeneration,
-          ).not.toHaveBeenCalled();
-          expect(completeGeneration).not.toHaveBeenCalled();
-          expectGenericTerminalBlock();
-        },
-      );
-
-      it.each(ALL)(
-        "só texto, checagem '%s': refaz com o prompt reescrito (comportamento de antes)",
-        async (preflight) => {
-          contentSafety.preflightStatusForGeneration.mockResolvedValue(
-            preflight,
+          expect(prisma.generation.update).not.toHaveBeenCalledWith(
+            expect.objectContaining({
+              data: expect.objectContaining({ refinedBySafetyAgent: true }),
+            }),
           );
-          grok.generateTextToVideo
+          expectGenericTerminalBlock();
+        });
+
+        it('com foto: reescrita e pedido original acusados encerram como menor, sem reenviar a foto', async () => {
+          promptEnhancer.refinePromptForSafety.mockResolvedValue(
+            'a teen girl on the beach',
+          );
+          grok.generateImageToVideo.mockRejectedValueOnce(
+            new ContentSafetyError('content policy violation'),
+          );
+
+          await expect(
+            processor.process(grokJob({ prompt: 'menina de 12 anos na praia' })),
+          ).resolves.toBeUndefined();
+
+          expect(grok.generateImageToVideo).toHaveBeenCalledTimes(1);
+          expect(failedUpdateOf(prisma)?.data.errorCode).toBe(
+            GenerationFailureCode.CONTENT_POLICY_MINOR,
+          );
+          expect(contentSafety.record).toHaveBeenCalledWith(
+            expect.objectContaining({
+              kind: ContentSafetyEventKind.MINOR_BLOCKED,
+              route: 'refiner:modelo-da-geracao',
+            }),
+          );
+        });
+
+        it('Seedance só com áudio de referência: refaz com o prompt reescrito (o áudio vai junto, como antes)', async () => {
+          seedance.generateVideo
             .mockRejectedValueOnce(
               new ContentSafetyError('content policy violation'),
             )
             .mockResolvedValueOnce({
               outputUrls: ['https://cdn.test/video.mp4'],
-              modelUsed: 'grok',
+              modelUsed: 'seedance',
             });
+          promptEnhancer.refinePromptForSafety.mockResolvedValue(
+            'dançando na praia, vestida',
+          );
 
-          await expect(
-            processor.process(grokTextJob()),
-          ).resolves.toBeUndefined();
+          await expect(processor.process(seedanceJob())).resolves.toBeUndefined();
 
           expect(promptEnhancer.refinePromptForSafety).toHaveBeenCalledTimes(1);
-          expect(grok.generateTextToVideo).toHaveBeenCalledTimes(2);
-          expect(grok.generateTextToVideo).toHaveBeenLastCalledWith(
-            expect.objectContaining({ prompt: 'caminhando na praia, vestida' }),
-          );
-          expect(
-            contentSafety.preflightStatusForGeneration,
-          ).not.toHaveBeenCalled();
+          expect(seedance.generateVideo).toHaveBeenCalledTimes(2);
           expect(failedUpdateOf(prisma)).toBeUndefined();
-        },
-      );
+        });
+      });
+    });
+
+    describe('porteiro de imagem LIGADO (shadow ou enforce): desvio terminal com mídia', () => {
+      beforeEach(() => {
+        contentSafety.enforcesMediaPreflight.mockReturnValue(true);
+      });
+
+      describe("alvo 'uncensored' (Unlocked com a foto)", () => {
+        beforeEach(() => {
+          prisma.generationInputImage.findMany.mockResolvedValue([
+            { url: 'https://cdn.test/foto.png' },
+          ]);
+          prisma.generationInputImage.count.mockResolvedValue(1);
+          gptImage.generateImage.mockRejectedValue(
+            new ContentSafetyError(
+              'Your request was rejected by the safety system',
+            ),
+          );
+          seedream.generateImage.mockResolvedValue({
+            outputUrls: ['https://cdn.test/saida.png'],
+            modelUsed: 'seedream',
+          });
+        });
+  
+        it.each(
+          NOT_CLEAN.flatMap(
+            (preflight) =>
+              [
+                [preflight, true],
+                [preflight, false],
+              ] as const,
+          ),
+        )(
+          "com foto, checagem '%s', atestado=%s: CONTENT_SAFETY_BLOCKED, sem Unlocked e sem nova tentativa",
+          async (preflight, consent) => {
+            contentSafety.preflightStatusForGeneration.mockResolvedValue(
+              preflight,
+            );
+            contentSafety.hasConsentForGeneration.mockResolvedValue(consent);
+  
+            await expect(
+              processor.process(imageJob({ hasInputImages: true })),
+            ).resolves.toBeUndefined();
+  
+            expect(seedream.generateImage).not.toHaveBeenCalled();
+            // o desvio sem censura pede o veredito da entrada reavaliada como pedido sexual
+            expect(
+              contentSafety.preflightStatusForGeneration,
+            ).toHaveBeenCalledWith(GEN_ID, 'uncensored');
+            expectGenericTerminalBlock();
+          },
+        );
+  
+        it('com foto limpa e atestado: segue para o Unlocked com a foto', async () => {
+          contentSafety.preflightStatusForGeneration.mockResolvedValue('clean');
+          contentSafety.hasConsentForGeneration.mockResolvedValue(true);
+  
+          await expect(
+            processor.process(imageJob({ hasInputImages: true })),
+          ).resolves.toBeUndefined();
+  
+          expect(seedream.generateImage).toHaveBeenCalledWith(
+            expect.objectContaining({ imageUrls: ['https://cdn.test/foto.png'] }),
+          );
+          expect(completeGeneration).toHaveBeenCalled();
+          expect(failedUpdateOf(prisma)).toBeUndefined();
+        });
+  
+        it('com foto limpa sem atestado: CONTENT_BLOCKED_NEEDS_CONSENT, sem Unlocked', async () => {
+          contentSafety.preflightStatusForGeneration.mockResolvedValue('clean');
+  
+          await expect(
+            processor.process(imageJob({ hasInputImages: true })),
+          ).resolves.toBeUndefined();
+  
+          expect(seedream.generateImage).not.toHaveBeenCalled();
+          expect(failedUpdateOf(prisma)?.data).toEqual({
+            status: GenerationStatus.FAILED,
+            errorCode: GenerationFailureCode.CONTENT_BLOCKED_NEEDS_CONSENT,
+            errorMessage: CONTENT_BLOCKED_NEEDS_CONSENT_MESSAGE,
+          });
+        });
+  
+        it('foto só nas imagens guardadas (job sem o marcador) também conta como foto', async () => {
+          await expect(
+            processor.process(imageJob({ hasInputImages: false })),
+          ).resolves.toBeUndefined();
+  
+          expect(seedream.generateImage).not.toHaveBeenCalled();
+          expectGenericTerminalBlock();
+        });
+  
+        it('atestado gravado sem imagem guardada também conta como foto', async () => {
+          prisma.generationInputImage.count.mockResolvedValue(0);
+          contentSafety.hasConsentForGeneration.mockResolvedValue(true);
+  
+          await expect(
+            processor.process(imageJob({ hasInputImages: false })),
+          ).resolves.toBeUndefined();
+  
+          expect(seedream.generateImage).not.toHaveBeenCalled();
+          expectGenericTerminalBlock();
+        });
+  
+        it('leitura da checagem que falha conta como sem checagem (nunca libera)', async () => {
+          contentSafety.preflightStatusForGeneration.mockRejectedValue(
+            new Error('banco fora'),
+          );
+          contentSafety.hasConsentForGeneration.mockResolvedValue(true);
+  
+          await expect(
+            processor.process(imageJob({ hasInputImages: true })),
+          ).resolves.toBeUndefined();
+  
+          expect(seedream.generateImage).not.toHaveBeenCalled();
+          expectGenericTerminalBlock();
+        });
+  
+        it.each(ALL)(
+          "só texto, checagem '%s': segue para o Unlocked (o veredito da imagem nem é lido)",
+          async (preflight) => {
+            prisma.generationInputImage.findMany.mockResolvedValue([]);
+            prisma.generationInputImage.count.mockResolvedValue(0);
+            contentSafety.preflightStatusForGeneration.mockResolvedValue(
+              preflight,
+            );
+  
+            await expect(processor.process(imageJob())).resolves.toBeUndefined();
+  
+            expect(seedream.generateImage).toHaveBeenCalledTimes(1);
+            expect(
+              contentSafety.preflightStatusForGeneration,
+            ).not.toHaveBeenCalled();
+            expect(failedUpdateOf(prisma)).toBeUndefined();
+          },
+        );
+      });
+  
+      describe("alvo 'same_provider' (agente refinador: prompt reescrito no mesmo provedor)", () => {
+        beforeEach(() => {
+          promptEnhancer.refinePromptForSafety.mockResolvedValue(
+            'caminhando na praia, vestida',
+          );
+        });
+  
+        it.each(ALL)(
+          "com foto, checagem '%s' (inclusive limpa): encerra sem reescrever o prompt e sem reenviar a foto",
+          async (preflight) => {
+            contentSafety.preflightStatusForGeneration.mockResolvedValue(
+              preflight,
+            );
+            grok.generateImageToVideo.mockRejectedValue(
+              new ContentSafetyError('content policy violation'),
+            );
+  
+            await expect(processor.process(grokJob())).resolves.toBeUndefined();
+  
+            expect(promptEnhancer.refinePromptForSafety).not.toHaveBeenCalled();
+            expect(grok.generateImageToVideo).toHaveBeenCalledTimes(1);
+            // com foto a reescrita não existe: o veredito do porteiro nem é lido
+            expect(
+              contentSafety.preflightStatusForGeneration,
+            ).not.toHaveBeenCalled();
+            expect(completeGeneration).not.toHaveBeenCalled();
+            expectGenericTerminalBlock();
+          },
+        );
+  
+        it.each(ALL)(
+          "só texto, checagem '%s': refaz com o prompt reescrito (comportamento de antes)",
+          async (preflight) => {
+            contentSafety.preflightStatusForGeneration.mockResolvedValue(
+              preflight,
+            );
+            grok.generateTextToVideo
+              .mockRejectedValueOnce(
+                new ContentSafetyError('content policy violation'),
+              )
+              .mockResolvedValueOnce({
+                outputUrls: ['https://cdn.test/video.mp4'],
+                modelUsed: 'grok',
+              });
+  
+            await expect(
+              processor.process(grokTextJob()),
+            ).resolves.toBeUndefined();
+  
+            expect(promptEnhancer.refinePromptForSafety).toHaveBeenCalledTimes(1);
+            expect(grok.generateTextToVideo).toHaveBeenCalledTimes(2);
+            expect(grok.generateTextToVideo).toHaveBeenLastCalledWith(
+              expect.objectContaining({ prompt: 'caminhando na praia, vestida' }),
+            );
+            expect(
+              contentSafety.preflightStatusForGeneration,
+            ).not.toHaveBeenCalled();
+            expect(failedUpdateOf(prisma)).toBeUndefined();
+          },
+        );
+      });
+  
     });
 
     describe('saída do agente refinador passa pela trava de texto antes do provedor', () => {
@@ -723,8 +988,9 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
     });
   });
 
-  describe('áudio da cliente conta como mídia', () => {
+  describe('áudio da cliente conta como mídia (porteiro ligado)', () => {
     it('Seedance só com áudio de referência, recusado pelo filtro e sem checagem: encerra sem reescrever o prompt nem reenviar o áudio', async () => {
+      contentSafety.enforcesMediaPreflight.mockReturnValue(true);
       seedance.generateVideo.mockRejectedValue(
         new ContentSafetyError('content policy violation'),
       );

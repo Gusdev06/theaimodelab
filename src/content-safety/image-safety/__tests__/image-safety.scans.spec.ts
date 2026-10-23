@@ -400,17 +400,40 @@ describe('image-safety.scans', () => {
       await expect(reader.statusFor('g', 'uncensored')).resolves.toBe('gray');
     });
 
-    it('ContentSafetyService usa o leitor; sem ele, unavailable (Onda 0)', async () => {
+    it.each([
+      ['off', false],
+      ['shadow', true],
+      ['enforce', true],
+    ] as const)(
+      'modo %s: o desvio com mídia depende do veredito = %s',
+      (imageMode, expected) => {
+        const reader = createPreflightStatusReader(
+          { contentSafetyScan: { findMany: jest.fn() } } as never,
+          { imageMode, textMode: 'off', thresholds: THRESHOLDS },
+        );
+        expect(reader.enforcesMediaPreflight).toBe(expected);
+      },
+    );
+
+    it('ContentSafetyService usa o leitor; sem ele, unavailable e porteiro desligado (regra de antes da checagem)', async () => {
       const without = new ContentSafetyService({} as never);
       await expect(without.preflightStatusForGeneration('g')).resolves.toBe(
         'unavailable',
       );
+      expect(without.enforcesMediaPreflight()).toBe(false);
       const withReader = new ContentSafetyService({} as never, {
+        enforcesMediaPreflight: true,
         statusFor: jest.fn(async () => 'clean' as const),
       });
       await expect(withReader.preflightStatusForGeneration('g')).resolves.toBe(
         'clean',
       );
+      expect(withReader.enforcesMediaPreflight()).toBe(true);
+      const offReader = new ContentSafetyService({} as never, {
+        enforcesMediaPreflight: false,
+        statusFor: jest.fn(async () => 'unavailable' as const),
+      });
+      expect(offReader.enforcesMediaPreflight()).toBe(false);
     });
   });
 });

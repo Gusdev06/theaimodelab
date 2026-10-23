@@ -103,15 +103,41 @@ export class ActiveUserCache {
 }
 
 /**
- * Cache único do processo: o JwtStrategy lê dele e quem bloqueia a conta (exclusão LGPD, guarda legal) chama
- * invalidateActiveUser logo depois de gravar no banco, e a sessão aberta cai na requisição seguinte. Vale só para ESTE
- * processo: as outras instâncias da API continuam com a resposta antiga até a validade (ACTIVE_USER_CACHE_TTL_MS)
- * vencer.
+ * Cache único do processo: o JwtStrategy lê dele e quem bloqueia a conta (exclusão LGPD, guarda legal, suspensão por
+ * segurança) chama invalidateActiveUser logo depois de gravar no banco, e a sessão aberta cai na requisição seguinte.
+ * Sem o aviso entre instâncias (setActiveUserBroadcast), as outras instâncias da API continuam com a resposta antiga
+ * até a validade (ACTIVE_USER_CACHE_TTL_MS) vencer.
  */
 export const activeUserCache = new ActiveUserCache();
 
-/** Esquece a conta no cache deste processo (outras instâncias esperam até ACTIVE_USER_CACHE_TTL_MS). */
+/** Avisa as outras instâncias da API que a conta mudou (Redis); melhor esforço: sem aviso, o cache delas vence. */
+export type ActiveUserBroadcast = (userId: string) => void;
+
+let activeUserBroadcast: ActiveUserBroadcast | null = null;
+
+/**
+ * Liga (ou desliga, com null) o aviso entre instâncias. Quem registra é o módulo de segurança de conteúdo, só com a
+ * checagem de imagem ligada; sem registro, invalidateActiveUser vale só para este processo (como antes).
+ */
+export function setActiveUserBroadcast(
+  broadcast: ActiveUserBroadcast | null,
+): void {
+  activeUserBroadcast = broadcast;
+}
+
+/** Esquece a conta no cache deste processo e avisa as outras instâncias, quando o aviso está ligado. */
 export function invalidateActiveUser(userId: string): void {
+  activeUserCache.invalidate(userId);
+  if (!activeUserBroadcast) return;
+  try {
+    activeUserBroadcast(userId);
+  } catch {
+    // o aviso é melhor esforço: a conta já está gravada como inativa e o cache das outras instâncias vence sozinho
+  }
+}
+
+/** Só este processo: quem recebe o aviso de outra instância chama isto (sem reenviar o aviso). */
+export function invalidateActiveUserLocally(userId: string): void {
   activeUserCache.invalidate(userId);
 }
 

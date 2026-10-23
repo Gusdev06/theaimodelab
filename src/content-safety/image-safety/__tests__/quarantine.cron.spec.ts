@@ -24,6 +24,12 @@ const NOW = new Date('2026-10-17T12:00:00Z');
 const minutesAgo = (minutes: number) =>
   new Date(NOW.getTime() - minutes * 60_000);
 
+/** cópia pública feita com a quarentena ainda inteira (a 2ª fase é depois da conclusão) */
+const STAGED = {
+  quarantineKey: 'generations/g1/q/a.png',
+  publicKey: 'generations/g1/pub/a.png',
+};
+
 const hold = (overrides: Partial<SafetyHoldRecord> = {}): SafetyHoldRecord => ({
   stage: 'output',
   outputs: [
@@ -58,9 +64,11 @@ function setup(state: HoldState | null, config = configFor()) {
   const imageSafety = {
     holdStateOf: jest.fn(async () => state),
     recheckHeldOutput: jest.fn(async () => ({ action: 'held' as const })),
-    releaseUncheckedOutput: jest.fn(async () => [
-      'https://cdn.test/generations/g1/pub/a.png',
-    ]),
+    releaseUncheckedOutput: jest.fn(async () => ({
+      outputs: ['https://cdn.test/generations/g1/pub/a.png'],
+      staged: [STAGED],
+    })),
+    settleHeldPromotion: jest.fn(async () => undefined),
     discardHeldOutput: jest.fn(async () => undefined),
     expireHeldInput: jest.fn(
       async () => new InputImageSafetyBlockError('E3a', 'MEDIUM'),
@@ -326,11 +334,12 @@ describe('QuarantineCron', () => {
       modelUsed,
     });
 
-    it('a nova checagem aprova: conclui com as URLs promovidas', async () => {
+    it('a nova checagem aprova: conclui com as URLs promovidas e só então tira da quarentena', async () => {
       const ctx = setup(unchecked(3));
       ctx.imageSafety.recheckHeldOutput.mockResolvedValueOnce({
         action: 'promote',
         outputs: ['https://cdn.test/generations/g1/pub/a.png'],
+        staged: [STAGED],
       } as never);
       await expect(ctx.cron.handle('g1', ctx.finisher, NOW)).resolves.toBe(
         'completed',
@@ -343,6 +352,50 @@ describe('QuarantineCron', () => {
           processingTimeMs: 3000,
         }),
       );
+      expect(ctx.imageSafety.settleHeldPromotion).toHaveBeenCalledWith(
+        'g1',
+        [STAGED],
+        true,
+      );
+      expect(
+        ctx.finisher.completeHeldGeneration.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        ctx.imageSafety.settleHeldPromotion.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('o revisor confirmou (ou liberou) antes da conclusão: as cópias públicas saem e a quarentena fica para a evidência', async () => {
+      const ctx = setup(unchecked(3));
+      ctx.imageSafety.recheckHeldOutput.mockResolvedValueOnce({
+        action: 'promote',
+        outputs: ['https://cdn.test/generations/g1/pub/a.png'],
+        staged: [STAGED],
+      } as never);
+      ctx.finisher.completeHeldGeneration.mockResolvedValueOnce(false);
+      await expect(ctx.cron.handle('g1', ctx.finisher, NOW)).resolves.toBe(
+        'waiting',
+      );
+      expect(ctx.imageSafety.settleHeldPromotion).toHaveBeenCalledWith(
+        'g1',
+        [STAGED],
+        false,
+      );
+    });
+
+    it('conclusão que lança: nada da 2ª fase roda (a cópia e a quarentena ficam)', async () => {
+      const ctx = setup(unchecked(3));
+      ctx.imageSafety.recheckHeldOutput.mockResolvedValueOnce({
+        action: 'promote',
+        outputs: ['https://cdn.test/generations/g1/pub/a.png'],
+        staged: [STAGED],
+      } as never);
+      ctx.finisher.completeHeldGeneration.mockRejectedValueOnce(
+        new Error('banco fora'),
+      );
+      await expect(ctx.cron.handle('g1', ctx.finisher, NOW)).rejects.toThrow(
+        'banco fora',
+      );
+      expect(ctx.imageSafety.settleHeldPromotion).not.toHaveBeenCalled();
     });
 
     it('a nova checagem acha menor: encerra com estorno', async () => {
@@ -368,6 +421,11 @@ describe('QuarantineCron', () => {
         expect.stringContaining('nano-banana-2'),
       );
       expect(ctx.finisher.completeHeldGeneration).toHaveBeenCalled();
+      expect(ctx.imageSafety.settleHeldPromotion).toHaveBeenCalledWith(
+        'g1',
+        [STAGED],
+        true,
+      );
     });
 
     it('provedor de confiança antes de 10 min: espera', async () => {

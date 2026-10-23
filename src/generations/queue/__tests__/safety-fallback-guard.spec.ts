@@ -12,6 +12,7 @@ import {
 } from '../safety-fallback-guard';
 import {
   RefinedPromptMinorBlockError,
+  safetyFallbackVerdict,
   UnverifiedContentBlockError,
 } from '../../errors/content-safety.error';
 import {
@@ -133,6 +134,79 @@ describe('checkRefinedPrompt / refinedPromptBlockOf', () => {
     expect((block as UnverifiedContentBlockError).source).toBe(
       'refiner_unchecked',
     );
+  });
+});
+
+describe('reescrita no mesmo provedor pelo modo do porteiro de imagem', () => {
+  const ADULT_ORIGINAL = 'garota de 25 anos sexy de biquini na praia';
+  const REFINED_FLAGGED =
+    'An original fictional character, a young girl in a two-piece swimsuit on the beach';
+  const PREFLIGHTS = ['clean', 'gray', 'flagged', 'unavailable'] as const;
+  const JOBS_WITH_MEDIA = [
+    ['foto', { prompt: 'x', imageUrls: ['https://cdn.test/a.png'] }],
+    ['vídeo', { prompt: 'x', videoUrl: 'https://cdn.test/a.mp4' }],
+    ['só o áudio', { prompt: 'x', referenceAudioUrls: ['https://cdn.test/v.mp3'] }],
+  ] as const;
+
+  /** veredito da guarda para a reescrita, com a mídia lida do job como no processor */
+  const sameProviderVerdict = (
+    job: unknown,
+    enforceMediaPreflight: boolean,
+    preflight: (typeof PREFLIGHTS)[number] = 'unavailable',
+  ) =>
+    safetyFallbackVerdict({
+      target: 'same_provider',
+      isMinor: false,
+      hasUserImages: jobCarriesUserMedia(job),
+      hasConsent: false,
+      enforceMediaPreflight,
+      preflight,
+    });
+
+  it.each(JOBS_WITH_MEDIA)(
+    'porteiro desligado (off), job com %s: a reescrita segue (regra de antes da checagem)',
+    (_label, job) => {
+      expect(sameProviderVerdict(job, false)).toEqual({
+        decision: 'allow_fallback',
+        reason: null,
+      });
+    },
+  );
+
+  it.each(JOBS_WITH_MEDIA)(
+    'porteiro ligado (shadow ou enforce), job com %s: a reescrita não existe, com qualquer veredito',
+    (_label, job) => {
+      for (const preflight of PREFLIGHTS) {
+        expect(sameProviderVerdict(job, true, preflight)).toEqual({
+          decision: 'fail_blocked',
+          reason: 'unverified_media',
+        });
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'só texto (porteiro ligado=%s): a reescrita segue',
+    (enforce) => {
+      expect(
+        sameProviderVerdict({ prompt: 'x', hasInputImages: false }, enforce)
+          .decision,
+      ).toBe('allow_fallback');
+    },
+  );
+
+  it('a trava sobre a reescrita não depende do modo: liberada a reescrita, a saída acusada nunca vai ao provedor', () => {
+    // a guarda deixa a reescrita seguir com o porteiro desligado...
+    expect(
+      sameProviderVerdict(JOBS_WITH_MEDIA[0][1], false).decision,
+    ).toBe('allow_fallback');
+    // ...e a saída do refinador ainda passa pela trava de menor antes do provedor
+    expect(refinedPromptBlockOf(REFINED_FLAGGED, ADULT_ORIGINAL)).toBeInstanceOf(
+      UnverifiedContentBlockError,
+    );
+    expect(
+      refinedPromptBlockOf('a teen girl on the beach', 'menina de 12 anos na praia'),
+    ).toBeInstanceOf(RefinedPromptMinorBlockError);
   });
 });
 

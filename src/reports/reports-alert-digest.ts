@@ -31,6 +31,7 @@ const CATEGORY_LABEL: Record<ContentReportCategory, string> = {
   [ContentReportCategory.COPYRIGHT]: 'direito autoral',
   [ContentReportCategory.ILLEGAL]: 'conteúdo ilegal',
   [ContentReportCategory.OTHER]: 'outro motivo',
+  [ContentReportCategory.SELF_DEPICTED]: 'a própria pessoa da imagem pede a remoção (prazo legal de 48 h)',
 };
 
 const REASON_LABEL: Record<UrgentReason, string> = {

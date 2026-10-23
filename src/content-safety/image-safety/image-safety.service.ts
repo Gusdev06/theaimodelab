@@ -34,6 +34,18 @@ import { ContentSafetyService } from '../content-safety.service';
 import { isUncensoredModel } from '../content-safety.interceptor';
 import type { PreflightStatus } from '../preflight-status';
 import {
+  AccountSuspendedSafetyError,
+  PhotoRetryLimitError,
+} from '../strikes/strikes.errors';
+import { suspensionHoldRows } from '../strikes/strikes.rules';
+import {
+  ACCOUNT_SUSPENDED_RULE,
+  STRIKES,
+  type StrikePhoto,
+  type StrikeSignalContext,
+  type StrikesPort,
+} from '../strikes/strikes.types';
+import {
   TextClassifierService,
   textUnavailableAction,
 } from '../text-classifier/text-classifier.service';
@@ -155,10 +167,19 @@ export type PreflightOutcome =
   /** a geração já terminou ou está segurada: nada a fazer */
   | { action: 'skip' };
 
+/** Cópia pública feita com a quarentena ainda inteira (a 2ª fase é de quem conclui: settleHeldPromotion). */
+export interface StagedPromotion {
+  quarantineKey: string;
+  publicKey: string;
+}
+
 /** Resultado da checagem da saída. */
 export type OutputCheckOutcome =
-  /** publicar estas URLs (já promovidas da quarentena) */
-  | { action: 'promote'; outputs: string[] }
+  /**
+   * publicar estas URLs (já promovidas da quarentena). `staged` só na nova checagem do cron: a quarentena ainda não
+   * saiu e quem concluir chama settleHeldPromotion (venceu = apaga a quarentena; perdeu = apaga as cópias públicas)
+   */
+  | { action: 'promote'; outputs: string[]; staged?: StagedPromotion[] }
   /** segurado na quarentena (IN_REVIEW): nada é publicado */
   | { action: 'held' }
   /** resultado com menor: evidência guardada; quem chama encerra com estorno */
@@ -544,6 +565,10 @@ export class ImageSafetyService {
     @Optional()
     @Inject(IMAGE_SCANNER)
     private readonly scanner: ScannerPort | null = null,
+    /** camada 6 (pontos e suspensão); ausente ou com o modo off = nenhum ponto, nenhuma suspensão */
+    @Optional()
+    @Inject(STRIKES)
+    private readonly strikes: StrikesPort | null = null,
   ) {}
 
   /** Checagem de imagem ligada (shadow ou enforce). */
@@ -687,6 +712,13 @@ export class ImageSafetyService {
       // já terminou, já está segurada ou ainda nem começou: nenhum provedor é chamado por este job
       return { kind: 'skip' };
     }
+    // conta suspensa (camada 6): nenhum job dela vai mais ao provedor, nem a nova tentativa de um job já checado
+    if (await this.accountSuspended(generation.userId)) {
+      this.logger.warn(
+        `[IMAGE_SAFETY] gen=${generationId}: conta suspensa — job encerrado sem provedor`,
+      );
+      return { kind: 'block', error: new AccountSuspendedSafetyError() };
+    }
 
     const tool = safetyToolOf({
       jobName,
@@ -701,6 +733,18 @@ export class ImageSafetyService {
 
     const reused = await this.reusePreflight(generationId, hasUserMedia);
     if (reused) return reused;
+
+    // depois de um bloqueio de foto: limite de novas tentativas com foto, recusadas sem checar (mesmo código genérico)
+    if (
+      this.imageEnabled &&
+      hasUserMedia &&
+      !(await this.photoRetryAllowed(generation.userId, generationId))
+    ) {
+      this.logger.warn(
+        `[IMAGE_SAFETY] gen=${generationId} tool=${tool}: nova tentativa com foto acima do limite depois de um bloqueio — recusada sem checar`,
+      );
+      return { kind: 'block', error: new PhotoRetryLimitError() };
+    }
 
     const base: Omit<RequestContext, 'surface'> = {
       userId: generation.userId,
@@ -793,6 +837,13 @@ export class ImageSafetyService {
       this.logger.warn(
         `[IMAGE_SAFETY] gen=${generationId} tool=${tool}: entrada barrada (${matchOf(actedImage)})${evidencePending ? ' — evidência pendente, entradas mantidas' : ''}`,
       );
+      // depois das checagens gravadas: a repetição por hash conta esta tentativa
+      await this.applyStrike(generation.userId, actedImage.strength, eventId, {
+        layer: 'input',
+        match: matchOf(actedImage),
+        generationId,
+        photos: this.strikePhotos(acted),
+      });
       return {
         kind: 'block',
         error: new InputImageSafetyBlockError(
@@ -805,16 +856,22 @@ export class ImageSafetyService {
 
     // 2. texto barrado pelo leitor de sentido
     if (textActs && text && text.verdict === 'BLOCK') {
-      await this.recordEvent(
+      const textMatch = `${text.ruleId ?? 'sem-regra'}/${text.strength}`;
+      const eventId = await this.recordEvent(
         ContentSafetyEventKind.TEXT_CLASSIFIER_FLAGGED,
         `text:${tool}`,
-        `${text.ruleId ?? 'sem-regra'}/${text.strength}`,
+        textMatch,
         generation,
       );
       await writeAll();
       this.logger.warn(
         `[IMAGE_SAFETY] gen=${generationId} tool=${tool}: texto barrado (${text.ruleId}/${text.strength})`,
       );
+      await this.applyStrike(generation.userId, text.strength, eventId, {
+        layer: 'text',
+        match: textMatch,
+        generationId,
+      });
       return {
         kind: 'block',
         error: new TextSafetyBlockError(text.ruleId, text.strength),
@@ -837,12 +894,13 @@ export class ImageSafetyService {
           ).key;
         }
       }
-      await this.recordEvent(
+      const holdMatch = imageHold
+        ? matchOf(actedImage)
+        : `${text!.ruleId ?? 'sem-regra'}/${text!.strength}`;
+      const eventId = await this.recordEvent(
         ContentSafetyEventKind.INPUT_HELD,
         imageHold ? `input:${tool}` : `text:${tool}`,
-        imageHold
-          ? matchOf(actedImage)
-          : `${text!.ruleId ?? 'sem-regra'}/${text!.strength}`,
+        holdMatch,
         generation,
       );
       await writeAll();
@@ -855,6 +913,17 @@ export class ImageSafetyService {
       });
       this.logger.warn(
         `[IMAGE_SAFETY] gen=${generationId} tool=${tool}: segurada para revisão sem gerar (${imageHold ? matchOf(actedImage) : text!.ruleId})`,
+      );
+      await this.applyStrike(
+        generation.userId,
+        imageHold ? actedImage.strength : text!.strength,
+        eventId,
+        {
+          layer: imageHold ? 'input' : 'text',
+          match: holdMatch,
+          generationId,
+          photos: imageHold ? this.strikePhotos(acted) : [],
+        },
       );
       return count > 0 ? { kind: 'held' } : { kind: 'skip' };
     }
@@ -1067,11 +1136,19 @@ export class ImageSafetyService {
     if (!this.imageEnabled) {
       return unavailableInputVerdict('checagem de imagem desligada');
     }
+    const visual = media.filter((item) => item.kind !== 'audio');
+    // camada 6: conta suspensa e limite de novas tentativas com foto recusam sem ler nada (para a cliente, o mesmo
+    // "tente de novo em instantes" de quando a checagem cai; o motivo fica no log)
+    const refusal = await this.syncRefusalOf(
+      ctx.userId,
+      ctx.generationId,
+      visual.length > 0,
+    );
+    if (refusal) return unavailableInputVerdict(refusal);
     const controller = new AbortController();
     const timeoutMs = options.timeoutMs ?? SAFETY_TIMING.syncCheckTimeoutMs;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const visual = media.filter((item) => item.kind !== 'audio');
       const reads = await mapLimited(visual, SCAN_CONCURRENCY, (item) =>
         this.readMedia(
           {
@@ -1103,11 +1180,12 @@ export class ImageSafetyService {
         ? combineInputVerdicts(acted.map((decision) => decision.acted!))
         : null;
       const tool = fullCtx.tool;
+      let blockEventId: string | null = null;
       if (actedVerdict?.verdict === 'BLOCK') {
         const strongOrMedium =
           actedVerdict.strength === 'STRONG' ||
           actedVerdict.strength === 'MEDIUM';
-        const eventId = strongOrMedium
+        blockEventId = strongOrMedium
           ? await this.recordEvent(
               ContentSafetyEventKind.IMAGE_MINOR_BLOCKED,
               `input:${tool}`,
@@ -1120,7 +1198,7 @@ export class ImageSafetyService {
           decision.evidenceKey = (
             await this.applyEvidence(decision.read, decision.acted.evidence)
           ).key;
-          await this.addToBlocklist(decision, eventId, 'input');
+          await this.addToBlocklist(decision, blockEventId, 'input');
         }
       }
       await this.writeScans(
@@ -1132,6 +1210,19 @@ export class ImageSafetyService {
         ),
         new Date(),
       );
+      if (actedVerdict?.verdict === 'BLOCK') {
+        await this.applyStrike(
+          ctx.userId,
+          actedVerdict.strength,
+          blockEventId,
+          {
+            layer: 'input',
+            match: matchOf(actedVerdict),
+            generationId: ctx.generationId,
+            photos: this.strikePhotos(acted),
+          },
+        );
+      }
       return (
         actedVerdict ??
         combineInputVerdicts(decisions.map((decision) => decision.real))
@@ -1183,10 +1274,16 @@ export class ImageSafetyService {
     }
   }
 
+  /**
+   * `staged` (nova checagem do cron): o aprovado só é copiado para o público, sem apagar a quarentena; a conclusão vence
+   * ou perde a troca IN_REVIEW → PROCESSING e então chama settleHeldPromotion. Assim uma confirmação do revisor no meio
+   * ainda acha a mídia na quarentena para a evidência.
+   */
   private async screenOutputs(
     generationId: string,
     outputs: CheckedMedia[],
     completion: OutputCompletion,
+    options: { staged?: boolean } = {},
   ): Promise<OutputCheckOutcome> {
     const generation = (await this.prisma.generation.findUnique({
       where: { id: generationId },
@@ -1301,6 +1398,11 @@ export class ImageSafetyService {
       this.logger.warn(
         `[IMAGE_SAFETY] gen=${generationId} model=${model}: resultado barrado (${matchOf(worst)})${evidencePending ? ' — evidência pendente, entradas mantidas' : ''}`,
       );
+      await this.applyStrike(generation.userId, worst.strength, eventId, {
+        layer: 'output',
+        match: matchOf(worst),
+        generationId,
+      });
       return {
         action: 'blocked',
         error: new OutputImageSafetyBlockError(ruleOf(worst), worst.strength, {
@@ -1310,7 +1412,7 @@ export class ImageSafetyService {
     }
 
     if (worst?.disposition === 'hold') {
-      await this.recordEvent(
+      const eventId = await this.recordEvent(
         ContentSafetyEventKind.OUTPUT_HELD,
         `output:${model}`,
         matchOf(worst),
@@ -1321,11 +1423,25 @@ export class ImageSafetyService {
       this.logger.warn(
         `[IMAGE_SAFETY] gen=${generationId} model=${model}: resultado segurado para revisão (${matchOf(worst)})`,
       );
+      await this.applyStrike(generation.userId, worst.strength, eventId, {
+        layer: 'output',
+        match: matchOf(worst),
+        generationId,
+      });
       return { action: 'held' };
     }
 
     if (worst?.disposition === 'retry') {
       await writeAll();
+      // conta suspensa: o resultado espera o revisor (nunca sai sozinho quando a checagem volta)
+      if (await this.accountSuspended(generation.userId)) {
+        return this.holdForSuspendedAccount(
+          generation,
+          outputs,
+          completion,
+          model,
+        );
+      }
       await this.holdOutput(generationId, outputs, completion);
       this.logger.warn(
         `[IMAGE_SAFETY] gen=${generationId} model=${model}: resultado aguardando checagem (indisponível)`,
@@ -1334,6 +1450,23 @@ export class ImageSafetyService {
     }
 
     await writeAll();
+    // conta suspensa enquanto o provedor gerava: o resultado limpo também não é publicado, espera o revisor
+    if (await this.accountSuspended(generation.userId)) {
+      return this.holdForSuspendedAccount(
+        generation,
+        outputs,
+        completion,
+        model,
+      );
+    }
+    if (options.staged) {
+      const copies = await this.copyAllToPublic(outputs, reads);
+      if (!copies) {
+        await this.holdOutput(generationId, outputs, completion);
+        return { action: 'held' };
+      }
+      return { action: 'promote', outputs: copies.urls, staged: copies.staged };
+    }
     const promoted = await this.promoteAll(outputs, reads);
     if (!promoted) {
       await this.holdOutput(generationId, outputs, completion);
@@ -1344,15 +1477,31 @@ export class ImageSafetyService {
 
   /**
    * Publica todo o resultado (quarentena → público) em duas fases: 1) copia TODAS as saídas para o público sem apagar
-   * nada da quarentena; se alguma cópia falhar, apaga as cópias públicas já feitas e devolve null (a quarentena fica
-   * inteira para a nova tentativa); 2) só então apaga as cópias da quarentena. Nada é publicado nem apagado pela metade.
+   * nada da quarentena (copyAllToPublic); 2) só então apaga as cópias da quarentena. Nada é publicado nem apagado pela
+   * metade.
    */
   private async promoteAll(
     outputs: CheckedMedia[],
     reads: MediaRead[],
   ): Promise<string[] | null> {
+    const copies = await this.copyAllToPublic(outputs, reads);
+    if (!copies) return null;
+    for (const done of copies.staged) {
+      await this.uploads.deleteQuarantineObject(done.quarantineKey);
+    }
+    return copies.urls;
+  }
+
+  /**
+   * 1ª fase da promoção: copia TODAS as saídas para o público sem apagar nada da quarentena. Se alguma cópia falhar,
+   * apaga as cópias públicas já feitas e devolve null (a quarentena fica inteira para a nova tentativa).
+   */
+  private async copyAllToPublic(
+    outputs: CheckedMedia[],
+    reads: MediaRead[],
+  ): Promise<{ urls: string[]; staged: StagedPromotion[] } | null> {
     const urls: string[] = [];
-    const copied: Array<{ quarantineKey: string; publicKey: string }> = [];
+    const copied: StagedPromotion[] = [];
     for (const item of outputs) {
       if (item.location?.area !== 'quarantine') {
         urls.push(
@@ -1391,10 +1540,32 @@ export class ImageSafetyService {
       }
       return null;
     }
-    for (const done of copied) {
-      await this.uploads.deleteQuarantineObject(done.quarantineKey);
+    return { urls, staged: copied };
+  }
+
+  /**
+   * 2ª fase da promoção do cron (cópias feitas com a quarentena inteira): quem venceu a conclusão apaga a quarentena;
+   * quem perdeu (o revisor confirmou ou liberou antes, o prazo encerrou) apaga as próprias cópias públicas, que têm
+   * chave nova (promotedKeyOf) e não são de mais ninguém. Nunca lança.
+   */
+  async settleHeldPromotion(
+    generationId: string,
+    staged: readonly StagedPromotion[],
+    won: boolean,
+  ): Promise<void> {
+    for (const item of staged) {
+      try {
+        if (won) {
+          await this.uploads.deleteQuarantineObject(item.quarantineKey);
+        } else {
+          await this.uploads.deleteStoredObject('public', item.publicKey);
+        }
+      } catch (error) {
+        this.logger.error(
+          `[IMAGE_SAFETY] gen=${generationId}: ${won ? `quarentena ${item.quarantineKey}` : `cópia pública ${item.publicKey}`} não apagada depois da conclusão (${(error as Error).message?.slice(0, 200)})${won ? '' : ' — apagar à mão'}`,
+        );
+      }
     }
-    return urls;
   }
 
   /** Geração IN_REVIEW com a saída guardada (parameters.safetyHold), para o cron ou o revisor concluírem depois. */
@@ -1478,11 +1649,18 @@ export class ImageSafetyService {
         new Date(),
       );
       if (!acts || text.verdict !== 'BLOCK') return null;
-      await this.recordEvent(
+      const refinerMatch = `${text.ruleId ?? 'sem-regra'}/${text.strength}`;
+      const eventId = await this.recordEvent(
         ContentSafetyEventKind.REFINER_BLOCKED,
         `refiner:${model || generation?.modelUsed || 'desconhecido'}`,
-        `${text.ruleId ?? 'sem-regra'}/${text.strength}`,
+        refinerMatch,
         { id: generationId, userId: generation?.userId ?? null },
+      );
+      await this.applyStrike(
+        generation?.userId ?? null,
+        text.strength,
+        eventId,
+        { layer: 'refiner', match: refinerMatch, generationId },
       );
       return new UnverifiedContentBlockError(
         'refined prompt flagged by the text classifier',
@@ -1559,7 +1737,10 @@ export class ImageSafetyService {
     }
   }
 
-  /** Checa de novo o resultado guardado (aguardando checagem). null = sem saída guardada. */
+  /**
+   * Checa de novo o resultado guardado (aguardando checagem). null = sem saída guardada. Aprovado volta com `staged`:
+   * a quarentena só sai em settleHeldPromotion, depois da conclusão.
+   */
   async recheckHeldOutput(
     generationId: string,
   ): Promise<OutputCheckOutcome | null> {
@@ -1569,7 +1750,9 @@ export class ImageSafetyService {
     if (state.hold.outputs.length === 0) return { action: 'held' };
     const outputs = this.heldOutputs(state.hold);
     try {
-      return await this.screenOutputs(generationId, outputs, state.hold);
+      return await this.screenOutputs(generationId, outputs, state.hold, {
+        staged: true,
+      });
     } catch (error) {
       this.logger.warn(
         `[IMAGE_SAFETY] gen=${generationId}: nova checagem da quarentena falhou (${(error as Error).message?.slice(0, 200)})`,
@@ -1579,18 +1762,21 @@ export class ImageSafetyService {
   }
 
   /**
-   * Libera sem checagem (só provedor com filtro de confiança, depois de 10 min sem checagem): promove e grava a
-   * checagem como UNAVAILABLE não agida, com o motivo. null = promoção falhou (segue segurada).
+   * Libera sem checagem (só provedor com filtro de confiança, depois de 10 min sem checagem): copia para o público e
+   * grava a checagem como UNAVAILABLE não agida, com o motivo. A quarentena só sai em settleHeldPromotion, depois da
+   * conclusão. null = cópia falhou (segue segurada).
    */
   async releaseUncheckedOutput(
     generationId: string,
     reason: string,
-  ): Promise<string[] | null> {
+  ): Promise<{ outputs: string[]; staged: StagedPromotion[] } | null> {
     const state = await this.holdStateOf(generationId);
     if (!state?.hold || state.hold.outputs.length === 0) return null;
+    // conta suspensa: nada sai sem checagem (a nova checagem do cron passa o resultado para o revisor)
+    if (await this.suspendedOwnerOf(generationId)) return null;
     const outputs = this.heldOutputs(state.hold);
-    const promoted = await this.promoteAll(outputs, []);
-    if (!promoted) return null;
+    const copies = await this.copyAllToPublic(outputs, []);
+    if (!copies) return null;
     const verdict = unavailableOutputVerdict(reason);
     await this.writeScans(
       outputs
@@ -1620,7 +1806,7 @@ export class ImageSafetyService {
     this.logger.warn(
       `[IMAGE_SAFETY] gen=${generationId}: resultado liberado sem checagem (${reason})`,
     );
-    return promoted;
+    return { outputs: copies.urls, staged: copies.staged };
   }
 
   /**
@@ -1668,12 +1854,17 @@ export class ImageSafetyService {
    * Resultado segurado para revisão (S2b, S3, S4, S7) sem decisão do revisor no prazo: NUNCA é publicado. Vai inteiro
    * para a evidência (sem entrar na lista de bloqueio, que é só para a confirmação do revisor); com sinal médio ou
    * forte, as entradas também. Devolve o erro do encerramento (código público genérico) com `evidencePending` quando
-   * alguma cópia falhou.
+   * alguma cópia falhou. `knownHold`: o registro lido antes da trava por quem já trocou IN_REVIEW → PROCESSING (a
+   * confirmação do revisor); sem ele, relê pelo holdStateOf, que só enxerga a geração ainda IN_REVIEW.
    */
   async expireReviewedOutput(
     generationId: string,
+    knownHold?: SafetyHoldRecord | null,
   ): Promise<OutputImageSafetyBlockError> {
-    const state = await this.holdStateOf(generationId);
+    const heldOutputs =
+      knownHold !== undefined
+        ? (knownHold?.outputs ?? [])
+        : ((await this.holdStateOf(generationId))?.hold?.outputs ?? []);
     const rows = await this.prisma.contentSafetyScan.findMany({
       where: { generationId, stage: { in: ['OUTPUT', 'OUTPUT_FRAME'] } },
       select: {
@@ -1702,7 +1893,7 @@ export class ImageSafetyService {
       null,
     );
     let evidencePending = false;
-    for (const item of state?.hold?.outputs ?? []) {
+    for (const item of heldOutputs) {
       if (item.area === 'evidence') continue;
       try {
         const evidenceKey = await this.uploads.moveToEvidence(
@@ -1822,6 +2013,205 @@ export class ImageSafetyService {
       mimeType: item.mimeType,
       url: null,
     }));
+  }
+
+  /* ════════════════════════════════════════════════════════════ camada 6 (pontos e suspensão) */
+
+  /**
+   * Sinal de cancelamento da conta suspensa, para o processor conferir no começo de cada passo com UMA linha:
+   * `await this.imageSafety?.haltIfAccountSuspended(jobData)`. Conta suspensa lança AccountSuspendedSafetyError
+   * (terminal, código genérico, estorno, entradas mantidas). O preflight já confere o mesmo no começo de todo job.
+   * Com IMAGE_SAFETY_MODE=off nunca lança.
+   */
+  async haltIfAccountSuspended(jobData: unknown): Promise<void> {
+    const userId = stringOr(asRecord(jobData).userId);
+    if (await this.accountSuspended(userId)) {
+      throw new AccountSuspendedSafetyError();
+    }
+  }
+
+  /**
+   * O mesmo sinal, pela geração: os desvios do processor só têm o id (assertSafetyFallbackAllowed). Com
+   * IMAGE_SAFETY_MODE=off não lê nada. Erro de banco lança: o job segue o caminho comum de falha e a nova tentativa
+   * passa de novo pelo preflight, que confere a conta antes do provedor.
+   */
+  async haltIfGenerationOwnerSuspended(generationId: string): Promise<void> {
+    if (!this.strikes?.enabled) return;
+    const generation = await this.prisma.generation.findUnique({
+      where: { id: generationId },
+      select: { userId: true },
+    });
+    if (await this.accountSuspended(generation?.userId ?? null)) {
+      throw new AccountSuspendedSafetyError();
+    }
+  }
+
+  /**
+   * Conta suspensa: os resultados dela que esperam checagem na quarentena passam a esperar o revisor (nunca saem
+   * sozinhos quando a checagem volta, nem pela liberação de provedor com filtro). Devolve quantos. Usado pela suspensão.
+   */
+  async holdUncheckedOutputsOfAccount(userId: string): Promise<number> {
+    if (!this.strikes?.enabled) return 0;
+    const generations = await this.prisma.generation.findMany({
+      where: { userId, status: GenerationStatus.IN_REVIEW },
+      select: { id: true },
+      take: 500,
+    });
+    let held = 0;
+    for (const { id } of generations) {
+      try {
+        const state = await this.holdStateOf(id);
+        if (state?.reason !== 'output_unchecked' || !state.hold) continue;
+        await this.recordEvent(
+          ContentSafetyEventKind.OUTPUT_HELD,
+          `output:${state.modelUsed || 'desconhecido'}`,
+          `${ACCOUNT_SUSPENDED_RULE}/NONE`,
+          { id, userId },
+        );
+        await this.writeScans(
+          suspensionHoldRows({
+            generationId: id,
+            userId,
+            mediaKeys: state.hold.outputs.map((item) => item.key),
+            mode: this.config.imageMode === 'enforce' ? 'enforce' : 'shadow',
+          }),
+          new Date(),
+        );
+        held++;
+      } catch (error) {
+        this.logger.error(
+          `[IMAGE_SAFETY] gen=${id}: resultado da conta suspensa não passou para o revisor (${(error as Error).message?.slice(0, 200)})`,
+        );
+      }
+    }
+    return held;
+  }
+
+  /** A conta está suspensa? Só com a camada 6 ligada. Erro de banco lança: quem chama fecha (espera ou segura). */
+  private async accountSuspended(userId: string | null): Promise<boolean> {
+    if (!this.strikes?.enabled || !userId) return false;
+    return this.strikes.isSuspended(userId);
+  }
+
+  /** Dono da geração suspenso? Erro de leitura conta como suspenso (nada sai sem checagem). */
+  private async suspendedOwnerOf(generationId: string): Promise<boolean> {
+    if (!this.strikes?.enabled) return false;
+    try {
+      const generation = await this.prisma.generation.findUnique({
+        where: { id: generationId },
+        select: { userId: true },
+      });
+      return await this.accountSuspended(generation?.userId ?? null);
+    } catch {
+      return true;
+    }
+  }
+
+  private async photoRetryAllowed(
+    userId: string | null,
+    currentGenerationId: string | null,
+  ): Promise<boolean> {
+    if (!this.strikes?.enabled || !userId) return true;
+    return this.strikes.photoRetryAllowed(userId, { currentGenerationId });
+  }
+
+  /** Rota sem fila: motivo interno da recusa da camada 6 (null = segue). Erro de leitura recusa (fecha). */
+  private async syncRefusalOf(
+    userId: string | null,
+    generationId: string | null,
+    hasMedia: boolean,
+  ): Promise<string | null> {
+    try {
+      if (await this.accountSuspended(userId)) return 'conta suspensa';
+      if (hasMedia && !(await this.photoRetryAllowed(userId, generationId))) {
+        return 'limite de novas tentativas com foto depois de um bloqueio';
+      }
+      return null;
+    } catch (error) {
+      this.logger.warn(
+        `[IMAGE_SAFETY] conta ${userId ?? 'sem conta'}: camada 6 sem leitura (${(error as Error).message?.slice(0, 200)}) — checagem recusada`,
+      );
+      return 'camada 6 indisponível';
+    }
+  }
+
+  /** Ponto ou suspensão de um bloqueio ou retenção que agiu (depois do evento e das checagens gravados). Nunca lança. */
+  private async applyStrike(
+    userId: string | null,
+    strength: Strength,
+    eventId: string | null,
+    ctx: StrikeSignalContext,
+  ): Promise<void> {
+    if (!this.strikes?.enabled || !userId) return;
+    try {
+      await this.strikes.applySignal(userId, strength, eventId, ctx);
+    } catch (error) {
+      this.logger.error(
+        `[IMAGE_SAFETY] conta ${userId}: ponto não aplicado (${(error as Error).message?.slice(0, 200)})`,
+      );
+    }
+  }
+
+  /**
+   * Fotos e quadros barrados ou segurados com sinal forte ou médio, para a repetição por hash. O caso leve nunca entra
+   * (LGPD art. 14: dele não se guarda nada derivado da foto).
+   */
+  private strikePhotos(
+    decisions: ReadonlyArray<MediaDecision<RuledInputVerdict>>,
+  ): StrikePhoto[] {
+    const photos: StrikePhoto[] = [];
+    for (const decision of decisions) {
+      decision.read.images.forEach((item, index) => {
+        const verdict = decision.perImage[index];
+        if (
+          !verdict ||
+          (verdict.verdict !== 'BLOCK' && verdict.verdict !== 'HOLD') ||
+          (verdict.strength !== 'STRONG' && verdict.strength !== 'MEDIUM')
+        ) {
+          return;
+        }
+        const match = item.signals.hashMatch;
+        photos.push({
+          phash: item.signals.phash,
+          sha256: decision.read.sha256,
+          blockId: match?.source === 'blocklist' ? match.blockId : null,
+        });
+      });
+    }
+    return photos;
+  }
+
+  /**
+   * Resultado de conta suspensa: não é publicado. Fica na quarentena como "em revisão" (linhas HOLD com a regra interna
+   * ACCOUNT_SUSPENDED, evento OUTPUT_HELD que segura a geração na guarda legal) até o revisor decidir; sem decisão no
+   * prazo, vai para a evidência como todo resultado em revisão.
+   */
+  private async holdForSuspendedAccount(
+    generation: GenerationForSafety,
+    outputs: CheckedMedia[],
+    completion: OutputCompletion,
+    model: string,
+  ): Promise<OutputCheckOutcome> {
+    await this.recordEvent(
+      ContentSafetyEventKind.OUTPUT_HELD,
+      `output:${model}`,
+      `${ACCOUNT_SUSPENDED_RULE}/NONE`,
+      generation,
+    );
+    await this.writeScans(
+      suspensionHoldRows({
+        generationId: generation.id,
+        userId: generation.userId,
+        mediaKeys: outputs.map((item) => item.location?.key),
+        mode: this.config.imageMode === 'enforce' ? 'enforce' : 'shadow',
+      }),
+      new Date(),
+    );
+    await this.holdOutput(generation.id, outputs, completion);
+    this.logger.warn(
+      `[IMAGE_SAFETY] gen=${generation.id} model=${model}: conta suspensa — resultado segurado para o revisor`,
+    );
+    return { action: 'held' };
   }
 
   /* ════════════════════════════════════════════════════════════ leitura */

@@ -55,6 +55,10 @@ describe('ImageSafetyModule', () => {
       moduleRef.get(ContentSafetyService).preflightStatusForGeneration('g1'),
     ).resolves.toBe('unavailable');
     expect(prisma.contentSafetyScan.findMany).not.toHaveBeenCalled();
+    // desvio depois de uma recusa segue a regra de antes da checagem
+    expect(moduleRef.get(ContentSafetyService).enforcesMediaPreflight()).toBe(
+      false,
+    );
     expect(moduleRef.get(UploadsService).quarantineEnabled).toBe(false);
   });
 
@@ -72,5 +76,9 @@ describe('ImageSafetyModule', () => {
       moduleRef.get(ContentSafetyService).preflightStatusForGeneration('g1'),
     ).resolves.toBe('unavailable');
     expect(prisma.contentSafetyScan.findMany).toHaveBeenCalled();
+    // desvio com mídia só com a checagem limpa
+    expect(moduleRef.get(ContentSafetyService).enforcesMediaPreflight()).toBe(
+      true,
+    );
   });
 });

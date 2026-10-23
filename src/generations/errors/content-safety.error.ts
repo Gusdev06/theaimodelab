@@ -212,9 +212,16 @@ export interface SafetyFallbackInput {
   /** o pedido que criou a geração trouxe atestado de consentimento gravado */
   hasConsent: boolean;
   /**
-   * veredito do porteiro de imagem sobre a mídia de entrada (só conta quando há mídia do usuário e o alvo é
-   * `uncensored`; para esse alvo o leitor reavalia a entrada como pedido sexual: zona de dúvida e estilizado sem juiz
-   * não são 'clean')
+   * o porteiro de imagem está ligado (IMAGE_SAFETY_MODE shadow ou enforce, lido da config dele): com mídia do usuário, o
+   * desvio depende da checagem da mídia. Desligado (off, o padrão), vale a regra de antes da checagem: o bloqueio sem
+   * menor desvia como a main decidiu (cai no Unlocked em todo modelo; a reescrita refaz no mesmo provedor) e o sem
+   * censura com foto só pede o atestado
+   */
+  enforceMediaPreflight: boolean;
+  /**
+   * veredito do porteiro de imagem sobre a mídia de entrada (só conta com `enforceMediaPreflight`, mídia do usuário e
+   * alvo `uncensored`; para esse alvo o leitor reavalia a entrada como pedido sexual: zona de dúvida e estilizado sem
+   * juiz não são 'clean')
    */
   preflight: PreflightStatus;
 }
@@ -222,8 +229,8 @@ export interface SafetyFallbackInput {
 /**
  * Por que o desvio parou (null = segue):
  *  - `minor`: o provedor recusou por menor de idade;
- *  - `unverified_media`: há mídia do usuário e o porteiro de imagem não a deu como limpa;
- *  - `needs_consent`: foto limpa, mas sem atestado, e o desvio seria o modelo sem censura.
+ *  - `unverified_media`: porteiro ligado, há mídia do usuário e ele não a deu como limpa;
+ *  - `needs_consent`: foto (limpa, com o porteiro ligado) sem atestado, e o desvio seria o modelo sem censura.
  */
 export type SafetyFallbackBlockReason =
   | 'minor'
@@ -236,8 +243,15 @@ export interface SafetyFallbackVerdict {
 }
 
 /**
- * O que fazer depois que um provedor bloqueou o conteúdo, ANTES de qualquer desvio:
- *  - menor → `fail_minor` (qualquer alvo): encerra, sem desvio e sem reescrever o prompt;
+ * O que fazer depois que um provedor bloqueou o conteúdo, ANTES de qualquer desvio. Ponto único da regra: o processor
+ * só junta os fatos (menor, mídia, atestado, porteiro ligado, veredito).
+ *  - menor → `fail_minor` (qualquer alvo, qualquer modo): encerra, sem desvio e sem reescrever o prompt.
+ * Porteiro DESLIGADO (`enforceMediaPreflight` false, IMAGE_SAFETY_MODE=off), a regra de antes da checagem de imagem:
+ *  - `same_provider` → `allow_fallback`, com ou sem mídia (a reescrita ainda passa pela trava de texto antes do
+ *    provedor: safety-fallback-guard.refinedPromptBlockOf);
+ *  - `uncensored` com mídia do usuário sem atestado → `fail_blocked` (`needs_consent`): encerra pedindo o atestado;
+ *  - `uncensored` só com texto, ou com mídia atestada → `allow_fallback`.
+ * Porteiro LIGADO (shadow ou enforce):
  *  - `same_provider` com mídia do usuário → `fail_blocked`, com QUALQUER veredito do porteiro: reescrever o prompt
  *    para passar no filtro e reenviar a mesma foto é contorno de filtro (seção 2, camada 4, regra 3: "com foto, não
  *    existe");
@@ -252,9 +266,16 @@ export function safetyFallbackVerdict({
   isMinor,
   hasUserImages,
   hasConsent,
+  enforceMediaPreflight,
   preflight,
 }: SafetyFallbackInput): SafetyFallbackVerdict {
   if (isMinor) return { decision: 'fail_minor', reason: 'minor' };
+  if (!enforceMediaPreflight) {
+    if (target === 'uncensored' && hasUserImages && !hasConsent) {
+      return { decision: 'fail_blocked', reason: 'needs_consent' };
+    }
+    return { decision: 'allow_fallback', reason: null };
+  }
   if (target === 'same_provider') {
     return hasUserImages
       ? { decision: 'fail_blocked', reason: 'unverified_media' }
@@ -367,9 +388,9 @@ const UNVERIFIED_CONTENT_MESSAGES: Record<UnverifiedContentSource, string> = {
 
 /**
  * Bloqueio terminal sem sinal de menor, com o texto genérico de bloqueio (CONTENT_SAFETY_BLOCKED):
- *  - `unverified_media`: o provedor recusou um pedido com mídia do usuário (foto, frame, vídeo, áudio) que o porteiro
- *    de imagem não deu como limpa; nem o modelo sem censura nem o prompt reescrito recebem a mídia, e o atestado não
- *    resolve (pedir o atestado aqui só faria a cliente marcar e cair no mesmo bloqueio);
+ *  - `unverified_media`: com o porteiro de imagem ligado, o provedor recusou um pedido com mídia do usuário (foto,
+ *    frame, vídeo, áudio) que o porteiro não deu como limpa; nem o modelo sem censura nem o prompt reescrito recebem a
+ *    mídia, e o atestado não resolve (pedir o atestado aqui só faria a cliente marcar e cair no mesmo bloqueio);
  *  - `refiner_unchecked`: a trava de texto não conseguiu conferir o prompt reescrito (alfabeto que ela não lê, texto
  *    grande demais), então ele não vai ao provedor;
  *  - `refiner_flagged`: a trava acusou só a reescrita, não o pedido original. O termo foi escrito pelo refinador, então

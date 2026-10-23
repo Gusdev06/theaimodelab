@@ -1094,6 +1094,21 @@ export class UploadsService {
     return this.signedReadUrl(bucket, key, expiresInSeconds);
   }
 
+  /**
+   * URL assinada curta de uma mídia em qualquer área (quarentena, evidência, entrada privada ou público) para o revisor
+   * de segurança (padrão 120 s): a aba de revisão nunca usa a URL pública. Área sem bucket configurado lança.
+   */
+  async signedReviewMediaUrl(
+    area: StorageArea,
+    key: string,
+    expiresInSeconds: number = SAFETY_TIMING.reviewMediaUrlTtlSeconds,
+  ): Promise<string> {
+    const bucket = this.bucketOf(area);
+    if (!bucket) throw new StorageReadError('not_configured', area);
+    if (!isSafeStorageKey(key)) throw new StorageReadError('not_found', area);
+    return this.signedReadUrl(bucket, key, expiresInSeconds);
+  }
+
   private async deleteObjectQuietly(
     bucket: string,
     key: string,

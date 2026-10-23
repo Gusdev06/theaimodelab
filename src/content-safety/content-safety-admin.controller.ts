@@ -4,10 +4,17 @@ import {
   Controller,
   DefaultValuePipe,
   Get,
+  Header,
+  HttpCode,
+  Inject,
+  Optional,
   Param,
   ParseIntPipe,
   Patch,
+  Post,
   Query,
+  Req,
+  ServiceUnavailableException,
   UseGuards,
   UsePipes,
   ValidationPipe,
@@ -32,6 +39,41 @@ import {
   SAFETY_RELEASE_NOTE_MAX_LENGTH,
   SAFETY_RELEASE_NOTE_MIN_LENGTH,
 } from './content-safety.service';
+import {
+  IMAGE_SAFETY_CONFIG,
+  type ImageSafetyConfig,
+} from './image-safety/image-safety.config';
+import { reviewerIpOf } from './reviewer/review.helpers';
+import {
+  ListSafetyScansQueryDto,
+  SafetyAccessLogQueryDto,
+  SafetyMediaQueryDto,
+  SafetyMetricsQueryDto,
+  SafetyReactivateAccountDto,
+  SafetyScanDecisionDto,
+} from './reviewer/reviewer.dto';
+import {
+  SafetyReviewService,
+  type ReviewActor,
+} from './reviewer/safety-review.service';
+import { SafetyReviewerGuard } from './reviewer/safety-reviewer.guard';
+
+/** Requisição como o revisor chega (o IP só vai para o registro de acesso). */
+interface ReviewerRequest {
+  ip?: string;
+  headers?: Record<string, string | string[] | undefined>;
+  socket?: { remoteAddress?: string | null } | null;
+}
+
+const REVIEW_PIPE = new ValidationPipe({
+  transform: true,
+  whitelist: true,
+  forbidNonWhitelisted: true,
+});
+
+function actorOf(user: JwtPayload, request: ReviewerRequest): ReviewActor {
+  return { id: user.sub, email: user.email, ip: reviewerIpOf(request) };
+}
 
 /** Liberação de um bloqueio por menor pelo jurídico: a nota explica por quê e fica na trilha. */
 export class ReleaseSafetyEventDto {
@@ -61,7 +103,26 @@ export class ReleaseSafetyEventDto {
 @UseGuards(RolesGuard)
 @Roles('ADMIN')
 export class ContentSafetyAdminController {
-  constructor(private readonly safety: ContentSafetyService) {}
+  constructor(
+    private readonly safety: ContentSafetyService,
+    /** revisão de segurança (SafetyReviewModule, global); ausente = as rotas do revisor respondem 503 */
+    @Optional()
+    @Inject(SafetyReviewService)
+    private readonly reviewService: SafetyReviewService | null = null,
+    /** lista de revisores (SAFETY_REVIEWER_IDS, módulo global de segurança de imagem); ausente = ninguém é revisor */
+    @Optional()
+    @Inject(IMAGE_SAFETY_CONFIG)
+    private readonly safetyConfig: Pick<ImageSafetyConfig, 'reviewerIds'> | null = null,
+  ) {}
+
+  private get review(): SafetyReviewService {
+    if (!this.reviewService) {
+      throw new ServiceUnavailableException(
+        'Revisão de segurança indisponível nesta instância.',
+      );
+    }
+    return this.reviewService;
+  }
 
   @Get('events')
   @ApiOperation({
@@ -99,16 +160,139 @@ export class ContentSafetyAdminController {
     summary:
       'Libera um bloqueio por menor (MINOR_BLOCKED) a pedido do jurídico: o evento fica na trilha, mas deixa de segurar ' +
       'a conta na exclusão LGPD e na exclusão definitiva, e a geração ligada a ele. Exige nota (10 a 1000 caracteres). ' +
-      'Repetir não muda nada (alreadyReleased: true). 400 para outro tipo de evento, 404 se não existir (admin)',
+      'Evidência de imagem (IMAGE_MINOR_BLOCKED, OUTPUT_MINOR_BLOCKED, INPUT_HELD, OUTPUT_HELD) e caso confirmado pelo ' +
+      'revisor: só o revisor designado (403 para o resto); entrada ou resultado ainda em revisão: 409 (decidir pela ' +
+      'checagem). Toda liberação vai para o registro de acesso antes de agir (503 sem ele). Repetir não muda nada ' +
+      '(alreadyReleased: true). 400 para outro tipo de evento, 404 se não existir (admin)',
   })
   async release(
     @Param('id') id: string,
     @Body() dto: ReleaseSafetyEventDto,
     @CurrentUser() admin: JwtPayload,
+    @Req() request: ReviewerRequest,
   ) {
     return this.safety.releaseMinorBlock(id, dto.note, {
       id: admin.sub,
       email: admin.email,
+      ip: reviewerIpOf(request),
+      reviewer: !!this.safetyConfig?.reviewerIds?.has(admin.sub),
     });
+  }
+
+  /* ─── Revisão de segurança (camada 7): só ADMIN que está em SAFETY_REVIEWER_IDS ─────────────────────────── */
+
+  @Get('scans')
+  @UseGuards(SafetyReviewerGuard)
+  @UsePipes(REVIEW_PIPE)
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({
+    summary:
+      'Fila de checagens de imagem e texto (filtros verdict, stage, rule, from/to, generationId, userId, inReview; ' +
+      'paginada). Nunca devolve URL nem chave de mídia: só se há mídia guardada e se está na evidência (revisor)',
+  })
+  async scans(@Query() query: ListSafetyScansQueryDto) {
+    return this.review.listScans(query);
+  }
+
+  @Get('scans/:id/media')
+  @UseGuards(SafetyReviewerGuard)
+  @UsePipes(REVIEW_PIPE)
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({
+    summary:
+      'URL assinada de 120 s da mídia da checagem (quarentena, evidência ou entrada privada). Exige motivo ' +
+      '(reason, 10 a 1000 caracteres), gravado no registro de acesso ANTES da URL (revisor)',
+  })
+  async media(
+    @Param('id') id: string,
+    @Query() query: SafetyMediaQueryDto,
+    @CurrentUser() reviewer: JwtPayload,
+    @Req() request: ReviewerRequest,
+  ) {
+    return this.review.mediaUrl(
+      id,
+      query.reason,
+      actorOf(reviewer, request),
+    );
+  }
+
+  @Post('scans/:id/decision')
+  @HttpCode(200)
+  @UseGuards(SafetyReviewerGuard)
+  @UsePipes(REVIEW_PIPE)
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({
+    summary:
+      'Decisão do revisor: release (falso positivo: entrada segurada volta à fila, resultado segurado é publicado e ' +
+      'a geração conclui), confirm (evidência, sinal forte, geração segurada encerrada com estorno, resultado ' +
+      'publicado retirado), report (comunicação feita: channel cnca|ncmec|safernet|outro e protocol; exige confirm ' +
+      'antes). Motivo obrigatório; tudo no registro de acesso (revisor)',
+  })
+  async decide(
+    @Param('id') id: string,
+    @Body() dto: SafetyScanDecisionDto,
+    @CurrentUser() reviewer: JwtPayload,
+    @Req() request: ReviewerRequest,
+  ) {
+    return this.review.decide(
+      id,
+      {
+        action: dto.action,
+        reason: dto.reason,
+        channel: dto.channel,
+        protocol: dto.protocol,
+      },
+      actorOf(reviewer, request),
+    );
+  }
+
+  @Post('users/:id/reactivate')
+  @HttpCode(200)
+  @UseGuards(SafetyReviewerGuard)
+  @UsePipes(REVIEW_PIPE)
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({
+    summary:
+      'Reativa a conta suspensa pela camada 6 (sinal forte, pontos, repetição). Só a conta com suspensão aberta na ' +
+      'trilha (409 para a desativada à mão, que sai pelo admin). Motivo obrigatório, gravado na trilha junto com a ' +
+      'reativação; posts tirados do ar e o prazo da galeria não voltam sozinhos (revisor)',
+  })
+  async reactivate(
+    @Param('id') id: string,
+    @Body() dto: SafetyReactivateAccountDto,
+    @CurrentUser() reviewer: JwtPayload,
+    @Req() request: ReviewerRequest,
+  ) {
+    return this.review.reactivateAccount(
+      id,
+      dto.reason,
+      actorOf(reviewer, request),
+    );
+  }
+
+  @Get('access-log')
+  @UseGuards(SafetyReviewerGuard)
+  @UsePipes(REVIEW_PIPE)
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({
+    summary:
+      'Registro de acesso da revisão (quem abriu ou decidiu o quê, quando, por quê e de qual IP), só acréscimo; ' +
+      'filtros actorId, action, targetType, targetId, from/to; paginado (revisor)',
+  })
+  async accessLog(@Query() query: SafetyAccessLogQueryDto) {
+    return this.review.accessLog(query);
+  }
+
+  @Get('metrics')
+  @UseGuards(SafetyReviewerGuard)
+  @UsePipes(REVIEW_PIPE)
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({
+    summary:
+      'Métricas da trava (dias em UTC): bloqueios e retenções por regra e dia (agidos × sombra), checagens e ' +
+      'indisponibilidade por dia, latência p50/p95 por camada, fila de revisão por idade e motivo, decisões (revisor)',
+  })
+  async metrics(@Query() query: SafetyMetricsQueryDto) {
+    return this.review.metrics(query.days);
   }
 }

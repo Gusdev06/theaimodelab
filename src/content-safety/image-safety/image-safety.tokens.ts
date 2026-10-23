@@ -24,6 +24,11 @@ export type PreflightStatusTarget = 'uncensored' | 'same_provider';
 
 /** Status do preflight de uma geração a partir das checagens gravadas. Nunca lança: erro de leitura = 'unavailable'. */
 export interface PreflightStatusReader {
+  /**
+   * o porteiro de imagem está ligado (enforcesMediaPreflight da config): só então o desvio de um pedido com mídia
+   * depende do veredito (safetyFallbackVerdict.enforceMediaPreflight)
+   */
+  readonly enforcesMediaPreflight: boolean;
   statusFor(
     generationId: string,
     target?: PreflightStatusTarget,

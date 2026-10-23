@@ -5,8 +5,9 @@
  *  - `flagged`: sinal de menor ou de abuso;
  *  - `unavailable`: não há checagem registrada para a geração (porteiro desligado, fora do ar ou ainda não rodou).
  *
- * Só `clean` deixa a foto do usuário seguir num desvio depois de uma recusa (decideSafetyFallback). Função e tipos
- * puros: sem rede, sem banco.
+ * Com o porteiro ligado (IMAGE_SAFETY_MODE shadow ou enforce), só `clean` deixa a foto do usuário seguir num desvio
+ * depois de uma recusa (decideSafetyFallback); desligado, o veredito não conta. Função e tipos puros: sem rede, sem
+ * banco.
  */
 export const PREFLIGHT_STATUSES = [
   'clean',

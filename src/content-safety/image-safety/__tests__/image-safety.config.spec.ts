@@ -1,6 +1,7 @@
 import { join, resolve } from 'path';
 import {
   describeImageSafetyConfig,
+  enforcesMediaPreflight,
   isRuleEnforced,
   loadImageSafetyConfig,
   RULES_VERSION,
@@ -265,6 +266,15 @@ describe('loadImageSafetyConfig', () => {
       load({ SAFETY_CHILD_BLOCK_ALL_SURFACES: 'false' }).config
         .childBlockAllSurfaces,
     ).toBe(false);
+  });
+});
+
+describe('enforcesMediaPreflight', () => {
+  it('só o porteiro ligado (shadow ou enforce) faz o desvio com mídia depender da checagem; padrão off não', () => {
+    expect(enforcesMediaPreflight({ imageMode: 'off' })).toBe(false);
+    expect(enforcesMediaPreflight({ imageMode: 'shadow' })).toBe(true);
+    expect(enforcesMediaPreflight({ imageMode: 'enforce' })).toBe(true);
+    expect(enforcesMediaPreflight(load({}).config)).toBe(false);
   });
 });
 

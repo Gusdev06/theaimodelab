@@ -9,6 +9,10 @@ import {
   TheaimodelabChatClient,
 } from '../prompt-enhancer/theaimodelab-chat.client';
 import { fitImageForVision } from '../common/utils/vision-image';
+import {
+  ExternalMediaCheck,
+  inlineImagesOf,
+} from '../content-safety/image-safety/external-media-check';
 
 const SYSTEM_PROMPT = `Você é um Visual Brand Analyzer. Sua função é receber UMA OU MAIS imagens de referência (logo, fotos de produto, anúncios de exemplo, materiais de identidade visual) e devolver um JSON único que sintetize a identidade visual da marca + observações por imagem.
 
@@ -73,9 +77,16 @@ export interface VisualAnalysisResult {
 export class VisualAnalyzerService {
   private readonly logger = new Logger(VisualAnalyzerService.name);
 
-  constructor(private readonly chatClient: TheaimodelabChatClient) {}
+  constructor(
+    private readonly chatClient: TheaimodelabChatClient,
+    private readonly mediaCheck: ExternalMediaCheck,
+  ) {}
 
-  async analyze(imageUrls: string[]): Promise<VisualAnalysisResult> {
+  /** `userId`: dono da marca (a checagem das imagens registra por conta). */
+  async analyze(
+    imageUrls: string[],
+    userId: string | null = null,
+  ): Promise<VisualAnalysisResult> {
     if (imageUrls.length === 0) {
       throw new BadRequestException({
         code: 'NO_REFERENCES',
@@ -93,6 +104,11 @@ export class VisualAnalyzerService {
     for (const url of imageUrls) {
       imageBlocks.push(await this.fetchImageBlock(url));
     }
+    // as imagens (bytes que vão sair) passam pela checagem antes do modelo de visão: 422 barrada, 503 indisponível
+    await this.mediaCheck.assertSafe(() => inlineImagesOf(imageBlocks), {
+      userId,
+      tool: 'brand_analyzer',
+    });
 
     const userText = `URLs das imagens, na ordem em que aparecem (preserve-as em assets[].url):\n${imageUrls
       .map((u, i) => `${i + 1}. ${u}`)

@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   Logger,
@@ -7,11 +9,15 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { ContentSafetyEvent, ContentSafetyEventKind } from '@prisma/client';
+import { ContentSafetyEvent, ContentSafetyEventKind, GenerationStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CURRENT_TERMS_VERSION } from '../users/terms.constants';
 import type { PreflightStatus } from './preflight-status';
-import { RELEASABLE_SAFETY_EVENT_KINDS } from './safety-event-kinds';
+import {
+  RELEASABLE_SAFETY_EVENT_KINDS,
+  SAFETY_REVIEWER_FORBIDDEN,
+  releaseNeedsReviewer,
+} from './safety-event-kinds';
 import {
   PREFLIGHT_STATUS_READER,
   type PreflightStatusReader,
@@ -21,6 +27,15 @@ import {
 /** Nota da liberação de um bloqueio por menor: o jurídico explica por quê (fica na trilha). */
 export const SAFETY_RELEASE_NOTE_MIN_LENGTH = 10;
 export const SAFETY_RELEASE_NOTE_MAX_LENGTH = 1000;
+
+/** Quem libera um evento: o admin do token, o IP para o registro e se está em SAFETY_REVIEWER_IDS. */
+export interface ReleaseActor {
+  id: string;
+  email?: string | null;
+  ip?: string | null;
+  /** está na lista de revisores designados (só ele libera evidência de imagem e caso confirmado pelo revisor) */
+  reviewer?: boolean;
+}
 
 export type SafetyEventWithRelease = ContentSafetyEvent & { released: boolean };
 export type ReleasedSafetyEvent = SafetyEventWithRelease & {
@@ -136,11 +151,20 @@ export class ContentSafetyService {
   }
 
   /**
+   * O desvio depois de uma recusa do provedor depende da checagem da mídia do usuário? Só com o porteiro de imagem
+   * ligado (IMAGE_SAFETY_MODE shadow ou enforce). Com off ou sem o leitor registrado, false: vale a regra de antes da
+   * checagem (safetyFallbackVerdict: menor encerra; o sem censura com foto só pede o atestado).
+   */
+  enforcesMediaPreflight(): boolean {
+    return this.preflightReader?.enforcesMediaPreflight === true;
+  }
+
+  /**
    * Veredito do porteiro de imagem para a mídia de entrada da geração: ponto único de leitura para os desvios
    * depois de uma recusa do provedor. Lê as checagens de entrada gravadas (content_safety_scans) pelo leitor do módulo
    * de segurança de imagem; com IMAGE_SAFETY_MODE=off, sem checagem ou sem o leitor registrado, devolve `unavailable`
-   * (todo desvio com foto do usuário encerra a geração, como na Onda 0). `target: 'uncensored'` reavalia a entrada como
-   * pedido sexual (o destino não tem filtro).
+   * (com o porteiro ligado, o desvio com foto do usuário encerra a geração; desligado, a guarda nem lê o veredito).
+   * `target: 'uncensored'` reavalia a entrada como pedido sexual (o destino não tem filtro).
    */
   preflightStatusForGeneration(
     generationId: string,
@@ -183,12 +207,16 @@ export class ContentSafetyService {
    * INPUT_HELD, OUTPUT_HELD) a pedido do jurídico: falso positivo do filtro ou do provedor, ou caso encerrado. Nada é
    * apagado (o evento fica na trilha com quem liberou, quando e por quê); ele só deixa de contar para a guarda legal da
    * conta (exclusão LGPD e exclusão definitiva) e de segurar a geração ligada a ele.
+   * O bloqueio de texto/provedor sai por qualquer ADMIN (o jurídico, no cockpit); evidência de imagem e caso confirmado
+   * pelo revisor, só pelo revisor designado (403 para o resto). Entrada ou resultado ainda segurado (geração IN_REVIEW)
+   * = 409: a decisão é pela checagem. Toda liberação vai para content_safety_access_log ANTES de agir (sem o registro,
+   * 503 e nada muda).
    * Idempotente: liberar de novo devolve a liberação já gravada, sem mudar data, autor ou nota.
    */
   async releaseMinorBlock(
     eventId: string,
     note: string,
-    admin: { id: string; email?: string | null },
+    admin: ReleaseActor,
   ): Promise<ReleasedSafetyEvent> {
     const text = typeof note === 'string' ? note.trim() : '';
     if (text.length < SAFETY_RELEASE_NOTE_MIN_LENGTH || text.length > SAFETY_RELEASE_NOTE_MAX_LENGTH) {
@@ -205,7 +233,49 @@ export class ContentSafetyService {
         message: 'Só bloqueio ou retenção por segurança de conteúdo (menor de idade, foto ou resultado segurado) pode ser liberado.',
       });
     }
+    // evidência de imagem e caso confirmado pelo revisor: só o revisor designado (camada 7), nunca qualquer ADMIN
+    if (releaseNeedsReviewer(event) && admin.reviewer !== true) {
+      this.logger.warn(
+        `content-safety: admin ${admin.id} fora de SAFETY_REVIEWER_IDS tentou liberar o evento ${eventId} (${event.kind})`,
+      );
+      throw new ForbiddenException(SAFETY_REVIEWER_FORBIDDEN);
+    }
     if (event.releasedAt) return { ...withRelease(event), alreadyReleased: true };
+    // geração ainda segurada: liberar só o evento a deixaria presa na revisão (a decisão é do fluxo do revisor)
+    if (
+      (event.kind === ContentSafetyEventKind.INPUT_HELD || event.kind === ContentSafetyEventKind.OUTPUT_HELD) &&
+      event.generationId
+    ) {
+      const generation = await this.prisma.generation.findUnique({
+        where: { id: event.generationId },
+        select: { status: true },
+      });
+      if (generation?.status === GenerationStatus.IN_REVIEW) {
+        throw new ConflictException({
+          code: 'CONTENT_SAFETY_RELEASE_USE_REVIEW',
+          message:
+            'A geração ainda está em revisão: decida pela checagem (POST /api/v1/admin/content-safety/scans/:id/decision).',
+        });
+      }
+    }
+
+    // registro ANTES de agir: sem ele, nada é liberado
+    try {
+      await this.prisma.contentSafetyAccessLog.create({
+        data: {
+          actorId: admin.id,
+          action: 'release',
+          targetType: 'event',
+          targetId: eventId,
+          reason: text,
+          ip: admin.ip ?? null,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`content-safety: registro da liberação de ${eventId} não gravado: ${message.slice(0, 200)}`);
+      throw new ServiceUnavailableException('Não foi possível registrar a liberação; nada foi alterado.');
+    }
 
     // a trava é a própria condição: dois admins liberando juntos gravam uma vez só (o 2º recebe a 1ª liberação)
     const { count } = await this.prisma.contentSafetyEvent.updateMany({

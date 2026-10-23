@@ -13,8 +13,9 @@ import type {
 
 /**
  * Configuração da segurança de imagem e texto: modos, limites das regras, regiões, buckets e as constantes que as
- * regras usam. Tudo DESLIGADO por padrão (IMAGE_SAFETY_MODE e TEXT_CLASSIFIER_MODE = off): sem env, o comportamento
- * é o da Onda 0. Valor inválido nunca derruba o boot: vira o padrão seguro e um aviso.
+ * regras usam. Tudo DESLIGADO por padrão (IMAGE_SAFETY_MODE e TEXT_CLASSIFIER_MODE = off): sem env, nada roda e o
+ * desvio depois de uma recusa do provedor segue a regra de antes (enforcesMediaPreflight). Valor inválido nunca derruba
+ * o boot: vira o padrão seguro e um aviso.
  *
  * Os números são valores iniciais, calibrados na sombra. Mudou regra, limite
  * fixo ou conjunto de rótulos = sobe RULES_VERSION (vai em cada checagem gravada).
@@ -226,6 +227,18 @@ export function isRuleEnforced(
   }
   if (ruleId === 'UNAVAILABLE') return false;
   return ruleId === 'T_REFINER' || query.strength === 'STRONG';
+}
+
+/**
+ * O desvio depois de uma recusa do provedor (Unlocked sem censura, prompt reescrito no mesmo provedor) depende da
+ * checagem da mídia do usuário? Só com o porteiro de imagem ligado (shadow ou enforce): sem a checagem rodando, o
+ * veredito seria sempre 'unavailable' e toda recusa com foto viraria terminal. Com off, vale a regra de antes da
+ * checagem (safetyFallbackVerdict: menor encerra; o sem censura com foto só pede o atestado).
+ */
+export function enforcesMediaPreflight(
+  config: Pick<ImageSafetyConfig, 'imageMode'>,
+): boolean {
+  return config.imageMode !== 'off';
 }
 
 /* ------------------------------------------------------------------ configuração lida do env */
