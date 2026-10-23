@@ -10,6 +10,12 @@ export const SETTING_KEYS = {
   onboardingSequenceEnabled: 'onboarding_sequence_enabled',
   /** Créditos de boas-vindas concedidos no cadastro (0 ou ausente = desligado). */
   welcomeCreditsAmount: 'welcome_credits_amount',
+  /** Créditos que quem indicou ganha por indicado que conclui a 1ª geração (0 = desligado; ausente = env/200). */
+  referralRewardCredits: 'referral_reward_credits',
+  /** Indicações premiadas por indicador antes de as próximas irem para revisão do admin. */
+  referralMaxRewardsPerReferrer: 'referral_max_rewards_per_referrer',
+  /** Indicações premiadas por indicador em 24 h; o excedente espera o dia seguinte. */
+  referralMaxRewardsPerDay: 'referral_max_rewards_per_day',
 } as const;
 
 @Injectable()
