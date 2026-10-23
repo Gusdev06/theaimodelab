@@ -12,6 +12,8 @@ import { AdminVertexController } from './admin-vertex.controller';
 import { AdminVertexService } from './admin-vertex.service';
 import { AdminPlansController } from './admin-plans.controller';
 import { AdminPlansService } from './admin-plans.service';
+import { AdminBuyersController } from './buyers/admin-buyers.controller';
+import { AdminBuyersService } from './buyers/admin-buyers.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { UploadsModule } from '../uploads/uploads.module';
 import { ModelsModule } from '../models/models.module';
@@ -24,7 +26,23 @@ import { GENERATION_UNLIMITED_QUEUE } from '../generations/queue/generation-queu
     ModelsModule,
     BullModule.registerQueue({ name: GENERATION_UNLIMITED_QUEUE }),
   ],
-  controllers: [AdminController, AdminStripeController, AdminUnlimitedController, AdminCronsController, AdminVertexController, AdminPlansController],
-  providers: [AdminService, AdminStripeService, AdminUnlimitedService, AdminCronsService, AdminVertexService, AdminPlansService],
+  controllers: [
+    AdminController,
+    AdminStripeController,
+    AdminUnlimitedController,
+    AdminCronsController,
+    AdminVertexController,
+    AdminPlansController,
+    AdminBuyersController,
+  ],
+  providers: [
+    AdminService,
+    AdminStripeService,
+    AdminUnlimitedService,
+    AdminCronsService,
+    AdminVertexService,
+    AdminPlansService,
+    AdminBuyersService,
+  ],
 })
 export class AdminModule {}
