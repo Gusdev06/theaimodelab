@@ -11,7 +11,8 @@ import { TheaimodelabChatClient, ChatPart } from '../prompt-enhancer/theaimodela
 import { fitImageForVision } from '../common/utils/vision-image';
 import { BusinessException } from '../common/exceptions/business.exception';
 import { ContentSafetyService } from '../content-safety/content-safety.service';
-import { assessText } from '../content-safety/minor-guard';
+import { assessText, MinorAssessment } from '../content-safety/minor-guard';
+import { canonical } from '../content-safety/adult-only-rules';
 
 const CREDIT_COST = 5;
 
@@ -30,6 +31,125 @@ export function apparentAge(age: unknown): string {
   return `idade aparente ${text}${unit}`;
 }
 
+/**
+ * Bloco que abre todo prompt clonado: quando a foto da pessoa vai junto, o modelo de geração segue o rosto da foto, não o
+ * descrito no texto. É o texto que o prompt do sistema manda a análise copiar sem mudança e o padrão quando ela não
+ * devolve o campo.
+ */
+export const DEFAULT_REFERENCE_OVERRIDE =
+  "SE uma imagem de referência da pessoa for fornecida junto a este prompt ao modelo de geração, IGNORE completamente todas as descrições físicas faciais contidas em 'character_lock.face_identity' e use a identidade visual da imagem de referência como fonte única de verdade para rosto, traços, estrutura óssea e expressão característica. As descrições físicas textuais existem apenas como fallback para quando nenhuma imagem de referência estiver disponível. Demais campos (cena, roupa, iluminação, pose, câmera, acessórios) devem ser seguidos normalmente.";
+
+/** Rótulo na frente do prompt clonado: é por ele que o site reconhece o prompt feito para ir com a foto de uma pessoa. */
+const REFERENCE_OVERRIDE_LABEL = '[reference_override]:';
+
+/** Texto do bloco: o que a análise devolveu ou, sem texto no campo (ausente, vazio ou de outro tipo), o padrão. */
+function referenceOverrideText(value: unknown): string {
+  const text = typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+  return text || DEFAULT_REFERENCE_OVERRIDE;
+}
+
+/** A análise com o bloco no topo: no modo JSON, é por ele que o site reconhece o prompt feito para ir com a foto. */
+function withReferenceOverride(json: Record<string, unknown>): Record<string, unknown> {
+  const { reference_override: value, ...rest } = json;
+  return { reference_override: referenceOverrideText(value), ...rest };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Letra que segue fora do alfabeto latino na forma canônica (grego "Φ", devanágari; o "α", que parece "a", vira "a"). */
+const FOREIGN_LETTER = /[^\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]/u;
+
+/**
+ * Trava de menor num texto da análise. A análise copia o texto legível da foto (camiseta, placa) no alfabeto dele, e com
+ * letra de alfabeto sem lista a trava parava em 'script', antes da idade: a descrição da pessoa, em português, é
+ * conferida de novo sem essas letras.
+ */
+function assessAnalysisText(text: string): MinorAssessment {
+  const verdict = assessText(text);
+  if (verdict.reason !== 'script') return verdict;
+  return assessText(text.replace(/\p{L}/gu, (char) => (FOREIGN_LETTER.test(canonical(char)) ? ' ' : char)));
+}
+
+/** Forma do que o describePhoto põe no prompt clonado: 'text' = texto ou número, 'list' = lista de textos. */
+type Rendered = 'text' | 'list' | { readonly [key: string]: Rendered };
+
+const RENDERED: Rendered = {
+  reference_override: 'text',
+  meta: { quality: 'text', resolution: 'text', camera: 'text', lens: 'text', style: 'text' },
+  character_lock: {
+    face_identity: 'list',
+    regras_de_aparencia: { descricao_geral: 'text', marcas_e_acessorios: 'text' },
+  },
+  cena: { local: 'text', ambiente: 'list', atmosfera: 'text' },
+  iluminacao: { tipo: 'text', luz_principal: 'text', luz_de_preenchimento: 'text', contraste: 'text', evitar: 'list' },
+  perspectiva_da_camera: { pov: 'text', angulo: 'text', distancia: 'text', visibilidade_do_celular: 'text' },
+  assunto: {
+    genero: 'text',
+    idade: 'text',
+    vibe: 'text',
+    textura_pele: 'text',
+    expressao: { olhos: 'text', boca: 'text', emocao: 'text' },
+    pose: { posicao: 'text', apoio: 'text', mao: 'text' },
+    roupa: { blusa: { tipo: 'text', caimento: 'text', detalhes: 'text' }, extra: 'list' },
+  },
+  qualidade_da_imagem: {
+    foco: 'text',
+    granulacao: 'text',
+    nitidez: 'text',
+    realismo: 'text',
+    artefatos_de_sensor: 'text',
+    distorcao_de_lente: 'text',
+    pos_processamento: 'text',
+  },
+};
+
+/** Campo de idade com outro nome ou fora do lugar ("idade_aparente", "faixa_etaria", "apparentAge", "edad"). */
+const AGE_FIELD = /(?:^|[\s_-])(?:idades?|ages?|aged|edad(?:es)?|faixa[\s_-]*et[aá]ria|et[aá]ri[ao]s?)(?:$|[\s_-])/i;
+
+function isAgeField(key: string): boolean {
+  return AGE_FIELD.test(key.replace(/(\p{Ll})(\p{Lu})/gu, '$1_$2'));
+}
+
+/** Textos de uma parte da análise que o prompt não leva; a idade vai com a unidade, como no prompt. */
+function leftoverLines(value: unknown, age: boolean, lines: string[]): void {
+  if (Array.isArray(value)) {
+    for (const item of value) leftoverLines(item, age, lines);
+    return;
+  }
+  if (isRecord(value)) {
+    for (const [key, entry] of Object.entries(value)) leftoverLines(entry, age || isAgeField(key), lines);
+    return;
+  }
+  const text = typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : typeof value === 'number' ? String(value) : '';
+  if (text) lines.push(age ? apparentAge(text) : text);
+}
+
+/**
+ * O que a análise disse e o prompt clonado não leva: campo com outro nome, fora do lugar ou de outro tipo (a idade num
+ * objeto, o rosto num texto, duas pessoas numa lista). Chega à cliente no modo JSON, então passa pela trava à parte.
+ */
+function unrenderedText(json: Record<string, unknown>): string {
+  const lines: string[] = [];
+  const walk = (value: unknown, shape: Rendered | undefined, age: boolean): void => {
+    if (shape === 'text' && (typeof value === 'string' || typeof value === 'number')) return;
+    if (shape === 'list' && Array.isArray(value)) {
+      for (const item of value) walk(item, 'text', age);
+      return;
+    }
+    if (typeof shape === 'object' && isRecord(value)) {
+      for (const [key, entry] of Object.entries(value)) {
+        walk(entry, Object.prototype.hasOwnProperty.call(shape, key) ? shape[key] : undefined, age || isAgeField(key));
+      }
+      return;
+    }
+    leftoverLines(value, age, lines);
+  };
+  walk(json, RENDERED, false);
+  return lines.join('\n');
+}
+
 const SYSTEM_PROMPT = `Você é um agente especializado em análise visual de imagens para criação de prompts de IA generativa voltados a conteúdo UGC (User Generated Content) realista de influenciadores.
 
 Sua função: receber UMA imagem e retornar APENAS um JSON válido seguindo EXATAMENTE a estrutura abaixo, preenchendo cada campo com base no que você observa visualmente na imagem.
@@ -37,7 +157,7 @@ Sua função: receber UMA imagem e retornar APENAS um JSON válido seguindo EXAT
 ## ESTRUTURA OBRIGATÓRIA DO JSON DE SAÍDA
 
 {
-  "reference_override": "SE uma imagem de referência da pessoa for fornecida junto a este prompt ao modelo de geração, IGNORE completamente todas as descrições físicas faciais contidas em 'character_lock.face_identity' e use a identidade visual da imagem de referência como fonte única de verdade para rosto, traços, estrutura óssea e expressão característica. As descrições físicas textuais existem apenas como fallback para quando nenhuma imagem de referência estiver disponível. Demais campos (cena, roupa, iluminação, pose, câmera, acessórios) devem ser seguidos normalmente.",
+  "reference_override": "${DEFAULT_REFERENCE_OVERRIDE}",
   "meta": {
     "aspect_ratio": "string (9:16, 1:1, 16:9 etc)",
     "quality": "ultra_photorealistic",
@@ -168,21 +288,35 @@ export class PromptAgentService {
       }
 
       const compiledPrompt = this.compileToString(json);
-      // A análise descreve a pessoa da foto: idade ou termo de menor recusa aqui, com a mesma trava das gerações,
-      // antes de o prompt chegar à cliente (o pedido só tinha a imagem, que o interceptor não lê).
-      const verdict = assessText(compiledPrompt);
-      if (verdict.blocked && (verdict.reason === 'age' || verdict.reason === 'term')) {
+      // A análise descreve a pessoa da foto: idade ou termo de menor recusa aqui, com a mesma trava das gerações, antes
+      // de o prompt chegar à cliente (o pedido só tinha a imagem, que o interceptor não lê). O que a análise disse fora
+      // do prompt chega a ela no modo JSON e passa pela mesma trava. O trecho do registro é a descrição da foto, sem o
+      // bloco fixo que abre todo prompt clonado: com ele, todo bloqueio teria o mesmo trecho, e a guarda legal separa as
+      // tentativas distintas pelo trecho.
+      const description = this.describePhoto(json);
+      const leftover = unrenderedText(json);
+      const checks = [
+        { text: compiledPrompt, excerpt: description },
+        { text: leftover, excerpt: `${leftover}, ${description}` },
+      ];
+      for (const { text, excerpt } of checks) {
+        const verdict = assessAnalysisText(text);
+        if (!verdict.blocked) continue;
+        // grande demais ou num alfabeto que a trava não lê nem sem as letras de fora: nunca chega à cliente sem leitura
+        if (verdict.reason !== 'age' && verdict.reason !== 'term') {
+          throw new Error(`análise que a trava não conseguiu ler (${verdict.reason})`);
+        }
         await this.refundSilently(userId);
         await this.safety.record({
           userId,
           kind: ContentSafetyEventKind.MINOR_BLOCKED,
           route: SAFETY_ROUTE,
           match: verdict.match ?? null,
-          excerpt: compiledPrompt.replace(/\s+/g, ' ').trim().slice(0, 300),
+          excerpt: excerpt.slice(0, 300),
         });
         throw new BusinessException('CONTENT_POLICY_MINOR');
       }
-      return { json, compiledPrompt, creditsUsed: CREDIT_COST };
+      return { json: withReferenceOverride(json), compiledPrompt, creditsUsed: CREDIT_COST };
     } catch (err) {
       if (err instanceof BadRequestException || err instanceof BusinessException) throw err;
       await this.refundSilently(userId);
@@ -316,19 +450,30 @@ export class PromptAgentService {
     return res.text || '';
   }
 
-  private extractJson(text: string): any {
+  private extractJson(text: string): Record<string, unknown> {
     const cleaned = text
       .trim()
       .replace(/^```json\s*/i, '')
       .replace(/^```\s*/i, '')
       .replace(/```$/i, '')
       .trim();
-    return JSON.parse(cleaned);
+    const parsed: unknown = JSON.parse(cleaned);
+    // lista ou valor solto escapava da trava (o prompt saía sem nada da análise e a lista ia inteira para a cliente)
+    if (!isRecord(parsed)) throw new Error('a resposta precisa ser um único objeto JSON');
+    return parsed;
   }
 
+  /**
+   * Prompt clonado: SEMPRE abre com "[reference_override]: …", mesmo quando a análise não devolve o campo, para o site
+   * reconhecer o prompt de identidade (o rosto de uma foto enviada) e nunca levá-lo a um modelo sem censura.
+   */
   private compileToString(json: any): string {
+    return `${REFERENCE_OVERRIDE_LABEL} ${referenceOverrideText(json.reference_override)}, ${this.describePhoto(json)}`;
+  }
+
+  /** O que a análise disse da foto (câmera, rosto, aparência, cena, luz, pessoa, roupa e qualidade), sem o bloco fixo. */
+  private describePhoto(json: any): string {
     const parts: string[] = [];
-    if (json.reference_override) parts.push(`[reference_override]: ${json.reference_override}`);
     const m = json.meta || {};
     parts.push(`${m.quality || 'ultra_photorealistic'}, ${m.resolution || '8k'}, ${m.camera || ''}, ${m.lens || ''}, ${m.style || ''}`);
     const cl = json.character_lock || {};
