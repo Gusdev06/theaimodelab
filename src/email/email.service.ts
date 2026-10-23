@@ -27,6 +27,45 @@ export class EmailService implements OnModuleInit {
     this.logger.log('Resend email service initialized');
   }
 
+  /**
+   * Aviso de denúncia de conteúdo para a equipe. Devolve true se o Resend aceitou: quem chama registra a falha
+   * (a denúncia já está gravada no banco e aparece no admin de qualquer jeito).
+   */
+  async sendContentReportAlert(
+    to: string,
+    report: {
+      id: string; category: string; urgent: boolean; target: string; description: string;
+      reporterEmail: string | null; isDepictedPerson: boolean; createdAt: Date;
+    },
+  ): Promise<boolean> {
+    if (!this.client) {
+      this.logger.warn('Email service not configured — skipping content report alert');
+      return false;
+    }
+    const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
+    const subject = `${report.urgent ? '[DENÚNCIA URGENTE]' : '[Denúncia]'} ${report.category} — The AI Model Lab`;
+    const html = `<div style="font-family:system-ui,sans-serif;font-size:14px;line-height:1.5">
+      <h2 style="margin:0 0 8px">${report.urgent ? 'Denúncia urgente' : 'Nova denúncia'}: ${esc(report.category)}</h2>
+      <p><b>Conteúdo:</b> ${esc(report.target)}</p>
+      <p><b>Relato:</b><br>${esc(report.description).replace(/\r?\n/g, '<br>')}</p>
+      <p><b>Quem denuncia aparece no conteúdo:</b> ${report.isDepictedPerson ? 'sim' : 'não'}<br>
+      <b>Contato:</b> ${report.reporterEmail ? esc(report.reporterEmail) : '(não informado)'}<br>
+      <b>Id:</b> ${esc(report.id)} · ${report.createdAt.toISOString()}</p>
+      <p style="color:#666">${report.urgent ? 'Menor ou imagem íntima sem consentimento: retirar do ar em até 24 h, preservar a evidência e, se envolver menor, comunicar às autoridades.' : 'Analisar e responder em até 5 dias úteis.'}</p>
+    </div>`;
+    try {
+      const { error } = await this.client.emails.send({ from: this.fromEmail, to: [to], subject, html });
+      if (error) {
+        this.logger.error(`Failed to send content report alert ${report.id}: ${JSON.stringify(error)}`);
+        return false;
+      }
+      return true;
+    } catch (error: any) {
+      this.logger.error(`Failed to send content report alert ${report.id}: ${error.message}`);
+      return false;
+    }
+  }
+
   async sendVerificationEmail(to: string, name: string, code: string): Promise<void> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping verification email');

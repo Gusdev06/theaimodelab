@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserProfileResponseDto } from './dto/user-profile-response.dto';
-import { CURRENT_TERMS_VERSION } from './terms.constants';
+import { resolveShownTermsVersion } from './terms.constants';
 
 function maskTaxId(taxId: string | null): string | null {
   if (!taxId) return null;
@@ -117,10 +117,12 @@ export class UsersService {
 
   /**
    * Registra o aceite explícito do termo de uso do app (18+, responsabilidade
-   * pelo conteúdo, acesso da plataforma ao que é gerado). Idempotente na
-   * versão vigente: aceitou de novo, mantém a data original.
+   * pelo conteúdo, acesso da plataforma ao que é gerado). Grava a versão que o
+   * app mostrou (ver `resolveShownTermsVersion`). Idempotente e nunca rebaixa:
+   * aceitar de novo a mesma versão (ou uma mais antiga) mantém a gravada e a
+   * data original.
    */
-  async acceptTerms(userId: string): Promise<UserProfileResponseDto> {
+  async acceptTerms(userId: string, shownVersion?: string): Promise<UserProfileResponseDto> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId, isActive: true },
     });
@@ -129,10 +131,11 @@ export class UsersService {
       throw new NotFoundException('Usuário não encontrado');
     }
 
-    if (user.termsVersion !== CURRENT_TERMS_VERSION) {
+    const version = resolveShownTermsVersion(shownVersion);
+    if (!user.termsVersion || version > user.termsVersion) {
       await this.prisma.user.update({
         where: { id: userId },
-        data: { termsAcceptedAt: new Date(), termsVersion: CURRENT_TERMS_VERSION },
+        data: { termsAcceptedAt: new Date(), termsVersion: version },
       });
     }
 

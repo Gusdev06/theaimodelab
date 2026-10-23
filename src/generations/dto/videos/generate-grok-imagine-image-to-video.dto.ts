@@ -6,6 +6,7 @@ import {
   Min,
   Max,
   MaxLength,
+  IsBoolean,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -88,4 +89,12 @@ export class GenerateGrokImagineImageToVideoDto {
   @IsOptional()
   @IsString()
   model_variant?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Atestado de imagem (ContentSafetyInterceptor): a foto/vídeo enviado é de uma pessoa gerada por IA ou de um adulto que autorizou o uso da própria imagem. Opcional: enviado com mídia, fica ligado à geração e é o que permite o fallback para o modelo sem censura usar a foto quando o provedor bloqueia.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  consent_confirmed?: boolean;
 }

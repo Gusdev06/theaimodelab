@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsIn } from 'class-validator';
+import { IsString, IsOptional, IsIn, IsBoolean } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class GenerateMotionControlDto {
@@ -39,4 +39,12 @@ export class GenerateMotionControlDto {
   @IsString()
   @IsIn(['720p', '1080p'])
   resolution?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Atestado de imagem (ContentSafetyInterceptor): a foto é de uma pessoa gerada por IA ou de um adulto que autorizou o uso da própria imagem. Obrigatório (true) nesta rota; sem ele, 400 CONSENT_REQUIRED.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  consent_confirmed?: boolean;
 }

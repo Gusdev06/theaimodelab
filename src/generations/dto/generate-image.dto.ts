@@ -129,4 +129,12 @@ export class GenerateImageDto {
   @Type(() => Boolean)
   @IsBoolean()
   unlimited?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Atestado de imagem (ContentSafetyInterceptor): a foto é de uma pessoa gerada por IA ou de um adulto que autorizou o uso da própria imagem. Obrigatório na ferramenta de despir (model deepdeep) e no modelo sem censura (sem-censura) com foto: sem true, 400 CONSENT_REQUIRED. Nos demais modelos, opcional: enviado com foto, fica ligado à geração e é o que permite o fallback para o modelo sem censura usar a foto quando o provedor bloqueia.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  consent_confirmed?: boolean;
 }
