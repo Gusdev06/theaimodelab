@@ -1469,16 +1469,15 @@ export class GenerationsService {
       },
     });
 
-    // Upload video to S3 — public URL for Wan API, signed URL for internal display
-    const { publicUrl: videoPublicUrl, signedUrl: videoSignedUrl } =
-      await this.uploadsService.uploadBufferPublic(
+    // Entradas (vídeo de movimento e foto): bucket privado com URL assinada quando configurado, senão público
+    const { url: videoInputUrl } =
+      await this.uploadsService.uploadGenerationInput(
         videoBuffer,
-        `inputs/${generation.id}`,
+        generation.id,
         `input_video.${videoExt}`,
         videoMime,
       );
 
-    // Upload image to S3 — public URL for Wan API, signed URL for internal display
     const imageMime = dto.image_mime_type ?? 'image/jpeg';
     const imageExt =
       imageMime === 'image/png'
@@ -1487,15 +1486,15 @@ export class GenerationsService {
           ? 'webp'
           : 'jpg';
     const imageBuffer = Buffer.from(dto.image, 'base64');
-    const { publicUrl: imagePublicUrl, signedUrl: imageSignedUrl } =
-      await this.uploadsService.uploadBufferPublic(
+    const { url: imageInputUrl } =
+      await this.uploadsService.uploadGenerationInput(
         imageBuffer,
-        `inputs/${generation.id}`,
+        generation.id,
         `input_image.${imageExt}`,
         imageMime,
       );
 
-    // Save input images for reference (signed URLs for internal display)
+    // Save input images for reference
     await this.prisma.generationInputImage.createMany({
       data: [
         {
@@ -1503,14 +1502,14 @@ export class GenerationsService {
           role: GenerationImageRole.REFERENCE,
           mimeType: videoMime,
           order: 0,
-          url: videoSignedUrl,
+          url: videoInputUrl,
         },
         {
           generationId: generation.id,
           role: GenerationImageRole.REFERENCE,
           mimeType: imageMime,
           order: 1,
-          url: imageSignedUrl,
+          url: imageInputUrl,
         },
       ],
     });
@@ -1536,8 +1535,8 @@ export class GenerationsService {
       userId,
       creditsConsumed: creditsRequired,
       usedFreeGeneration: isFreeGeneration,
-      videoUrl: videoPublicUrl,
-      imageUrl: imagePublicUrl,
+      videoUrl: videoInputUrl,
+      imageUrl: imageInputUrl,
       resolution,
     } satisfies MotionControlJobData);
 
@@ -3912,6 +3911,11 @@ CRITICAL REQUIREMENTS:
     };
   }
 
+  /**
+   * Grava a mídia enviada pela cliente em `inputs/<id>/` pelo caminho de entradas do UploadsService: no bucket
+   * privado (URL assinada de validade curta) quando S3_INPUT_PRIVATE_BUCKET existe, senão no público como antes.
+   * A URL devolvida é a que vai para generation_input_images, para a fila e para o provedor.
+   */
   private async uploadBase64Image(
     base64: string,
     mimeType: string,
@@ -3919,14 +3923,16 @@ CRITICAL REQUIREMENTS:
   ): Promise<string> {
     const buffer = Buffer.from(base64, 'base64');
     const ext = mimeType.split('/')[1] ?? 'jpg';
-    return this.uploadsService.uploadBuffer(
+    const { url } = await this.uploadsService.uploadGenerationInput(
       buffer,
-      `inputs/${generationId}`,
+      generationId,
       `input.${ext}`,
       mimeType,
     );
+    return url;
   }
 
+  /** Igual ao uploadBase64Image, com nome de arquivo por horário (várias entradas na mesma geração). */
   private async uploadBase64ImagePublic(
     base64: string,
     mimeType: string,
@@ -3934,13 +3940,13 @@ CRITICAL REQUIREMENTS:
   ): Promise<string> {
     const buffer = Buffer.from(base64, 'base64');
     const ext = mimeType.split('/')[1] ?? 'jpg';
-    const { publicUrl } = await this.uploadsService.uploadBufferPublic(
+    const { url } = await this.uploadsService.uploadGenerationInput(
       buffer,
-      `inputs/${generationId}`,
+      generationId,
       `input_${Date.now()}.${ext}`,
       mimeType,
     );
-    return publicUrl;
+    return url;
   }
 
   /**

@@ -449,6 +449,8 @@ model Generation {
   hasWatermark           Boolean                @default(false) @map("has_watermark")
   creditsConsumed        Int                    @default(0) @map("credits_consumed")
   processingStartedAt    DateTime?              @map("processing_started_at")
+  /// fim da checagem de segurança da entrada (preflight); o cron de presas conta o tempo a partir daqui
+  safetyCheckedAt        DateTime?              @map("safety_checked_at")
   processingTimeMs       Int?                   @map("processing_time_ms")
   errorMessage           String?                @map("error_message")
   errorCode              String?                @map("error_code")
@@ -1103,6 +1105,9 @@ enum GenerationStatus {
   PROCESSING
   COMPLETED
   FAILED
+  /// segurada pela checagem de segurança (entrada suspeita antes do provedor ou resultado em quarentena): espera
+  /// um revisor; o cron de presas não mexe nela
+  IN_REVIEW
 }
 
 enum CreditTransactionType {
@@ -1306,6 +1311,8 @@ enum ContentReportCategory {
   COPYRIGHT
   ILLEGAL
   OTHER
+  /// "sou a pessoa da imagem": a própria pessoa retratada pede a remoção (TAKE IT DOWN, prazo de 48 h)
+  SELF_DEPICTED
 }
 
 enum ContentReportStatus {
@@ -1343,19 +1350,82 @@ model ContentReport {
   /// caso encerrado e evidência entregue/liberada: a denúncia deixa de segurar a exclusão LGPD da conta denunciada
   evidenceReleasedAt DateTime?           @map("evidence_released_at")
   evidenceReleasedBy String?             @map("evidence_released_by")
+  /// prazo legal da remoção pedida pela própria pessoa retratada (48 h, TAKE IT DOWN); null nas outras denúncias
+  takedownDueAt    DateTime?             @map("takedown_due_at")
+  /// quando a remoção ficou completa (arquivos fora do público); a purga do CDN tem estado próprio em cada item
+  takedownDoneAt   DateTime?             @map("takedown_done_at")
   createdAt        DateTime              @default(now()) @map("created_at")
   updatedAt        DateTime              @updatedAt @map("updated_at")
 
   @@index([status, createdAt])
   @@index([category])
   @@index([urgent, status])
+  @@index([takedownDueAt])
   @@map("content_reports")
+}
+
+/// Cada arquivo tirado do ar por uma remoção (denúncia confirmada pelo revisor, ou caso de checagem confirmado pelo
+/// revisor com o resultado já publicado): de onde saiu, para onde foi (apagado ou evidência) e a purga do CDN. Sem FK de
+/// propósito, como content_reports: a trilha sobrevive à exclusão da conta. Nunca guarda URL assinada nem a imagem.
+model ContentTakedownItem {
+  id            String    @id @default(cuid())
+  /// denúncia da remoção; null quando o arquivo saiu pela confirmação de uma checagem (scanId)
+  reportId      String?   @map("report_id")
+  /// checagem confirmada pelo revisor (source = review); null nas remoções por denúncia
+  scanId        String?   @map("scan_id")
+  generationId  String?   @map("generation_id")
+  /// report (geração citada ou indicada pelo revisor) | identical_copy (mesmo sha256 em outra geração) | post (cópia na comunidade) | review (caso confirmado na checagem)
+  source        String
+  /// output | thumbnail | input | post
+  role          String
+  /// área do storage (public, input-private, quarantine, evidence); null quando o arquivo não é do nosso storage
+  area          String?
+  mediaKey      String?   @map("media_key")
+  /// endereço que o CDN servia (o que é purgado); null quando o arquivo não era público
+  publicUrl     String?   @map("public_url")
+  sha256        String?
+  /// pHash da imagem ou dos quadros do vídeo (16 hexadecimais cada)
+  phashes       String[]  @default([])
+  /// linhas de content_hash_blocks criadas para as cópias futuras
+  blockIds      String[]  @default([]) @map("block_ids")
+  /// deleted | moved_to_evidence | already_evidence | not_found | external | failed
+  action        String
+  /// motivo curto (falha, guarda legal que levou à evidência); nunca o texto da denúncia
+  detail        String?
+  evidenceKey   String?   @map("evidence_key")
+  /// none (não era público) | pending | done | failed
+  purgeStatus   String    @map("purge_status")
+  purgeError    String?   @map("purge_error")
+  purgeAttempts Int       @default(0) @map("purge_attempts")
+  purgedAt      DateTime? @map("purged_at")
+  actorId       String    @map("actor_id")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@index([reportId])
+  @@index([scanId])
+  @@index([generationId])
+  @@index([purgeStatus, updatedAt])
+  @@map("content_takedown_items")
 }
 
 enum ContentSafetyEventKind {
   MINOR_BLOCKED
   CONSENT_ATTESTED
   CONSENT_MISSING
+  /// foto ou quadro de entrada com sinal forte ou médio de menor (E1, E2 em pedido sexual, E5, E6, E7): geração
+  /// bloqueada antes do provedor. O caso leve (criança em pedido não sexual) fica só na checagem, sem evento
+  IMAGE_MINOR_BLOCKED
+  /// entrada segurada sem gerar (E3a, marcador de maturidade no negativo): IN_REVIEW até um revisor decidir
+  INPUT_HELD
+  /// resultado segurado na quarentena (S2b, S3, S4, S7): IN_REVIEW até um revisor decidir
+  OUTPUT_HELD
+  /// resultado com menor (S1, S2, S5, S6): evidência guardada, geração falha com estorno
+  OUTPUT_MINOR_BLOCKED
+  /// classificador de texto acusou o pedido (camada 2)
+  TEXT_CLASSIFIER_FLAGGED
+  /// prompt reescrito pelo agente refinador acusado pela trava ou pelo classificador
+  REFINER_BLOCKED
 }
 
 model ContentSafetyEvent {
@@ -1381,4 +1451,137 @@ model ContentSafetyEvent {
   @@index([kind, createdAt])
   @@index([generationId])
   @@map("content_safety_events")
+}
+
+// ─── Segurança de imagem (17/10/2026) ───────────────────────────────────────
+// Checagem da foto/vídeo de entrada antes do provedor, do resultado antes do link público e do texto pelo
+// classificador. Guarda só o RESULTADO (faixa de idade, rótulos, scores), hashes e o veredito: nunca vetor facial
+// nem a imagem. Sem FK para User nem Generation de propósito, como content_safety_events: a trilha sobrevive à
+// exclusão da conta (guarda legal).
+
+/// O que foi checado: mídia de entrada, quadro de vídeo de entrada, resultado, quadro de vídeo do resultado, texto.
+enum ContentSafetyScanStage {
+  INPUT
+  INPUT_FRAME
+  OUTPUT
+  OUTPUT_FRAME
+  TEXT
+}
+
+/// Veredito de uma checagem. HOLD = segura para revisão humana; BLOCK = barra (com evidência quando forte/médio);
+/// UNAVAILABLE = não deu para checar (fornecedor fora, arquivo ilegível): nunca conta como limpo.
+enum ContentSafetyScanVerdict {
+  CLEAN
+  GRAY
+  HOLD
+  BLOCK
+  UNAVAILABLE
+}
+
+/// Força do sinal para pontos e suspensão (camada 6): forte suspende, médio conta 1 ponto, leve não conta.
+enum ContentSafetyStrength {
+  STRONG
+  MEDIUM
+  LIGHT
+  NONE
+}
+
+model ContentSafetyScan {
+  id           String                   @id @default(cuid())
+  /// null nas rotas sem fila (Clone de Prompt, construtor, marcas), checadas antes de existir geração
+  generationId String?                  @map("generation_id")
+  userId       String?                  @map("user_id")
+  stage        ContentSafetyScanStage
+  /// chave do objeto checado no storage (nunca URL assinada); quadro de vídeo = chave do vídeo, índice em `scores`
+  mediaKey     String?                  @map("media_key")
+  /// sha256 do arquivo (ou do texto normalizado, na etapa TEXT): cache do veredito e contagem de repetição
+  sha256       String?
+  /// hash perceptual de 64 bits em 16 caracteres hexadecimais (imagem ou quadro)
+  phash        String?
+  /// sinais resumidos da checagem (idade por rosto, rótulos, moderação, juiz, classificador); nunca vetor facial
+  scores       Json?
+  verdict      ContentSafetyScanVerdict
+  /// regra que decidiu (E1…E7, S1…S7, TEXT_*, UNAVAILABLE_*); null quando CLEAN
+  ruleId       String?                  @map("rule_id")
+  strength     ContentSafetyStrength    @default(NONE)
+  rulesVersion String                   @map("rules_version")
+  /// shadow | enforce: modo em que a checagem rodou
+  mode         String
+  /// o veredito virou ação (bloqueio, retenção)? Em shadow a regra pode ter sido só registrada ("teria bloqueado")
+  enforced     Boolean                  @default(false)
+  /// quem leu: rekognition, cache, blocklist, known-hash, stylized-judge, safeguard, omni-moderation
+  scanner      String
+  region       String?
+  latencyMs    Int?                     @map("latency_ms")
+  /// chave da cópia no bucket de evidência (sinal forte ou médio); null quando não guardada
+  evidenceKey  String?                  @map("evidence_key")
+  createdAt    DateTime                 @default(now()) @map("created_at")
+
+  @@index([generationId])
+  @@index([userId, createdAt])
+  @@index([sha256])
+  @@map("content_safety_scans")
+}
+
+/// Lista de bloqueio própria por hash: toda entrada ou saída barrada por sinal forte ou médio. O caso leve (criança
+/// em pedido não sexual) nunca entra. A comparação perto (distância de Hamming) é feita em memória: a lista é curta.
+model ContentHashBlock {
+  id        String                @id @default(cuid())
+  /// hash perceptual de 64 bits em 16 caracteres hexadecimais
+  phash     String
+  sha256    String?
+  strength  ContentSafetyStrength
+  /// input | output | report | manual
+  origin    String
+  /// evento de segurança que originou o bloqueio
+  eventId   String?               @map("event_id")
+  /// falso positivo liberado pelo revisor: deixa de barrar, a linha fica na trilha
+  revokedAt DateTime?             @map("revoked_at")
+  revokedBy String?               @map("revoked_by")
+  createdAt DateTime              @default(now()) @map("created_at")
+
+  @@index([phash])
+  @@index([sha256])
+  @@index([createdAt])
+  @@map("content_hash_blocks")
+}
+
+/// Quem abriu ou decidiu o quê na revisão de segurança (ECA, art. 241-B: guarda só para comunicar, com sigilo).
+/// Só acréscimo: o código nunca atualiza nem apaga linha desta tabela.
+model ContentSafetyAccessLog {
+  id         String   @id @default(cuid())
+  actorId    String   @map("actor_id")
+  /// view_media | release | confirm | report | export
+  action     String
+  /// scan | generation | event | report | user
+  targetType String   @map("target_type")
+  targetId   String   @map("target_id")
+  reason     String?
+  ip         String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([targetType, targetId])
+  @@index([actorId, createdAt])
+  @@index([createdAt])
+  @@map("content_safety_access_log")
+}
+
+/// Registro de acesso à aplicação (Marco Civil, art. 15): login, refresh e pedido de geração, com IP real, porta
+/// quando o proxy repassa, user agent e horário UTC. Guarda de 6 meses, salvo retenção legal.
+model AccessLog {
+  id           String   @id @default(cuid())
+  /// null em tentativa de login sem conta reconhecida
+  userId       String?  @map("user_id")
+  route        String
+  /// geração criada pelo pedido, quando houver (liga o IP ao conteúdo para a comunicação à autoridade)
+  generationId String?  @map("generation_id")
+  ip           String?
+  port         Int?
+  userAgent    String?  @map("user_agent")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([generationId])
+  @@index([createdAt])
+  @@map("access_log")
 }

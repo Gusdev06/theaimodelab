@@ -1,6 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
+import { IMAGE_EVIDENCE_EVENT_KINDS } from '../content-safety/safety-event-kinds';
+import {
+  GENERATION_OUTPUT_ROOT,
+  UploadsService,
+} from '../uploads/uploads.service';
 import {
   CreditTransactionType,
   Generation,
@@ -11,6 +16,22 @@ import { CronLoggerService } from './cron-logger.service';
 const STUCK_THRESHOLD_MINUTES = 25;
 const SCHEDULE = '*/15 * * * *';
 
+/**
+ * Presa = PROCESSING (IN_REVIEW nunca entra: a quarentena tem cron próprio) há mais do limite, contado do fim da
+ * checagem de segurança (safetyCheckedAt) quando houver, senão da criação: a espera do porteiro na fila (até 10 min)
+ * não come o tempo do provedor. PR API #3 (que conta de processingStartedAt): no merge, a referência é o mais
+ * recente entre processingStartedAt e safetyCheckedAt (createdAt só quando os dois são nulos).
+ */
+export function stuckGenerationsWhere(threshold: Date) {
+  return {
+    status: GenerationStatus.PROCESSING,
+    OR: [
+      { safetyCheckedAt: null, createdAt: { lt: threshold } },
+      { safetyCheckedAt: { lt: threshold } },
+    ],
+  };
+}
+
 @Injectable()
 export class StuckGenerationsService {
   private readonly logger = new Logger(StuckGenerationsService.name);
@@ -18,6 +39,8 @@ export class StuckGenerationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cronLogger: CronLoggerService,
+    /** para apagar a sobra do resultado na quarentena (só com a checagem de imagem gravando nela) */
+    @Optional() private readonly uploads?: UploadsService,
   ) {}
 
   @Cron(SCHEDULE)
@@ -30,10 +53,7 @@ export class StuckGenerationsService {
           threshold.setMinutes(threshold.getMinutes() - STUCK_THRESHOLD_MINUTES);
 
           const stuckGenerations = await this.prisma.generation.findMany({
-            where: {
-              status: GenerationStatus.PROCESSING,
-              createdAt: { lt: threshold },
-            },
+            where: stuckGenerationsWhere(threshold),
           });
 
           if (stuckGenerations.length === 0) {
@@ -46,8 +66,7 @@ export class StuckGenerationsService {
           let failed = 0;
           for (const generation of stuckGenerations) {
             try {
-              await this.failAndRefund(generation);
-              recovered++;
+              if (await this.failAndRefund(generation)) recovered++;
             } catch (error: any) {
               failed++;
               this.logger.error(
@@ -64,17 +83,23 @@ export class StuckGenerationsService {
     }
   }
 
-  private async failAndRefund(generation: Generation) {
-    await this.prisma.$transaction(async (tx) => {
-      // Mark generation as failed
-      await tx.generation.update({
-        where: { id: generation.id },
+  /**
+   * Encerra uma presa com estorno. A troca para FAILED só vale se ela AINDA estiver PROCESSING (updateMany condicional):
+   * a geração que concluiu, falhou ou voltou para a revisão entre a leitura e aqui não é estornada de novo. Devolve
+   * false quando outro caminho chegou antes.
+   */
+  private async failAndRefund(generation: Generation): Promise<boolean> {
+    const failed = await this.prisma.$transaction(async (tx) => {
+      // Mark generation as failed (só quem ainda está PROCESSING)
+      const { count } = await tx.generation.updateMany({
+        where: { id: generation.id, status: GenerationStatus.PROCESSING },
         data: {
           status: GenerationStatus.FAILED,
           errorMessage: 'Geração expirou por timeout',
           errorCode: 'GENERATION_TIMEOUT',
         },
       });
+      if (count === 0) return false;
 
       // Free generation: restore the free generation slot by type
       if (generation.usedFreeGeneration && generation.usedFreeGenerationType) {
@@ -99,11 +124,11 @@ export class StuckGenerationsService {
             usedFreeGenerationType: null,
           },
         });
-        return;
+        return true;
       }
 
       if (generation.creditsConsumed <= 0) {
-        return;
+        return true;
       }
 
       // Look at the original debit transactions to know where to refund
@@ -171,10 +196,45 @@ export class StuckGenerationsService {
           },
         });
       }
+      return true;
     });
 
+    if (!failed) {
+      this.logger.log(
+        `Generation ${generation.id} já não estava PROCESSING — sem timeout nem estorno`,
+      );
+      return false;
+    }
     this.logger.warn(
       `Marked generation ${generation.id} as failed (timeout) and refunded ${generation.creditsConsumed} credits`,
     );
+    await this.discardQuarantinedOutputs(generation.id);
+    return true;
+  }
+
+  /**
+   * Sobra do resultado na quarentena de uma presa (upload parcial, hold que não foi gravado): apaga só a pasta da
+   * geração no bucket de quarentena, e só com a checagem de imagem gravando nele. Geração com evidência de imagem em
+   * guarda (evento sem liberação) fica como está. Nunca lança.
+   */
+  private async discardQuarantinedOutputs(generationId: string): Promise<void> {
+    if (!this.uploads?.quarantineEnabled) return;
+    try {
+      const held = await this.prisma.contentSafetyEvent.count({
+        where: {
+          generationId,
+          kind: { in: [...IMAGE_EVIDENCE_EVENT_KINDS] },
+          releasedAt: null,
+        },
+      });
+      if (held > 0) return;
+      await this.uploads.deleteQuarantinePrefix(
+        `${GENERATION_OUTPUT_ROOT}/${generationId}/`,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Generation ${generationId}: sobra da quarentena não apagada (${(error as Error).message})`,
+      );
+    }
   }
 }

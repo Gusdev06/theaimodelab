@@ -1263,6 +1263,7 @@ describe('AccountErasureService', () => {
       minorBlockedEvents: 0,
       minorBlockedAttempts: 0,
       providerMinorBlockedEvents: 0,
+      reviewConfirmedEvents: 0,
       communityPostsUnpublished: 0,
       generationsExpiryCleared: 0,
     });
@@ -1813,6 +1814,7 @@ describe('AccountErasureService', () => {
         minorBlockedEvents: 0,
         minorBlockedAttempts: 0,
         providerMinorBlockedEvents: 0,
+        reviewConfirmedEvents: 0,
         communityPostsUnpublished: 2,
         // nenhuma geração da semente tinha prazo de expiração
         generationsExpiryCleared: 0,
@@ -3465,7 +3467,7 @@ describe('funções da exclusão', () => {
       new Set(['g-media']),
       now,
     );
-    expect(tally).toEqual({ recent: 3, recentAttempts: 3, provider: 1 });
+    expect(tally).toEqual({ recent: 3, recentAttempts: 3, provider: 1, reviewConfirmed: 0 });
   });
 
   it('computeLegalHold: o limite é de tentativas distintas; o motivo só fala em foto quando havia mídia', () => {

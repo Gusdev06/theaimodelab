@@ -26,6 +26,12 @@ import {
 } from '../auth/strategies/jwt.strategy';
 import { HeyGenProvider } from '../avatars/providers/heygen.provider';
 import { assessText } from '../content-safety/minor-guard';
+import {
+  IMAGE_EVIDENCE_EVENT_KINDS,
+  REVIEW_EVENT_ROUTE_PREFIX,
+  isReviewConfirmedRoute,
+} from '../content-safety/safety-event-kinds';
+import { minimizeAccountScans } from '../content-safety/image-safety/scan-retention';
 import { AsaasSubscriptionsService } from '../payments/asaas-subscriptions.service';
 import { CaktoApiService } from '../payments/cakto-api.service';
 import { StripeService } from '../payments/stripe.service';
@@ -68,6 +74,8 @@ const HOLD_CATEGORIES: ReadonlySet<ContentReportCategory> = new Set([
   ContentReportCategory.MINOR,
   ContentReportCategory.ILLEGAL,
   ContentReportCategory.NON_CONSENSUAL,
+  // "sou a pessoa da imagem": a remoção leva o arquivo para a evidência, como a íntima sem consentimento
+  ContentReportCategory.SELF_DEPICTED,
 ]);
 /**
  * Bloqueios por menor de idade de pedido só com texto (filtro de texto, ou recusa do provedor sem foto/vídeo enviado)
@@ -161,6 +169,7 @@ const CATEGORY_LABEL: Record<ContentReportCategory, string> = {
   [ContentReportCategory.COPYRIGHT]: 'direito autoral',
   [ContentReportCategory.ILLEGAL]: 'conteúdo ilegal',
   [ContentReportCategory.OTHER]: 'outro motivo',
+  [ContentReportCategory.SELF_DEPICTED]: 'a própria pessoa da imagem pede a remoção',
 };
 const STATUS_LABEL: Record<ContentReportStatus, string> = {
   [ContentReportStatus.OPEN]: 'aberta',
@@ -206,9 +215,14 @@ export interface EraseAccountOptions {
  * report: denúncia de outra pessoa (ou da própria, citando conteúdo dela); safety_events: 3+ tentativas bloqueadas por
  * menor em pedido só com texto em 90 dias (o admin pode ignorar com motivo); provider_minor: o provedor de IA recusou
  * por menor um pedido com foto ou vídeo enviado pela conta (qualquer data, nunca ignorado; só o jurídico libera cada
- * recusa). Evento liberado pelo jurídico (releasedAt) não conta em nenhum dos dois.
+ * recusa); review_confirmed: o revisor de segurança confirmou um caso de menor da conta (texto, foto ou resultado;
+ * 1 basta, qualquer data, nunca ignorado; só o revisor libera). Evento liberado (releasedAt) não conta em nenhum.
  */
-export type LegalHoldKind = 'report' | 'safety_events' | 'provider_minor';
+export type LegalHoldKind =
+  | 'report'
+  | 'safety_events'
+  | 'provider_minor'
+  | 'review_confirmed';
 
 export interface AccountLegalHold {
   /** true: a conta só foi bloqueada; nada foi anonimizado nem apagado */
@@ -235,6 +249,11 @@ export interface AccountLegalHold {
    * ignorados; sem os liberados pelo jurídico)
    */
   providerMinorBlockedEvents: number;
+  /**
+   * bloqueios de pedido só com texto confirmados pelo revisor de segurança (rota review:text; qualquer data; nunca
+   * ignorados; sem os liberados). Foto e resultado confirmados já contam em providerMinorBlockedEvents.
+   */
+  reviewConfirmedEvents: number;
   /**
    * posts da comunidade desta conta tirados do ar agora pela guarda (publicados ou esperando aprovação viram
    * REJECTED com o motivo legal_hold; as linhas ficam). 0 quando não há guarda ou numa rodada que repete a guarda.
@@ -783,6 +802,8 @@ export function computeLegalHold(input: {
   minorBlockedAttempts?: number;
   /** recusas do provedor por menor em pedido com foto ou vídeo enviado (rota provider:, qualquer data) */
   providerMinorBlockedEvents?: number;
+  /** casos de texto confirmados pelo revisor de segurança (rota review:text, qualquer data) */
+  reviewConfirmedEvents?: number;
   ignoreSafetyEvents: boolean;
 }): AccountLegalHold {
   const { account } = input;
@@ -860,6 +881,19 @@ export function computeLegalHold(input: {
         'mídia: a guarda não vence e não é liberada por ignoreSafetyEvents; só o jurídico libera cada recusa).',
     );
   }
+  // caso confirmado pela revisão humana: 1 basta, sem prazo, e o override não vale aqui (é decisão, não suspeita)
+  const reviewConfirmedEvents = Math.max(
+    0,
+    Math.trunc(input.reviewConfirmedEvents ?? 0),
+  );
+  if (reviewConfirmedEvents > 0) {
+    kinds.push('review_confirmed');
+    reasons.push(
+      `${plural(reviewConfirmedEvents, 'pedido desta conta foi confirmado', 'pedidos desta conta foram confirmados')} ` +
+        'pelo revisor de segurança como caso de menor de idade (a guarda não vence e não é liberada por ' +
+        'ignoreSafetyEvents; só o revisor libera cada caso).',
+    );
+  }
   if (
     minorBlockedAttempts >= MINOR_BLOCKED_HOLD_THRESHOLD &&
     !input.ignoreSafetyEvents
@@ -888,6 +922,7 @@ export function computeLegalHold(input: {
     minorBlockedEvents,
     minorBlockedAttempts,
     providerMinorBlockedEvents,
+    reviewConfirmedEvents,
     communityPostsUnpublished: 0,
     generationsExpiryCleared: 0,
   };
@@ -1291,6 +1326,8 @@ export interface MinorBlockTally {
   recentAttempts: number;
   /** recusas do provedor por menor em pedido com foto ou vídeo da conta (qualquer data) */
   provider: number;
+  /** casos de texto confirmados pelo revisor de segurança (rota review:text; qualquer data, fora das tentativas) */
+  reviewConfirmed: number;
 }
 
 export function isProviderMinorRoute(
@@ -1313,8 +1350,14 @@ export function tallyMinorBlocks(
 ): MinorBlockTally {
   const since = now.getTime() - MINOR_BLOCKED_WINDOW_DAYS * 86_400_000;
   let provider = 0;
+  let reviewConfirmed = 0;
   const textBlocks: Array<{ at: number; excerpt: string | null }> = [];
   for (const event of events) {
+    // caso confirmado pelo revisor: é decisão humana, não tentativa a contar
+    if (isReviewConfirmedRoute(event.route)) {
+      reviewConfirmed++;
+      continue;
+    }
     if (
       isProviderMinorRoute(event.route) &&
       event.generationId &&
@@ -1331,6 +1374,7 @@ export function tallyMinorBlocks(
     recent: textBlocks.length,
     recentAttempts: countMinorAttempts(textBlocks),
     provider,
+    reviewConfirmed,
   };
 }
 
@@ -1357,6 +1401,8 @@ export async function countMinorBlocks(
       OR: [
         { createdAt: { gte: since } },
         { route: { startsWith: PROVIDER_MINOR_ROUTE_PREFIX } },
+        // caso de texto confirmado pelo revisor segura em qualquer data
+        { route: { startsWith: REVIEW_EVENT_ROUTE_PREFIX } },
       ],
     },
     select: { route: true, excerpt: true, createdAt: true, generationId: true },
@@ -1368,7 +1414,18 @@ export async function countMinorBlocks(
   const withMedia = providerGenerationIds.length
     ? await generationsWithUserMedia(db, providerGenerationIds)
     : new Set<string>();
-  return tallyMinorBlocks(events, withMedia, now);
+  const tally = tallyMinorBlocks(events, withMedia, now);
+  // checagem de imagem da plataforma (foto/resultado com menor, ou segurado sem decisão do revisor): evidência de
+  // mídia como a recusa do provedor com foto — qualquer data, não ignorável, sem depender de generationsWithUserMedia
+  const imageEvidence = await db.contentSafetyEvent.findMany({
+    where: {
+      userId,
+      kind: { in: [...IMAGE_EVIDENCE_EVENT_KINDS] },
+      releasedAt: null,
+    },
+    select: { id: true },
+  });
+  return { ...tally, provider: tally.provider + imageEvidence.length };
 }
 
 /**
@@ -1396,6 +1453,7 @@ export async function loadLegalHold(
     minorBlockedEvents: blocks.recent,
     minorBlockedAttempts: blocks.recentAttempts,
     providerMinorBlockedEvents: blocks.provider,
+    reviewConfirmedEvents: blocks.reviewConfirmed,
     ignoreSafetyEvents: input.ignoreSafetyEvents,
   });
 }
@@ -1420,6 +1478,17 @@ export async function minorBlockedGenerationIds(
       select: { generationId: true },
     });
     for (const row of rows) if (row.generationId) found.add(row.generationId);
+    // foto/resultado barrado ou segurado pela checagem de imagem da plataforma (sem decisão do revisor) também é evidência
+    const imageRows = await db.contentSafetyEvent.findMany({
+      where: {
+        kind: { in: [...IMAGE_EVIDENCE_EVENT_KINDS] },
+        releasedAt: null,
+        generationId: { in: ids },
+      },
+      select: { generationId: true },
+    });
+    for (const row of imageRows)
+      if (row.generationId) found.add(row.generationId);
   }
   return found;
 }
@@ -1429,6 +1498,7 @@ const HOLD_KIND_LABEL: Record<LegalHoldKind, string> = {
   safety_events: 'bloqueios por menor de idade',
   provider_minor:
     'recusa do provedor de IA por menor de idade em pedido com foto ou vídeo enviado',
+  review_confirmed: 'caso de menor de idade confirmado pelo revisor de segurança',
 };
 
 /**
@@ -1865,6 +1935,7 @@ export class AccountErasureService implements BeforeApplicationShutdown {
                 minorBlockedAttempts: phase.hold.minorBlockedAttempts,
                 providerMinorBlockedEvents:
                   phase.hold.providerMinorBlockedEvents,
+                reviewConfirmedEvents: phase.hold.reviewConfirmedEvents,
                 generationsExpiryCleared: phase.hold.generationsExpiryCleared,
                 sessionsRevoked: report.sessionsRevoked,
                 subscriptions: subscriptions.map(
@@ -1876,6 +1947,8 @@ export class AccountErasureService implements BeforeApplicationShutdown {
         return report;
       }
 
+      // checagens de imagem e texto da conta: ficam só veredito, regra e data (sem hash, chave nem idades)
+      await this.minimizeSafetyScans(user.id);
       const plan = phase.erasure.plan;
       const cleanup = this.startExternalCleanup(plan, storageConfigured);
       const completed = await this.settleWithin(
@@ -1931,6 +2004,21 @@ export class AccountErasureService implements BeforeApplicationShutdown {
       return report;
     } finally {
       if (!releaseInBackground) this.running.delete(userId);
+    }
+  }
+
+  /**
+   * Conta apagada sem guarda legal: as checagens da segurança de imagem e texto perdem hash, pHash, chave do arquivo e
+   * sinais (idade por rosto) na hora; a linha com evidência guardada fica inteira. Melhor esforço depois do commit: a
+   * falha vira log e o cron de minimização das checagens apaga os sinais no prazo dele.
+   */
+  private async minimizeSafetyScans(userId: string): Promise<void> {
+    try {
+      await minimizeAccountScans(this.prisma, userId);
+    } catch (error) {
+      this.logger.warn(
+        `account-erasure: conta ${userId}: checagens de segurança não minimizadas agora (${errorMessage(error)}); o cron de minimização apaga os sinais no prazo`,
+      );
     }
   }
 
@@ -3387,12 +3475,20 @@ export class AccountErasureService implements BeforeApplicationShutdown {
     }
     if (
       (hold.kinds.includes('report') ||
-        hold.kinds.includes('provider_minor')) &&
+        hold.kinds.includes('provider_minor') ||
+        hold.kinds.includes('review_confirmed')) &&
       input.options.ignoreSafetyEvents
     ) {
       nextSteps.push(
-        'ignoreSafetyEvents vale só para os bloqueios por menor de idade em pedido só com texto: denúncia e recusa do ' +
-          'provedor por menor em pedido com foto ou vídeo enviado continuam segurando a conta.',
+        'ignoreSafetyEvents vale só para os bloqueios por menor de idade em pedido só com texto: denúncia, recusa do ' +
+          'provedor por menor em pedido com foto ou vídeo enviado e caso confirmado pelo revisor continuam segurando a conta.',
+      );
+    }
+    if (hold.kinds.includes('review_confirmed')) {
+      nextSteps.push(
+        'O revisor de segurança confirmou um caso de menor de idade desta conta: os registros de acesso e a evidência ' +
+          'ficam guardados para a comunicação à autoridade. Essa guarda não vence com o tempo e não sai com ' +
+          'ignoreSafetyEvents; só o revisor designado libera cada caso, e a exclusão roda de novo depois.',
       );
     }
     if (hold.kinds.includes('provider_minor')) {

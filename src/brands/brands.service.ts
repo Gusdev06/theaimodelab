@@ -38,7 +38,7 @@ export class BrandsService {
     const references = dto.references ?? [];
     const { identityProfile, referenceAssets } =
       references.length > 0
-        ? await this.runAnalysis(references)
+        ? await this.runAnalysis(references, userId)
         : { identityProfile: null, referenceAssets: [] as StoredReferenceAsset[] };
 
     const brand = await this.prisma.brand.create({
@@ -98,7 +98,7 @@ export class BrandsService {
         identityProfileUpdate = null;
         referenceAssetsUpdate = [];
       } else {
-        const result = await this.runAnalysis(dto.references!);
+        const result = await this.runAnalysis(dto.references!, userId);
         identityProfileUpdate = result.identityProfile;
         referenceAssetsUpdate = result.referenceAssets;
       }
@@ -139,12 +139,15 @@ export class BrandsService {
     return brand;
   }
 
-  private async runAnalysis(refs: BrandReferenceInputDto[]): Promise<{
+  private async runAnalysis(
+    refs: BrandReferenceInputDto[],
+    userId: string,
+  ): Promise<{
     identityProfile: BrandIdentity;
     referenceAssets: StoredReferenceAsset[];
   }> {
     const urls = refs.map((r) => r.url);
-    const analysis = await this.visualAnalyzer.analyze(urls);
+    const analysis = await this.visualAnalyzer.analyze(urls, userId);
 
     const assetsByUrl = new Map(analysis.assets.map((a) => [a.url, a]));
 

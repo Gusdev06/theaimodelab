@@ -3,10 +3,12 @@ import { PromptAgentController } from './prompt-agent.controller';
 import { PromptAgentService } from './prompt-agent.service';
 import { CreditsModule } from '../credits/credits.module';
 import { TheaimodelabChatClient } from '../prompt-enhancer/theaimodelab-chat.client';
+import { UploadsModule } from '../uploads/uploads.module';
+import { ExternalMediaCheck } from '../content-safety/image-safety/external-media-check';
 
 @Module({
-  imports: [CreditsModule],
+  imports: [CreditsModule, UploadsModule],
   controllers: [PromptAgentController],
-  providers: [PromptAgentService, TheaimodelabChatClient],
+  providers: [PromptAgentService, TheaimodelabChatClient, ExternalMediaCheck],
 })
 export class PromptAgentModule {}

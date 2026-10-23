@@ -1,15 +1,22 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import * as express from 'express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { configureTrustProxy } from './access-log/access-log.config';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     rawBody: true,
     bodyParser: false,
   });
+
+  // IP do cliente (registro de acesso, Marco Civil art. 15, e o throttler): o x-forwarded-for só vale nos saltos de
+  // proxy declarados em TRUSTED_PROXY_HOPS/TRUSTED_PROXY_IPS, com a mesma regra do AccessLogInterceptor. Sem eles,
+  // nada muda: o req.ip continua o do socket.
+  configureTrustProxy(app, (key) => process.env[key]);
 
   // Security headers (configured to not interfere with CORS)
   app.use(helmet({

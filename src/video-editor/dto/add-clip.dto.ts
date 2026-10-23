@@ -1,10 +1,21 @@
-import { IsString, IsInt, IsOptional, Min, IsUrl } from 'class-validator';
+import {
+  IsString,
+  IsInt,
+  IsOptional,
+  Min,
+  IsUrl,
+  MaxLength,
+} from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class AddClipDto {
-  @ApiProperty({ description: 'URL do video de origem' })
+  @ApiProperty({
+    description:
+      'URL de um video gerado na propria conta (a mesma da galeria). URL externa, de outra conta ou em revisao = 400',
+  })
   @IsString()
   @IsUrl()
+  @MaxLength(2048)
   sourceUrl: string;
 
   @ApiPropertyOptional({ description: 'Ordem do clip na timeline', example: 0 })
@@ -30,8 +41,12 @@ export class AddClipDto {
   @Min(1)
   durationMs: number;
 
-  @ApiPropertyOptional({ description: 'URL da thumbnail do clip' })
+  @ApiPropertyOptional({
+    description:
+      'Ignorado: a miniatura do clip e a do proprio resultado (aceito so para nao quebrar clientes antigos)',
+  })
   @IsOptional()
   @IsString()
+  @MaxLength(2048)
   thumbnailUrl?: string;
 }

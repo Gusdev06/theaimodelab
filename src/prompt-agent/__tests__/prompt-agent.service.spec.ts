@@ -1,6 +1,12 @@
-import { HttpStatus } from '@nestjs/common';
+import { HttpStatus, Logger } from '@nestjs/common';
 import { ContentSafetyEventKind } from '@prisma/client';
 import { BusinessException } from '../../common/exceptions/business.exception';
+import {
+  READINGS,
+  buildMediaCheck,
+  photoBase64,
+} from '../../content-safety/image-safety/__tests__/external-media-check.harness';
+import { SafetyProviderUnavailableError } from '../../content-safety/image-safety/types';
 import { apparentAge, PromptAgentService } from '../prompt-agent.service';
 
 /** Texto fixo que a análise sempre devolve no topo do JSON (regra 2 do prompt do sistema). */
@@ -32,16 +38,27 @@ function analysis(subject: Record<string, unknown>) {
   };
 }
 
-function build(subject: Record<string, unknown>) {
+function build(
+  subject: Record<string, unknown>,
+  options: { mediaCheck?: ReturnType<typeof buildMediaCheck>; photo?: string } = {},
+) {
   const credits = { debit: jest.fn().mockResolvedValue(undefined) };
   const chat = { chat: jest.fn().mockResolvedValue({ text: JSON.stringify(analysis(subject)) }) };
   const safety = { record: jest.fn().mockResolvedValue('evento-1') };
-  const service = new PromptAgentService(credits as never, {} as never, chat as never, safety as never);
+  // checagem da foto de verdade; padrão desligada (o comportamento de hoje)
+  const mediaCheck = options.mediaCheck ?? buildMediaCheck({ mode: 'off' });
+  const service = new PromptAgentService(
+    credits as never,
+    {} as never,
+    chat as never,
+    safety as never,
+    mediaCheck.check,
+  );
   const refund = jest.spyOn(service as unknown as { refundSilently: (id: string) => Promise<void> }, 'refundSilently').mockResolvedValue(undefined);
   jest
     .spyOn(service as unknown as { buildImageBlock: (image: string) => Promise<unknown> }, 'buildImageBlock')
-    .mockResolvedValue({ inline_data: { mime_type: 'image/jpeg', data: 'AAAA' } });
-  return { service, credits, safety, refund };
+    .mockResolvedValue({ inline_data: { mime_type: 'image/jpeg', base64: photoBase64(options.photo ?? 'adulta') } });
+  return { service, credits, safety, refund, chat, mediaCheck };
 }
 
 describe('apparentAge: a idade vai para o prompt com a unidade', () => {
@@ -86,5 +103,98 @@ describe('Clonar prompt: idade de menor na análise', () => {
         route: 'POST /api/v1/prompt-agent/analyze-image',
       }),
     );
+  });
+
+  // a trava lê o JSON cru: uma troca de termos antes dela (como a do plano B da main) esconderia o menor
+  it('termo de menor que uma troca de termos esconderia: recusa com CONTENT_POLICY_MINOR', async () => {
+    const { service, safety, refund } = build({ idade: 'teen' });
+    const error = await service.analyzeImage('user-2', 'data:image/jpeg;base64,AAAA').catch((caught: unknown) => caught);
+    expect((error as BusinessException).getStatus()).toBe(HttpStatus.UNPROCESSABLE_ENTITY);
+    expect((error as BusinessException).getResponse()).toEqual(expect.objectContaining({ code: 'CONTENT_POLICY_MINOR' }));
+    expect(refund).toHaveBeenCalledTimes(1);
+    expect(safety.record).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: ContentSafetyEventKind.MINOR_BLOCKED }),
+    );
+  });
+
+  it('o modelo de visão devolve menor_de_idade: 422 CONTENT_POLICY_MINOR com estorno e evento (nunca 400 genérico)', async () => {
+    const { service, safety, refund, chat } = build({});
+    chat.chat.mockResolvedValue({ text: JSON.stringify({ error: 'menor_de_idade' }) });
+    const error = await service.analyzeImage('user-3', 'data:image/jpeg;base64,AAAA').catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(BusinessException);
+    expect((error as BusinessException).getStatus()).toBe(HttpStatus.UNPROCESSABLE_ENTITY);
+    expect((error as BusinessException).getResponse()).toEqual(expect.objectContaining({ code: 'CONTENT_POLICY_MINOR' }));
+    expect(refund).toHaveBeenCalledTimes(1);
+    expect(safety.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-3',
+        kind: ContentSafetyEventKind.MINOR_BLOCKED,
+        route: 'POST /api/v1/prompt-agent/analyze-image',
+      }),
+    );
+  });
+});
+
+describe('Clonar prompt: a foto passa pela checagem antes de qualquer cliente de visão', () => {
+  beforeEach(() => {
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('checagem desligada: o modelo de visão é chamado como hoje e o leitor nunca', async () => {
+    const { service, chat, mediaCheck } = build({ idade: 'adulto jovem 25-30' }, { photo: 'crianca' });
+    await service.analyzeImage('user-1', 'data:image/jpeg;base64,AAAA');
+    expect(chat.chat).toHaveBeenCalled();
+    expect(mediaCheck.scanner.detect).not.toHaveBeenCalled();
+  });
+
+  it('leitor acusa criança: 422 genérico, sem débito e o Gemini nunca é chamado', async () => {
+    const mediaCheck = buildMediaCheck({ scans: { crianca: READINGS.child } });
+    const { service, chat, credits, refund } = build({ idade: 'adulto jovem 25-30' }, { mediaCheck, photo: 'crianca' });
+    const error = await service.analyzeImage('user-1', 'data:image/jpeg;base64,AAAA').catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(BusinessException);
+    expect((error as BusinessException).getStatus()).toBe(HttpStatus.UNPROCESSABLE_ENTITY);
+    expect((error as BusinessException).getResponse()).toEqual(expect.objectContaining({ code: 'IMAGE_SAFETY_BLOCKED' }));
+    expect(chat.chat).not.toHaveBeenCalled();
+    expect(credits.debit).not.toHaveBeenCalled();
+    expect(refund).not.toHaveBeenCalled();
+    expect(mediaCheck.stored[0]).toMatchObject({ generationId: null, userId: 'user-1', verdict: 'BLOCK' });
+  });
+
+  it('nudez com rosto de provável menor: 422, evidência e evento, sem chamar o Gemini', async () => {
+    const mediaCheck = buildMediaCheck({ scans: { 'menor-nua': READINGS.minorNude } });
+    const { service, chat } = build({ idade: 'adulto jovem 25-30' }, { mediaCheck, photo: 'menor-nua' });
+    const error = await service.analyzeImage('user-1', 'data:image/jpeg;base64,AAAA').catch((caught: unknown) => caught);
+    expect((error as BusinessException).getResponse()).toEqual(expect.objectContaining({ code: 'IMAGE_SAFETY_BLOCKED' }));
+    expect(chat.chat).not.toHaveBeenCalled();
+    expect(mediaCheck.uploads.storeEvidence).toHaveBeenCalled();
+    expect(mediaCheck.contentSafety.record).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: ContentSafetyEventKind.IMAGE_MINOR_BLOCKED, route: 'input:prompt_clone' }),
+    );
+  });
+
+  it('leitor fora do ar: 503 "tente em instantes", sem débito e sem Gemini', async () => {
+    const mediaCheck = buildMediaCheck({
+      scans: { foto: new SafetyProviderUnavailableError('rekognition', 'timeout') },
+    });
+    const { service, chat, credits } = build({ idade: 'adulto jovem 25-30' }, { mediaCheck, photo: 'foto' });
+    const error = await service.analyzeImage('user-1', 'data:image/jpeg;base64,AAAA').catch((caught: unknown) => caught);
+    expect((error as BusinessException).getStatus()).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+    expect((error as BusinessException).getResponse()).toEqual(expect.objectContaining({ code: 'SAFETY_CHECK_UNAVAILABLE' }));
+    expect(chat.chat).not.toHaveBeenCalled();
+    expect(credits.debit).not.toHaveBeenCalled();
+  });
+
+  it('adulta com nudez (exceção 18+ aprovada): segue para a análise', async () => {
+    const mediaCheck = buildMediaCheck({ mode: 'enforce', scans: { nua: READINGS.adultNude } });
+    const { service, chat, credits } = build({ idade: 'adulta 28-35' }, { mediaCheck, photo: 'nua' });
+    const result = await service.analyzeImage('user-1', 'data:image/jpeg;base64,AAAA');
+    expect(result.compiledPrompt).toContain('idade aparente adulta 28-35');
+    expect(credits.debit).toHaveBeenCalled();
+    expect(chat.chat).toHaveBeenCalled();
+    // a foto checada é a mesma que vai ao modelo
+    expect(mediaCheck.scanner.detect).toHaveBeenCalledTimes(1);
   });
 });

@@ -12,6 +12,10 @@ import { fitImageForVision } from '../common/utils/vision-image';
 import { BusinessException } from '../common/exceptions/business.exception';
 import { ContentSafetyService } from '../content-safety/content-safety.service';
 import { assessText } from '../content-safety/minor-guard';
+import {
+  ExternalMediaCheck,
+  inlineImagesOf,
+} from '../content-safety/image-safety/external-media-check';
 
 const CREDIT_COST = 5;
 
@@ -132,10 +136,24 @@ export class PromptAgentService {
     private readonly prisma: PrismaService,
     private readonly chatClient: TheaimodelabChatClient,
     private readonly safety: ContentSafetyService,
+    private readonly mediaCheck: ExternalMediaCheck,
   ) {}
 
+  /**
+   * Nota de merge com a main (plano B 18+ por outro cliente de visão quando o Gemini recusa, exceção aprovada pelo
+   * dono): (1) a checagem da foto continua antes de QUALQUER cliente de visão, inclusive o plano B; (2) a recusa por
+   * menor que qualquer modelo devolver segue o ramo `menor_de_idade` daqui (estorno, evento e 422), nunca a recusa
+   * genérica de conteúdo; (3) a trava de texto lê o JSON cru, e a troca de termos da main só roda depois dela passar.
+   */
   async analyzeImage(userId: string, image: string) {
     const imageBlock = await this.buildImageBlock(image);
+
+    // Checagem da foto (bytes que vão sair) antes de QUALQUER cliente de visão e antes do débito: 422 barrada, 503
+    // checagem indisponível. Com a checagem desligada, não faz nada.
+    await this.mediaCheck.assertSafe(() => inlineImagesOf([imageBlock]), {
+      userId,
+      tool: 'prompt_clone',
+    });
 
     // Debita créditos antes; estorna em erro
     await this.creditsService.debit(
@@ -157,6 +175,19 @@ export class PromptAgentService {
           `O JSON anterior falhou a validação: ${err.message}. Retorne APENAS o JSON corrigido seguindo a estrutura obrigatória.`,
         );
         json = this.extractJson(retryRaw);
+      }
+
+      // o modelo de visão viu menor na foto: mesma recusa da trava de texto, com evento na trilha
+      if (json?.error === 'menor_de_idade') {
+        await this.refundSilently(userId);
+        await this.safety.record({
+          userId,
+          kind: ContentSafetyEventKind.MINOR_BLOCKED,
+          route: SAFETY_ROUTE,
+          match: 'menor_de_idade',
+          excerpt: null,
+        });
+        throw new BusinessException('CONTENT_POLICY_MINOR');
       }
 
       if (json?.error === 'conteudo_inapropriado') {

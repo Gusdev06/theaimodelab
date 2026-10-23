@@ -643,6 +643,44 @@ export function assessText(text: string | null | undefined): MinorAssessment {
   return { blocked: true, reason: 'term', match: 'conferência sem conclusão' };
 }
 
+/**
+ * O texto pede para TIRAR criança da imagem ("remove the children", "kids, if present: remove", "if a child is present,
+ * remove only the child")? É a mesma leitura (e o mesmo vocabulário) da exceção de remoção da conferência, usada pela
+ * regra E6 da segurança de imagem: pedido de remoção + rosto de provável menor na foto. Negação ("no kids"), lista do
+ * que evitar, tamanho de família e remoção negada ("do not remove the kids") não contam; tirar a roupa da criança não é
+ * tirar a criança (isso a conferência barra). Só o termo escrito por extenso conta, como na exceção. Função pura.
+ */
+export function mentionsMinorRemoval(text: string | null | undefined): boolean {
+  if (!text || typeof text !== 'string') return false;
+  const source = text.trim();
+  if (!source) return false;
+  const flat = flatten(prepare(source.slice(0, MAX_TEXT_SCAN)));
+  for (const match of flat.matchAll(LITERAL_MINOR)) {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    const clause = flat.slice(Math.max(0, start - 160), start).split(/[.!?;\n]/).pop() ?? '';
+    const rest = flat.slice(end, end + 120);
+    // mesma ordem da conferência: negação, lista do que evitar e família vêm antes da remoção
+    const kind = OWN_CLOTHING_OR_BODY.test(rest) ? null : negatedBefore(clause);
+    if (kind === 'negation' || familySize(clause) || inAvoidList(clause, rest)) continue;
+    if (kind === 'removal') {
+      if (!removalVerbNegated(clause)) return true;
+      continue;
+    }
+    if (removedAfter(rest) || conditionalRemoval(clause, rest)) return true;
+  }
+  return false;
+}
+
+/** O verbo de remoção logo antes do termo vem negado ("do not remove the kids", "nunca apague as crianças"). */
+function removalVerbNegated(clause: string): boolean {
+  const list = words(clause);
+  for (let index = list.length - 1; index >= 0; index--) {
+    if (REMOVAL_VERBS.has(list[index])) return negatedAction(list, index);
+  }
+  return false;
+}
+
 /* ------------------------------------------------------------------ corpo da requisição */
 
 /**

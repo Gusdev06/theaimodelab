@@ -1,0 +1,15 @@
+{
+  "FaceDetails": [
+    {
+      "BoundingBox": { "Width": 0.2, "Height": 0.25, "Left": 0.1, "Top": 0.15 },
+      "AgeRange": { "Low": 29, "High": 37 },
+      "Confidence": 99.8
+    },
+    {
+      "BoundingBox": { "Width": 0.18, "Height": 0.22, "Left": 0.6, "Top": 0.2 },
+      "AgeRange": { "Low": 24, "High": 32 },
+      "Confidence": 98.1
+    }
+  ],
+  "$metadata": { "httpStatusCode": 200 }
+}

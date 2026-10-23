@@ -5,7 +5,11 @@ import { GenerationStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { GenerationEventsService } from '../generation-events.service';
 import { UnlimitedService } from '../../unlimited/unlimited.service';
-import { ContentSafetyError } from '../errors/content-safety.error';
+import { UNLIMITED_LOCK_TTL_SECONDS } from '../../unlimited/unlimited.constants';
+import {
+  ContentSafetyError,
+  SafetyCheckPendingError,
+} from '../errors/content-safety.error';
 import {
   failureCodeOf,
   failureUserMessage,
@@ -13,6 +17,11 @@ import {
 } from '../errors/failure-reason';
 import { GenerationProcessor, willBeRetried } from './generation.processor';
 import { GENERATION_UNLIMITED_QUEUE } from './generation-queue.constants';
+import { deferJobForSafetyCheck } from './safety-check-deferral';
+import {
+  providerMessageForLog,
+  requestTextsOfJob,
+} from './safety-fallback-guard';
 
 interface UnlimitedJobMeta {
   generationId: string;
@@ -35,7 +44,7 @@ export class UnlimitedProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job): Promise<void> {
+  async process(job: Job, token?: string): Promise<void> {
     const meta = this.extractMeta(job);
     this.logger.log(
       `[UNLIMITED] Processing job ${job.id} [${job.name}] for generation ${meta.generationId} (user ${meta.userId})`,
@@ -46,6 +55,12 @@ export class UnlimitedProcessor extends WorkerHost {
     try {
       await this.generationProcessor.dispatch(job.name, job.data);
     } catch (error) {
+      // checagem de segurança fora do ar: espera na fila com o lock do ilimitado preso (é a mesma geração); o prazo do
+      // lock é renovado para cobrir a espera, senão ele venceria no meio (até 10 min de adiamento + a geração)
+      if (error instanceof SafetyCheckPendingError) {
+        await this.extendLockForDeferral(meta.userId, error.delayMs);
+        throw await deferJobForSafetyCheck(job, token, error);
+      }
       const terminal = this.generationProcessor.terminalSafetyBlockOf(
         error,
         job.data,
@@ -74,7 +89,7 @@ export class UnlimitedProcessor extends WorkerHost {
   async onFailed(job: Job, error: Error): Promise<void> {
     const meta = this.extractMeta(job);
     this.logger.error(
-      `[UNLIMITED] Job ${job.id} [${job.name}] failed (attempt ${job.attemptsMade}/${job.opts.attempts ?? 1}): ${error.message}`,
+      `[UNLIMITED] Job ${job.id} [${job.name}] failed (attempt ${job.attemptsMade}/${job.opts.attempts ?? 1}): ${providerMessageForLog(error, requestTextsOfJob(job.data))}`,
     );
 
     // Só finaliza após esgotar tentativas — durante retries o lock fica preso
@@ -97,6 +112,23 @@ export class UnlimitedProcessor extends WorkerHost {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────
+
+  /** Renova o lock pelo adiamento + o prazo normal. Falha do Redis nunca impede o adiamento (vira log). */
+  private async extendLockForDeferral(
+    userId: string,
+    delayMs: number,
+  ): Promise<void> {
+    try {
+      await this.unlimitedService.extendLock(
+        userId,
+        Math.ceil(delayMs / 1000) + UNLIMITED_LOCK_TTL_SECONDS,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `[UNLIMITED] Lock do usuário ${userId} não renovado no adiamento: ${(err as Error).message}`,
+      );
+    }
+  }
 
   private extractMeta(job: Job): UnlimitedJobMeta {
     const data = job.data as Partial<UnlimitedJobMeta> | undefined;
@@ -143,7 +175,8 @@ export class UnlimitedProcessor extends WorkerHost {
     });
     if (
       current?.status === GenerationStatus.COMPLETED ||
-      current?.status === GenerationStatus.FAILED
+      current?.status === GenerationStatus.FAILED ||
+      current?.status === GenerationStatus.IN_REVIEW
     ) {
       return;
     }

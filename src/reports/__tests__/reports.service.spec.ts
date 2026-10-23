@@ -1,4 +1,12 @@
-import { BadRequestException, ConflictException, HttpStatus, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  HttpStatus,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ContentReportCategory, Prisma } from '@prisma/client';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
@@ -70,8 +78,18 @@ function apply(row: Row, data: Record<string, unknown>): void {
   }
 }
 
+/** Modos da checagem e revisores (IMAGE_SAFETY_CONFIG); ausente = sem a trava do revisor (como hoje em produção). */
+type SafetyGate = { imageMode: 'off' | 'shadow' | 'enforce'; textMode: 'off' | 'shadow' | 'enforce'; reviewerIds: Set<string> };
+
 function setup(
-  opts: { env?: Env; alert?: boolean | Error | 'pendente'; digest?: 'ok' | 'sem-id' | Error; rows?: Row[]; limits?: ReportsLimits } = {},
+  opts: {
+    env?: Env;
+    alert?: boolean | Error | 'pendente';
+    digest?: 'ok' | 'sem-id' | Error;
+    rows?: Row[];
+    limits?: ReportsLimits;
+    safety?: SafetyGate;
+  } = {},
 ) {
   const created: Row[] = [];
   /** o "banco": denúncias gravadas e as que o teste põe direto (ex.: gravadas antes de um reinício) */
@@ -131,7 +149,11 @@ function setup(
       }),
       count: jest.fn(async () => 0),
     },
+    // trilha do revisor (só acréscimo): o andamento do admin grava uma linha
+    contentSafetyAccessLog: { create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'log-1', ...data })) },
   };
+  // transação simulada no mesmo "banco": liberar a evidência grava a trilha junto com o andamento
+  Object.assign(prisma, { $transaction: jest.fn(async (run: (tx: typeof prisma) => Promise<unknown>) => run(prisma)) });
   let release: (sent: boolean) => void = () => undefined;
   const digests: RawEmail[] = [];
   const email = {
@@ -149,7 +171,7 @@ function setup(
   const env: Env = { REPORTS_IP_SALT: 'chave-de-teste', ...opts.env };
   const config = { get: jest.fn((key: keyof Env) => env[key]) };
   const limiter = new ReportsRateLimiter(Date.now, opts.limits ?? REPORTS_LIMITS);
-  const service = new ReportsService(prisma as never, email as never, config as never, limiter);
+  const service = new ReportsService(prisma as never, email as never, config as never, limiter, (opts.safety ?? null) as never);
   return { service, prisma, email, env, created, rows, updates, claims, digests, limiter, release: (sent: boolean) => release(sent) };
 }
 
@@ -1008,6 +1030,66 @@ describe('ReportsService', () => {
       expect(await errorsOf({ evidenceReleased: false })).toHaveLength(1);
       expect(await errorsOf({ evidenceReleased: 'true' })).toHaveLength(1);
       expect(await errorsOf({ status: 'APAGADO' })).toHaveLength(1);
+    });
+
+    describe('trava do revisor (camada 7): tirar a guarda da evidência', () => {
+      const GATE: SafetyGate = { imageMode: 'off', textMode: 'off', reviewerIds: new Set(['rev-1']) };
+      const reviewer = { id: 'rev-1', email: 'revisor@taml.com', ip: '203.0.113.9' };
+      const minor = () => stored({ category: 'MINOR', isDepictedPerson: false });
+
+      it('admin fora da lista: descartar denúncia de menor é 403, nada muda e a tentativa vai para a trilha', async () => {
+        const { service, rows, prisma } = setup({ rows: [minor()], safety: GATE });
+        await expect(service.update('a1', { status: 'DISMISSED' }, admin)).rejects.toBeInstanceOf(ForbiddenException);
+        expect(rows[0]).toMatchObject({ status: 'OPEN' });
+        expect(prisma.contentReport.update).not.toHaveBeenCalled();
+        expect(prisma.contentSafetyAccessLog.create).toHaveBeenCalledWith({
+          data: expect.objectContaining({ actorId: 'admin-7', action: 'report_update_denied', targetId: 'a1' }),
+        });
+      });
+
+      it('admin fora da lista: confirmar e liberar a evidência é 403; nota, em análise e confirmar sem liberar passam', async () => {
+        const { service, rows } = setup({ rows: [minor()], safety: GATE });
+        await expect(service.update('a1', { status: 'ACTIONED', evidenceReleased: true }, admin)).rejects.toBeInstanceOf(
+          ForbiddenException,
+        );
+        await service.update('a1', { adminNote: 'conferido' }, admin);
+        await service.update('a1', { status: 'IN_REVIEW' }, admin);
+        await service.update('a1', { status: 'ACTIONED' }, admin);
+        expect(rows[0]).toMatchObject({ status: 'ACTIONED', evidenceReleasedAt: null, adminNote: 'conferido' });
+      });
+
+      it('o revisor descarta e libera; a trilha entra na mesma transação, com o IP', async () => {
+        const { service, rows, prisma } = setup({ rows: [minor()], safety: GATE });
+        await service.update('a1', { status: 'ACTIONED', evidenceReleased: true }, reviewer);
+        expect(rows[0]).toMatchObject({ status: 'ACTIONED', evidenceReleasedBy: 'rev-1' });
+        expect((prisma as unknown as { $transaction: jest.Mock }).$transaction).toHaveBeenCalledTimes(1);
+        expect(prisma.contentSafetyAccessLog.create).toHaveBeenCalledWith({
+          data: expect.objectContaining({ actorId: 'rev-1', action: 'report_update', ip: '203.0.113.9' }),
+        });
+      });
+
+      it('denúncia que não segura evidência (direito autoral): o admin comum descarta como antes', async () => {
+        const { service, rows } = setup({ rows: [stored({ category: 'COPYRIGHT', isDepictedPerson: false, urgent: false })], safety: GATE });
+        await service.update('a1', { status: 'DISMISSED' }, admin);
+        expect(rows[0]).toMatchObject({ status: 'DISMISSED' });
+      });
+
+      it('sem a revisão em uso (checagens off e lista vazia): o cockpit segue descartando e liberando como hoje', async () => {
+        const { service, rows } = setup({
+          rows: [minor()],
+          safety: { imageMode: 'off', textMode: 'off', reviewerIds: new Set() },
+        });
+        await service.update('a1', { status: 'ACTIONED', evidenceReleased: true }, admin);
+        expect(rows[0]).toMatchObject({ status: 'ACTIONED', evidenceReleasedBy: 'admin-7' });
+      });
+
+      it('liberar a evidência sem conseguir gravar a trilha: 503', async () => {
+        const { service, prisma } = setup({ rows: [minor()] });
+        prisma.contentSafetyAccessLog.create.mockRejectedValueOnce(new Error('banco fora'));
+        await expect(service.update('a1', { status: 'ACTIONED', evidenceReleased: true }, admin)).rejects.toBeInstanceOf(
+          ServiceUnavailableException,
+        );
+      });
     });
   });
 });

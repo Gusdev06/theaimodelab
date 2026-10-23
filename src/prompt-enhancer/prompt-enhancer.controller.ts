@@ -4,6 +4,7 @@ import { EnhancePromptDto } from './dto/enhance-prompt.dto';
 import { EnhanceInfluencerDto } from './dto/enhance-influencer.dto';
 import { UseInterceptors } from '@nestjs/common';
 import { ContentSafetyInterceptor } from '../content-safety/content-safety.interceptor';
+import { CurrentUser } from '../common/decorators';
 
 // segurança de conteúdo: recusa referência a menor e exige atestado de consentimento nas ferramentas de foto
 @UseInterceptors(ContentSafetyInterceptor)
@@ -13,11 +14,15 @@ export class PromptEnhancerController {
 
   @Post('enhance')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
-  async enhance(@Body() dto: EnhancePromptDto) {
+  async enhance(
+    @CurrentUser('sub') userId: string,
+    @Body() dto: EnhancePromptDto,
+  ) {
     const result = await this.promptEnhancerService.enhance(
       dto.prompt,
       dto.context,
       dto.images,
+      userId,
     );
     return {
       enhancedPrompt: result.prompt,
@@ -27,9 +32,14 @@ export class PromptEnhancerController {
 
   @Post('enhance-influencer')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
-  async enhanceInfluencer(@Body() dto: EnhanceInfluencerDto) {
-    const enhancedPrompt =
-      await this.promptEnhancerService.enhanceInfluencer(dto);
+  async enhanceInfluencer(
+    @CurrentUser('sub') userId: string,
+    @Body() dto: EnhanceInfluencerDto,
+  ) {
+    const enhancedPrompt = await this.promptEnhancerService.enhanceInfluencer(
+      dto,
+      userId,
+    );
     return { enhancedPrompt };
   }
 }

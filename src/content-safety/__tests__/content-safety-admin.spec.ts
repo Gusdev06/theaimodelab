@@ -3,6 +3,7 @@ import {
   INestApplication,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
   ValidationPipe,
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
@@ -54,6 +55,10 @@ function createPrisma(rows: Row[]) {
         async (args: Row) =>
           events.filter((row) => matches(row, args.where)).length,
       ),
+    },
+    // trilha da liberação (gravada antes de liberar)
+    contentSafetyAccessLog: {
+      create: jest.fn(async (args: Row) => ({ id: 'log-1', ...args.data })),
     },
   };
   return { prisma, events };
@@ -160,6 +165,32 @@ describe('ContentSafetyService.releaseMinorBlock: liberação pelo jurídico', (
       releaseNote: 'Liberado pelo outro admin antes.',
     });
     expect(Logger.prototype.warn).not.toHaveBeenCalled();
+  });
+
+  it('a liberação vai para a trilha antes de agir; sem a trilha, 503 e nada é liberado', async () => {
+    const { prisma, events } = createPrisma([minorBlock()]);
+    const service = new ContentSafetyService(prisma as never);
+    await service.releaseMinorBlock('evt-minor', NOTE, { ...ADMIN, ip: '198.51.100.7' });
+    expect(prisma.contentSafetyAccessLog.create).toHaveBeenCalledWith({
+      data: {
+        actorId: 'admin-1',
+        action: 'release',
+        targetType: 'event',
+        targetId: 'evt-minor',
+        reason: NOTE,
+        ip: '198.51.100.7',
+      },
+    });
+
+    const failing = createPrisma([minorBlock()]);
+    failing.prisma.contentSafetyAccessLog.create.mockRejectedValueOnce(new Error('banco fora'));
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    await expect(
+      new ContentSafetyService(failing.prisma as never).releaseMinorBlock('evt-minor', NOTE, ADMIN),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(failing.prisma.contentSafetyEvent.updateMany).not.toHaveBeenCalled();
+    expect(failing.events[0].releasedAt).toBeNull();
+    expect(events).toHaveLength(1);
   });
 
   it('só MINOR_BLOCKED; evento inexistente é 404; nota fora de 10 a 1000 caracteres é 400 (nada muda)', async () => {
@@ -298,6 +329,9 @@ describe('PATCH /api/v1/admin/content-safety/events/:id/release (HTTP)', () => {
     expect(releaseMinorBlock).toHaveBeenCalledWith('evt-minor', NOTE, {
       id: 'admin-1',
       email: 'juridico@theaimodelab.com',
+      ip: expect.anything(),
+      // sem a configuração da segurança de imagem montada, ninguém é revisor
+      reviewer: false,
     });
   });
 

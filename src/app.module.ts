@@ -55,13 +55,19 @@ import { MetaModule } from './meta/meta.module';
 import { MarketingLeadsModule } from './marketing-leads/marketing-leads.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { ContentSafetyModule } from './content-safety/content-safety.module';
+import { ImageSafetyModule } from './content-safety/image-safety/image-safety.module';
+import { SafetyReviewModule } from './content-safety/reviewer/safety-review.module';
 import { ReportsModule } from './reports/reports.module';
+import { AccessLogModule } from './access-log/access-log.module';
 
 
 @Module({
   imports: [
     ContentSafetyModule,
+    ImageSafetyModule,
+    SafetyReviewModule,
     ReportsModule,
+    AccessLogModule,
     ConfigModule.forRoot({
       isGlobal: true,
     }),

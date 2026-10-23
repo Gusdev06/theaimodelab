@@ -1,5 +1,6 @@
 import {
-  BadRequestException, BeforeApplicationShutdown, ConflictException, Injectable, Logger, NotFoundException, OnModuleInit,
+  BadRequestException, BeforeApplicationShutdown, ConflictException, ForbiddenException, Inject, Injectable, Logger,
+  NotFoundException, OnModuleInit, Optional, ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -8,27 +9,45 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 import { assessText } from '../content-safety/minor-guard';
+import { IMAGE_SAFETY_CONFIG, type ImageSafetyConfig } from '../content-safety/image-safety/image-safety.config';
+import { SAFETY_REVIEWER_FORBIDDEN } from '../content-safety/safety-event-kinds';
+import { reportHoldsEvidence } from '../users/account-erasure.service';
+import {
+  TAKEDOWN_DUE_SOON_MS,
+  takedownClock,
+  takedownDueAtFor,
+  type TakedownClock,
+} from '../content-safety/takedown/takedown.deadline';
 import type { CreateReportDto, UpdateReportDto } from './dto/create-report.dto';
 import { buildUrgentDigest, type DigestReport, type UrgentReason } from './reports-alert-digest';
 import { ReportsRateLimiter, type ReportLane } from './reports-rate-limiter';
 
 export type { UrgentReason } from './reports-alert-digest';
 
-/** Categorias que pedem ação em horas, não em dias (menor e imagem íntima sem consentimento). */
+/**
+ * Categorias que pedem ação em horas, não em dias (menor, imagem íntima sem consentimento e a própria pessoa da imagem
+ * pedindo a remoção, que ainda tem o prazo legal de 48 h em takedownDueAt).
+ */
 export const URGENT_CATEGORIES: ReadonlySet<ContentReportCategory> = new Set([
   ContentReportCategory.MINOR,
   ContentReportCategory.NON_CONSENSUAL,
+  ContentReportCategory.SELF_DEPICTED,
 ]);
 
 /**
- * Categorias em que a própria pessoa retratada denunciando também vira urgente (imagem íntima sem consentimento e
- * uso da imagem dela). Fora delas, marcar "sou a pessoa" não muda o prazo: senão qualquer um forçava o aviso de 24 h
- * marcando a caixa numa denúncia de outra categoria.
+ * Categorias em que a própria pessoa retratada denunciando também vira urgente (imagem íntima sem consentimento,
+ * uso da imagem dela e "sou a pessoa da imagem"). Fora delas, marcar "sou a pessoa" não muda o prazo: senão qualquer um
+ * forçava o aviso de 24 h marcando a caixa numa denúncia de outra categoria.
  */
 export const DEPICTED_PERSON_URGENT_CATEGORIES: ReadonlySet<ContentReportCategory> = new Set([
   ContentReportCategory.NON_CONSENSUAL,
   ContentReportCategory.IMPERSONATION,
+  ContentReportCategory.SELF_DEPICTED,
 ]);
+
+/** Fila de remoções do cockpit: abertas (o relógio corre), vencidas, feitas ou todas. */
+export type TakedownQueueState = 'open' | 'overdue' | 'done' | 'all';
+export const TAKEDOWN_QUEUE_STATES: readonly TakedownQueueState[] = ['open', 'overdue', 'done', 'all'];
 
 /** Fila aberta do admin: ainda pedem ação. */
 const OPEN_STATUSES: ContentReportStatus[] = [ContentReportStatus.OPEN, ContentReportStatus.IN_REVIEW];
@@ -92,8 +111,15 @@ export interface AlertSweepResult {
   waiting: number;
 }
 
-/** Denúncia como o admin vê: a linha gravada + por que é urgente (calculado agora, com a guarda atual). */
-export type AdminReport = ContentReport & { citesMinor: boolean; urgentReasons: UrgentReason[] };
+/**
+ * Denúncia como o admin vê: a linha gravada + por que é urgente (calculado agora, com a guarda atual) + o relógio da
+ * remoção pedida pela vítima (48 h; null nas outras denúncias).
+ */
+export type AdminReport = ContentReport & {
+  citesMinor: boolean;
+  urgentReasons: UrgentReason[];
+  takedown: TakedownClock | null;
+};
 
 /** O texto cita menor (termo ou idade)? Tamanho não conta: o DTO já limita descrição e alvo. */
 function citesMinor(text: string): boolean {
@@ -133,10 +159,13 @@ export function urgentReasons(input: UrgencyInput, cites: boolean = reportCitesM
   return reasons;
 }
 
-/** A linha do admin com citesMinor e urgentReasons (o cockpit usa para saber se a denúncia fura o mudo). */
-export function toAdminReport(report: ContentReport): AdminReport {
+/**
+ * A linha do admin com citesMinor e urgentReasons (o cockpit usa para saber se a denúncia fura o mudo) e o relógio da
+ * remoção (takedown: prazo, quanto falta, situação).
+ */
+export function toAdminReport(report: ContentReport, now: Date = new Date()): AdminReport {
   const cites = reportCitesMinor(report);
-  return { ...report, citesMinor: cites, urgentReasons: urgentReasons(report, cites) };
+  return { ...report, citesMinor: cites, urgentReasons: urgentReasons(report, cites), takedown: takedownClock(report, now) };
 }
 
 /**
@@ -198,6 +227,10 @@ export class ReportsService implements OnModuleInit, BeforeApplicationShutdown {
     private readonly email: EmailService,
     private readonly config: ConfigService,
     private readonly limiter: ReportsRateLimiter,
+    /** modos da checagem e lista de revisores (módulo global de segurança de imagem); ausente = sem a trava do revisor */
+    @Optional()
+    @Inject(IMAGE_SAFETY_CONFIG)
+    private readonly safetyConfig: Pick<ImageSafetyConfig, 'imageMode' | 'textMode' | 'reviewerIds'> | null = null,
   ) {}
 
   onModuleInit(): void {
@@ -253,7 +286,9 @@ export class ReportsService implements OnModuleInit, BeforeApplicationShutdown {
   async create(dto: CreateReportDto, meta: { ip?: string | null; userId?: string | null }): Promise<{ ok: true; id: string }> {
     const target = dto.target.trim();
     const description = dto.description.trim();
-    const urgent = isUrgentReport({ category: dto.category, isDepictedPerson: dto.isDepictedPerson, target, description });
+    // "sou a pessoa da imagem" é, por definição, a própria pessoa retratada
+    const isDepictedPerson = dto.category === ContentReportCategory.SELF_DEPICTED ? true : (dto.isDepictedPerson ?? false);
+    const urgent = isUrgentReport({ category: dto.category, isDepictedPerson, target, description });
     const suspectedBot = Boolean(dto.website?.trim());
 
     const { overClientLimit } = this.limiter.consume(meta.ip, reportLane({ urgent, suspectedBot }));
@@ -273,9 +308,11 @@ export class ReportsService implements OnModuleInit, BeforeApplicationShutdown {
         description,
         reporterEmail: dto.reporterEmail?.trim().toLowerCase() ?? null,
         reporterUserId: meta.userId ?? null,
-        isDepictedPerson: dto.isDepictedPerson ?? false,
+        isDepictedPerson,
         urgent,
         suspectedBot,
+        // pedido da vítima: o relógio de 48 h começa na gravação (fica na denúncia para o cockpit)
+        takedownDueAt: takedownDueAtFor({ category: dto.category, isDepictedPerson }, new Date()),
         ipHash: this.hashIp(meta.ip),
         ...(route === 'digest' ? { alertError: ALERT_DIGEST_QUEUED } : {}),
       },
@@ -580,7 +617,53 @@ export class ReportsService implements OnModuleInit, BeforeApplicationShutdown {
       this.prisma.contentReport.count({ where: { status: { in: OPEN_STATUSES } } }),
       this.prisma.contentReport.count({ where: { urgent: true, status: { in: OPEN_STATUSES } } }),
     ]);
-    return { data: rows.map(toAdminReport), total, open, urgentOpen, page: Math.max(page, 1), limit: take };
+    const now = new Date();
+    return { data: rows.map((row) => toAdminReport(row, now)), total, open, urgentOpen, page: Math.max(page, 1), limit: take };
+  }
+
+  /**
+   * Fila das remoções pedidas pela própria pessoa retratada (prazo de 48 h): abertas e vencidas pelo prazo mais
+   * próximo; feitas pela conclusão mais recente. As contagens servem ao radar do cockpit: abertas, vencidas, vencendo
+   * em até 6 h e purgas do CDN ainda pendentes. Marcar "removido" no PATCH não fecha o prazo: só a remoção
+   * (POST /admin/takedowns/reports/:id) tira o arquivo do ar e grava takedownDoneAt, e só quando o CDN também foi
+   * purgado (removida com purga pendente fica aberta aqui, ACTIONED, até a varredura purgar).
+   */
+  async takedownQueue(state: TakedownQueueState = 'open', page = 1, limit = 50, now: Date = new Date()) {
+    const take = Math.min(Math.max(limit, 1), 200);
+    const skip = (Math.max(page, 1) - 1) * take;
+    const openWhere: Prisma.ContentReportWhereInput = {
+      takedownDueAt: { not: null },
+      takedownDoneAt: null,
+      status: { not: ContentReportStatus.DISMISSED },
+    };
+    const where: Prisma.ContentReportWhereInput =
+      state === 'open'
+        ? openWhere
+        : state === 'overdue'
+          ? { ...openWhere, takedownDueAt: { not: null, lt: now } }
+          : state === 'done'
+            ? { takedownDueAt: { not: null }, takedownDoneAt: { not: null } }
+            : { takedownDueAt: { not: null } };
+    const orderBy: Prisma.ContentReportOrderByWithRelationInput[] =
+      state === 'done' ? [{ takedownDoneAt: 'desc' }] : state === 'all' ? [{ takedownDueAt: 'desc' }] : [{ takedownDueAt: 'asc' }];
+    const [rows, total, open, overdue, dueSoon, purgePending] = await Promise.all([
+      this.prisma.contentReport.findMany({ where, orderBy, skip, take }),
+      this.prisma.contentReport.count({ where }),
+      this.prisma.contentReport.count({ where: openWhere }),
+      this.prisma.contentReport.count({ where: { ...openWhere, takedownDueAt: { not: null, lt: now } } }),
+      this.prisma.contentReport.count({
+        where: { ...openWhere, takedownDueAt: { gte: now, lte: new Date(now.getTime() + TAKEDOWN_DUE_SOON_MS) } },
+      }),
+      this.prisma.contentTakedownItem.count({ where: { purgeStatus: { in: ['pending', 'failed'] } } }),
+    ]);
+    return {
+      data: rows.map((row) => toAdminReport(row, now)),
+      total,
+      counts: { open, overdue, dueSoon, purgePending },
+      page: Math.max(page, 1),
+      limit: take,
+      now: now.toISOString(),
+    };
   }
 
   async getForAdmin(id: string): Promise<AdminReport> {
@@ -600,7 +683,7 @@ export class ReportsService implements OnModuleInit, BeforeApplicationShutdown {
    * - A gravação só vale se o status e a liberação ainda forem os que foram lidos: outro admin mexendo ao mesmo tempo
    *   = 409, e nada muda (senão a liberação de um podia sobreviver à troca de status do outro).
    */
-  async update(id: string, dto: UpdateReportDto, admin: { id: string; email: string }): Promise<AdminReport> {
+  async update(id: string, dto: UpdateReportDto, admin: { id: string; email: string; ip?: string | null }): Promise<AdminReport> {
     if (dto.status === undefined && dto.adminNote === undefined && dto.evidenceReleased === undefined) {
       throw new BadRequestException('Nada para mudar: mande status, adminNote ou evidenceReleased');
     }
@@ -613,6 +696,25 @@ export class ReportsService implements OnModuleInit, BeforeApplicationShutdown {
       throw new BadRequestException(
         'A evidência só pode ser liberada com a denúncia confirmada (removido). Descartada já não segura a exclusão da conta; aberta ou em análise segura até ser confirmada e liberada. Confirme a denúncia antes, ou no mesmo pedido.',
       );
+    }
+
+    // a mudança tira a guarda da evidência (descartar, liberar)? Com a revisão de segurança em uso, só o revisor
+    // designado decide; o admin comum continua com nota, em análise e a reabertura (que volta a segurar)
+    const releasesHold =
+      reportHoldsEvidence(existing) &&
+      !reportHoldsEvidence({
+        ...existing,
+        status: nextStatus,
+        evidenceReleasedAt: dto.evidenceReleased
+          ? new Date()
+          : statusChanged
+            ? null
+            : existing.evidenceReleasedAt,
+      });
+    if (releasesHold && this.reviewerGateOn() && !this.safetyConfig?.reviewerIds?.has(admin.id)) {
+      await this.logReviewerAction(admin, id, `recusado: ${describeUpdate(existing.status, nextStatus, dto)}`, 'report_update_denied');
+      this.logger.warn(`reports: admin ${admin.id} fora de SAFETY_REVIEWER_IDS tentou tirar a guarda da evidência da denúncia ${id}`);
+      throw new ForbiddenException(SAFETY_REVIEWER_FORBIDDEN);
     }
 
     const closedNext = CLOSED_STATUSES.includes(nextStatus);
@@ -635,20 +737,83 @@ export class ReportsService implements OnModuleInit, BeforeApplicationShutdown {
       );
     }
 
+    // where com o status e a liberação lidos: se outro admin mudou um dos dois no meio, o Prisma não acha a linha (P2025)
+    const where = { id, status: existing.status, evidenceReleasedAt: existing.evidenceReleasedAt };
+    const trail = describeUpdate(existing.status, nextStatus, dto);
+    // liberar a evidência ou tirar a guarda: o registro entra na MESMA transação (sem ele, nada muda: 503)
+    const sensitive = releasesHold || Boolean(data.evidenceReleasedAt);
     try {
-      // where com o status e a liberação lidos: se outro admin mudou um dos dois no meio, o Prisma não acha a linha (P2025)
-      const updated = await this.prisma.contentReport.update({
-        where: { id, status: existing.status, evidenceReleasedAt: existing.evidenceReleasedAt },
-        data,
-      });
+      if (sensitive) {
+        const updated = await this.prisma.$transaction(async (tx) => {
+          const row = await tx.contentReport.update({ where, data });
+          try {
+            await tx.contentSafetyAccessLog.create({ data: accessLogRow(admin, id, trail, 'report_update') });
+          } catch (error) {
+            throw new AccessLogWriteError(error);
+          }
+          return row;
+        });
+        return toAdminReport(updated);
+      }
+      const updated = await this.prisma.contentReport.update({ where, data });
+      await this.logReviewerAction(admin, id, trail);
       return toAdminReport(updated);
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
         throw new ConflictException('A denúncia mudou enquanto isso (outro admin mexeu no andamento). Recarregue e tente de novo.');
       }
+      if (error instanceof AccessLogWriteError) {
+        this.logger.error(`reports: registro de acesso da denúncia ${id} não gravado; nada mudou: ${messageOf(error.original)}`);
+        throw new ServiceUnavailableException('Não foi possível registrar a decisão; nada foi alterado.');
+      }
       throw error;
     }
   }
+
+  /** A trava do revisor vale com a revisão de segurança em uso: alguma checagem ligada ou SAFETY_REVIEWER_IDS preenchido. */
+  private reviewerGateOn(): boolean {
+    const config = this.safetyConfig;
+    if (!config) return false;
+    return (config.imageMode ?? 'off') !== 'off' || (config.textMode ?? 'off') !== 'off' || (config.reviewerIds?.size ?? 0) > 0;
+  }
+
+  /**
+   * Trilha de quem decidiu o quê (content_safety_access_log, só acréscimo) para o andamento comum (nota, em análise):
+   * depois da gravação, e falhar aqui não desfaz a decisão, vira log de erro. Liberar a evidência ou tirar a guarda
+   * grava na mesma transação (update).
+   */
+  private async logReviewerAction(
+    admin: { id: string; ip?: string | null },
+    reportId: string,
+    reason: string,
+    action = 'report_update',
+  ): Promise<void> {
+    try {
+      await this.prisma.contentSafetyAccessLog.create({ data: accessLogRow(admin, reportId, reason, action) });
+    } catch (error) {
+      this.logger.error(`reports: registro de acesso da denúncia ${reportId} (${action}) falhou: ${messageOf(error)}`);
+    }
+  }
+}
+
+/** Falha ao gravar a trilha dentro da transação do andamento (vira 503, e a transação desfaz a mudança). */
+class AccessLogWriteError extends Error {
+  constructor(readonly original: unknown) {
+    super('registro de acesso não gravado');
+  }
+}
+
+function accessLogRow(admin: { id: string; ip?: string | null }, reportId: string, reason: string, action: string) {
+  return { actorId: admin.id, action, targetType: 'report', targetId: reportId, reason, ip: admin.ip ?? null };
+}
+
+/** Resumo do andamento para a trilha (sem o texto da nota). */
+function describeUpdate(previous: ContentReportStatus, next: ContentReportStatus, dto: UpdateReportDto): string {
+  const parts: string[] = [];
+  if (next !== previous) parts.push(`status ${previous} → ${next}`);
+  if (dto.evidenceReleased) parts.push('evidência liberada');
+  if (dto.adminNote !== undefined) parts.push('nota alterada');
+  return parts.join('; ') || 'sem mudança';
 }
 
 function toDigestReport(report: ContentReport): DigestReport {
