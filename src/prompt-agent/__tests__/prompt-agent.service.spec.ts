@@ -1,4 +1,4 @@
-import { HttpStatus, InternalServerErrorException, Logger } from '@nestjs/common';
+import { BadRequestException, HttpStatus, InternalServerErrorException, Logger } from '@nestjs/common';
 import { ContentSafetyEventKind } from '@prisma/client';
 import { BusinessException } from '../../common/exceptions/business.exception';
 import { assessText } from '../../content-safety/minor-guard';
@@ -34,19 +34,25 @@ function analysis(subject: Record<string, unknown>) {
   };
 }
 
-/** Serviço com o modelo simulado: cada chamada devolve o próximo texto da lista (o último se repete). */
-function buildReplies(replies: string[]) {
+/**
+ * Serviço com os modelos simulados: cada chamada ao Gemini devolve o próximo texto da lista (o último se repete).
+ * `adult` liga o plano B do OpenRouter (beedf6a) com as respostas dele, na mesma regra; `base64` é a foto enviada.
+ */
+function buildReplies(replies: string[], { adult, base64 = 'AAAA' }: { adult?: string[]; base64?: string } = {}) {
   const credits = { debit: jest.fn().mockResolvedValue(undefined) };
   const chat = { chat: jest.fn().mockResolvedValue({ text: replies[replies.length - 1] }) };
   for (const text of replies.slice(0, -1)) chat.chat.mockResolvedValueOnce({ text });
+  const openRouter = { enabled: !!adult, describe: jest.fn().mockResolvedValue(adult?.[adult.length - 1] ?? '') };
+  for (const text of adult?.slice(0, -1) ?? []) openRouter.describe.mockResolvedValueOnce(text);
   const safety = { record: jest.fn().mockResolvedValue('evento-1') };
-  const service = new PromptAgentService(credits as never, {} as never, chat as never, safety as never);
+  const service = new PromptAgentService(credits as never, {} as never, chat as never, openRouter as never, safety as never);
   const refund = jest.spyOn(service as unknown as { refundSilently: (id: string) => Promise<void> }, 'refundSilently').mockResolvedValue(undefined);
   jest
     .spyOn(service as unknown as { buildImageBlock: (image: string) => Promise<unknown> }, 'buildImageBlock')
-    .mockResolvedValue({ inline_data: { mime_type: 'image/jpeg', data: 'AAAA' } });
+    .mockResolvedValue({ inline_data: { mime_type: 'image/jpeg', base64 } });
   jest.spyOn((service as unknown as { logger: Logger }).logger, 'error').mockImplementation(() => undefined);
-  return { service, credits, chat, safety, refund };
+  jest.spyOn((service as unknown as { logger: Logger }).logger, 'warn').mockImplementation(() => undefined);
+  return { service, credits, chat, openRouter, safety, refund };
 }
 
 /** `root` troca campos da raiz da análise (undefined tira o campo do JSON). */
@@ -119,10 +125,10 @@ describe('apparentAge: a idade vai para o prompt com a unidade', () => {
 });
 
 describe('Clonar prompt: idade de menor na análise', () => {
-  it('foto de adulta: devolve o prompt com a idade aparente e não registra nada', async () => {
+  it('foto de adulta: devolve o prompt com a idade aparente (sem o "jovem", troca de termos do beedf6a) e não registra nada', async () => {
     const { service, safety, refund } = build({ idade: 'adulto jovem 25-30' });
     const result = await service.analyzeImage('user-1', 'data:image/jpeg;base64,AAAA');
-    expect(result.compiledPrompt).toContain('feminino, idade aparente adulto jovem 25-30 anos');
+    expect(result.compiledPrompt).toContain('feminino, idade aparente adulto 25-30 anos');
     expect(refund).not.toHaveBeenCalled();
     expect(safety.record).not.toHaveBeenCalled();
   });
@@ -171,5 +177,72 @@ describe('Clonar prompt: idade de menor na análise', () => {
     expect(firstExcerpt.length).toBeLessThanOrEqual(300);
     expect(secondExcerpt.startsWith('ultra_photorealistic, 8k, iPhone câmera frontal, 24mm, UGC selfie, rosto redondo')).toBe(true);
     expect(secondExcerpt).not.toBe(firstExcerpt);
+  });
+});
+
+describe('Clonar prompt: plano B do OpenRouter (beedf6a) com a trava de menor', () => {
+  const GEMINI_REFUSAL = JSON.stringify({ error: 'conteudo_inapropriado' });
+
+  async function minorRefusal(service: PromptAgentService) {
+    const error = await service.analyzeImage('user-3', IMAGE).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(BusinessException);
+    expect((error as BusinessException).getStatus()).toBe(HttpStatus.UNPROCESSABLE_ENTITY);
+    expect((error as BusinessException).getResponse()).toEqual(expect.objectContaining({ code: 'CONTENT_POLICY_MINOR' }));
+  }
+
+  it('o Gemini recusa e o OpenRouter descreve uma adulta: devolve o prompt marcado, com os termos trocados', async () => {
+    const adultReply = JSON.stringify(analysis({ idade: 'adulta 25-30', vibe: 'garota confiante e sorridente' }));
+    const { service, openRouter, safety, refund } = buildReplies([GEMINI_REFUSAL], { adult: [adultReply] });
+    const { compiledPrompt } = await service.analyzeImage('user-3', IMAGE);
+    expect(openRouter.describe).toHaveBeenCalledTimes(1);
+    expect(compiledPrompt).toMatch(SITE_CLONE_LABEL);
+    expect(compiledPrompt).toContain('mulher adulta confiante e sorridente');
+    expect(compiledPrompt).not.toMatch(/garota/i);
+    expect(refund).not.toHaveBeenCalled();
+    expect(safety.record).not.toHaveBeenCalled();
+  });
+
+  it('o OpenRouter diz menor_de_idade: 422 CONTENT_POLICY_MINOR, estorno e registro com a impressão da imagem', async () => {
+    const { service, safety, refund } = buildReplies([GEMINI_REFUSAL], { adult: [JSON.stringify({ error: 'menor_de_idade' })] });
+    await minorRefusal(service);
+    expect(refund).toHaveBeenCalledTimes(1);
+    expect(safety.record).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-3', kind: ContentSafetyEventKind.MINOR_BLOCKED, match: 'menor_de_idade' }),
+    );
+    expect(safety.record.mock.calls[0][0].excerpt).toMatch(/imagem [0-9a-f]{12}$/);
+  });
+
+  it.each([
+    ['menina', 'menina'],
+    ['novinha', 'novinha'],
+    ['teen', 'teen'],
+  ])('a análise do OpenRouter diz "%s": a trava barra antes da troca de termos (que viraria "mulher adulta")', async (word, match) => {
+    const reply = JSON.stringify(analysis({ idade: word }));
+    const { service, safety, refund } = buildReplies([GEMINI_REFUSAL], { adult: [reply] });
+    await minorRefusal(service);
+    expect(refund).toHaveBeenCalledTimes(1);
+    expect(safety.record).toHaveBeenCalledWith(expect.objectContaining({ match }));
+  });
+
+  it('sem o OpenRouter (sem a chave), a recusa do Gemini segue 400 INAPPROPRIATE_CONTENT, sem registro', async () => {
+    const { service, openRouter, safety, refund } = buildReplies([GEMINI_REFUSAL]);
+    const error = await service.analyzeImage('user-3', IMAGE).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect((error as BadRequestException).getResponse()).toEqual(expect.objectContaining({ code: 'INAPPROPRIATE_CONTENT' }));
+    expect(openRouter.describe).not.toHaveBeenCalled();
+    expect(refund).toHaveBeenCalledTimes(1);
+    expect(safety.record).not.toHaveBeenCalled();
+  });
+
+  it('a mesma foto mandada de novo tem o mesmo trecho; outra foto, outro trecho', async () => {
+    const minorReply = JSON.stringify({ error: 'menor_de_idade' });
+    const excerpts: string[] = [];
+    for (const base64 of ['AAAA', 'AAAA', 'BBBB']) {
+      const { service, safety } = buildReplies([GEMINI_REFUSAL], { adult: [minorReply], base64 });
+      await service.analyzeImage('user-3', IMAGE).catch(() => undefined);
+      excerpts.push(safety.record.mock.calls[0][0].excerpt as string);
+    }
+    expect(excerpts[0]).toBe(excerpts[1]);
+    expect(excerpts[2]).not.toBe(excerpts[0]);
   });
 });

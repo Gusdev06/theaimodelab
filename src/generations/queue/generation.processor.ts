@@ -2419,8 +2419,9 @@ export class GenerationProcessor extends WorkerHost {
       orderBy: { createdAt: 'desc' },
     });
 
-    // Return plan's retention or default 7 days for free users
-    return subscription?.plan.galleryRetentionDays ?? 7;
+    // Sem assinatura: 7 dias. Plano com galeria ilimitada (null) não expira.
+    if (!subscription) return 7;
+    return subscription.plan.galleryRetentionDays;
   }
 
   private cleanupInputFiles(generationId: string): void {

@@ -58,4 +58,10 @@ export class GalleryItemDto {
 
   @ApiPropertyOptional()
   completedAt?: Date;
+
+  @ApiPropertyOptional({
+    description: 'Quando a geração sai da galeria (null = não expira)',
+    nullable: true,
+  })
+  expiresAt?: Date | null;
 }

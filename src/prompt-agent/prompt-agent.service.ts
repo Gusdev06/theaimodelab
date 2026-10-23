@@ -9,15 +9,25 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ContentSafetyEventKind, CreditTransactionType } from '@prisma/client';
 import { TheaimodelabChatClient, ChatPart } from '../prompt-enhancer/theaimodelab-chat.client';
 import { fitImageForVision } from '../common/utils/vision-image';
+import { createHash } from 'crypto';
 import { BusinessException } from '../common/exceptions/business.exception';
 import { ContentSafetyService } from '../content-safety/content-safety.service';
 import { assessText, MinorAssessment } from '../content-safety/minor-guard';
 import { canonical } from '../content-safety/adult-only-rules';
+import { OpenRouterVisionClient } from './openrouter-vision.client';
 
 const CREDIT_COST = 5;
 
 /** Rota do clonador na trilha de segurança (mesmo formato do interceptor). */
 const SAFETY_ROUTE = 'POST /api/v1/prompt-agent/analyze-image';
+
+/** Impressão curta da imagem analisada (12 hex do sha256): separa as tentativas no registro sem guardar a foto. */
+function imageFingerprint(imageBlock: ChatPart, image: string): string {
+  return createHash('sha256')
+    .update(imageBlock.inline_data?.base64 ?? image)
+    .digest('hex')
+    .slice(0, 12);
+}
 
 /**
  * Idade como a análise devolve ("adulto jovem 22-27", "16-18", 17). No prompt ela vai como "idade aparente" e com a
@@ -241,6 +251,27 @@ Sua função: receber UMA imagem e retornar APENAS um JSON válido seguindo EXAT
 
 Analise a imagem enviada e retorne APENAS o JSON correspondente, sempre incluindo o campo "reference_override" no topo.`;
 
+// Plano B (OpenRouter) pra imagem que o Gemini recusa: mesma estrutura, mas
+// nudez e lingerie de adulto são descritas literalmente. Menor continua barrado.
+const ADULT_RULES = `9. A PLATAFORMA É 18+ E TODAS AS PESSOAS SÃO ADULTAS. Nudez, lingerie e poses sensuais são permitidas: descreva corpo, nudez parcial ou total e roupa íntima de forma literal e detalhada (use "roupa" para o que veste ou "nua"/"seminua"), sem censurar, suavizar ou moralizar.
+10. "assunto.idade" SEMPRE começa com "adulta" ou "adulto" e uma faixa de 21 anos ou mais. NUNCA use "jovem", "menina", "garota", "novinha", "teen", "young", "girl" ou equivalentes em nenhum campo.
+11. SE A PESSOA PUDER SER MENOR DE IDADE (traços infantis, corpo pré-adolescente, uniforme escolar, contexto infantil), retorne apenas: {"error": "menor_de_idade"}`;
+
+const ADULT_SYSTEM_PROMPT = SYSTEM_PROMPT.replace(
+  '9. SE CONTEÚDO INAPROPRIADO, retorne apenas: {"error": "conteudo_inapropriado"}',
+  ADULT_RULES,
+);
+
+// Rede de segurança: termos que lembram menor e travam o filtro do gerador.
+const MINOR_TERMS: [RegExp, string][] = [
+  [/\byoung (woman|lady)\b/gi, 'adult woman'],
+  [/\byoung man\b/gi, 'adult man'],
+  [/\b(girl|teen|teenager)\b/gi, 'woman'],
+  [/\b(menina|garota|novinha)\b/gi, 'mulher adulta'],
+  [/\b(adult[oa]) jovem\b/gi, '$1'],
+  [/\bjovem\b/gi, 'adulta'],
+];
+
 type MediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
 
 @Injectable()
@@ -251,6 +282,7 @@ export class PromptAgentService {
     private readonly creditsService: CreditsService,
     private readonly prisma: PrismaService,
     private readonly chatClient: TheaimodelabChatClient,
+    private readonly openRouter: OpenRouterVisionClient,
     private readonly safety: ContentSafetyService,
   ) {}
 
@@ -267,19 +299,27 @@ export class PromptAgentService {
     );
 
     try {
-      const raw = await this.callModel(imageBlock);
       let json: any;
       try {
-        json = this.extractJson(raw);
-      } catch (err: any) {
-        const retryRaw = await this.callModel(
-          imageBlock,
-          `O JSON anterior falhou a validação: ${err.message}. Retorne APENAS o JSON corrigido seguindo a estrutura obrigatória.`,
-        );
-        json = this.extractJson(retryRaw);
+        json = await this.analyzeWith((extra) => this.callModel(imageBlock, extra));
+      } catch (err) {
+        // Gemini bloqueado por segurança costuma vir vazio ou fora do JSON.
+        if (!this.openRouter.enabled) throw err;
+        this.logger.warn(`Gemini falhou, indo pro OpenRouter: ${(err as Error).message}`);
+        json = { error: 'conteudo_inapropriado' };
       }
 
-      if (json?.error === 'conteudo_inapropriado') {
+      if (json?.error === 'conteudo_inapropriado' && this.openRouter.enabled) {
+        json = await this.analyzeWith((extra) => this.callAdultModel(imageBlock, extra));
+        // o próprio modelo 18+ viu menor na foto: a recusa de menor, com o registro (nota de merge do beedf6a). Sem
+        // descrição para o trecho, ele leva a impressão da imagem: a guarda legal conta as tentativas distintas pelo
+        // trecho, e a mesma foto mandada de novo conta uma vez só
+        if (json?.error === 'menor_de_idade') {
+          await this.blockMinor(userId, 'menor_de_idade', `análise recusou a foto (menor_de_idade) · imagem ${imageFingerprint(imageBlock, image)}`);
+        }
+      }
+
+      if (json?.error) {
         await this.refundSilently(userId);
         throw new BadRequestException({
           code: 'INAPPROPRIATE_CONTENT',
@@ -287,16 +327,16 @@ export class PromptAgentService {
         });
       }
 
-      const compiledPrompt = this.compileToString(json);
       // A análise descreve a pessoa da foto: idade ou termo de menor recusa aqui, com a mesma trava das gerações, antes
-      // de o prompt chegar à cliente (o pedido só tinha a imagem, que o interceptor não lê). O que a análise disse fora
-      // do prompt chega a ela no modo JSON e passa pela mesma trava. O trecho do registro é a descrição da foto, sem o
-      // bloco fixo que abre todo prompt clonado: com ele, todo bloqueio teria o mesmo trecho, e a guarda legal separa as
-      // tentativas distintas pelo trecho.
+      // de o prompt chegar à cliente (o pedido só tinha a imagem, que o interceptor não lê), e antes da troca de termos
+      // do plano B (stripMinorTerms), que esconderia "menina", "novinha" ou "teen" atrás de "mulher adulta". O que a
+      // análise disse fora do prompt chega a ela no modo JSON e passa pela mesma trava. O trecho do registro é a
+      // descrição da foto, sem o bloco fixo que abre todo prompt clonado: com ele, todo bloqueio teria o mesmo trecho, e
+      // a guarda legal separa as tentativas distintas pelo trecho.
       const description = this.describePhoto(json);
       const leftover = unrenderedText(json);
       const checks = [
-        { text: compiledPrompt, excerpt: description },
+        { text: this.compileToString(json), excerpt: description },
         { text: leftover, excerpt: `${leftover}, ${description}` },
       ];
       for (const { text, excerpt } of checks) {
@@ -306,16 +346,11 @@ export class PromptAgentService {
         if (verdict.reason !== 'age' && verdict.reason !== 'term') {
           throw new Error(`análise que a trava não conseguiu ler (${verdict.reason})`);
         }
-        await this.refundSilently(userId);
-        await this.safety.record({
-          userId,
-          kind: ContentSafetyEventKind.MINOR_BLOCKED,
-          route: SAFETY_ROUTE,
-          match: verdict.match ?? null,
-          excerpt: excerpt.slice(0, 300),
-        });
-        throw new BusinessException('CONTENT_POLICY_MINOR');
+        await this.blockMinor(userId, verdict.match ?? null, excerpt);
       }
+
+      json = this.stripMinorTerms(json);
+      const compiledPrompt = this.compileToString(json);
       return { json: withReferenceOverride(json), compiledPrompt, creditsUsed: CREDIT_COST };
     } catch (err) {
       if (err instanceof BadRequestException || err instanceof BusinessException) throw err;
@@ -448,6 +483,47 @@ export class PromptAgentService {
       ],
     });
     return res.text || '';
+  }
+
+  /** Recusa de menor do Clonar prompt: estorna, registra o evento (a guarda legal conta as tentativas) e responde 422. */
+  private async blockMinor(userId: string, match: string | null, excerpt: string): Promise<never> {
+    await this.refundSilently(userId);
+    await this.safety.record({
+      userId,
+      kind: ContentSafetyEventKind.MINOR_BLOCKED,
+      route: SAFETY_ROUTE,
+      match,
+      excerpt: excerpt.slice(0, 300),
+    });
+    throw new BusinessException('CONTENT_POLICY_MINOR');
+  }
+
+  /** Chama o modelo e, se o JSON vier quebrado, pede a correção uma vez. */
+  private async analyzeWith(call: (extraUserText?: string) => Promise<string>): Promise<any> {
+    const raw = await call();
+    try {
+      return this.extractJson(raw);
+    } catch (err: any) {
+      const retryRaw = await call(
+        `O JSON anterior falhou a validação: ${err.message}. Retorne APENAS o JSON corrigido seguindo a estrutura obrigatória.`,
+      );
+      return this.extractJson(retryRaw);
+    }
+  }
+
+  private async callAdultModel(imageBlock: ChatPart, extraUserText?: string): Promise<string> {
+    if (!imageBlock.inline_data) throw new Error('Imagem ausente para o OpenRouter');
+    return this.openRouter.describe({
+      system: ADULT_SYSTEM_PROMPT,
+      image: imageBlock.inline_data,
+      text: extraUserText || 'Analise esta imagem e retorne APENAS o JSON.',
+    });
+  }
+
+  private stripMinorTerms(json: any): any {
+    let text = JSON.stringify(json);
+    for (const [re, to] of MINOR_TERMS) text = text.replace(re, to);
+    return JSON.parse(text);
   }
 
   private extractJson(text: string): Record<string, unknown> {
