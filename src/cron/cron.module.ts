@@ -10,14 +10,16 @@ import { OnboardingSequenceService } from './onboarding-sequence.service';
 import { LifecycleEmailsService } from './lifecycle-emails.service';
 import { AnnualCreditsRefillService } from './annual-credits-refill.service';
 import { CronLoggerService } from './cron-logger.service';
+import { ReferralRewardsService } from './referral-rewards.service';
 import { UploadsModule } from '../uploads/uploads.module';
 import { EmailModule } from '../email/email.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { SettingsModule } from '../settings/settings.module';
+import { ReferralsModule } from '../referrals/referrals.module';
 
 @Module({
-  imports: [ScheduleModule.forRoot(), UploadsModule, EmailModule, PaymentsModule, PrismaModule, SettingsModule],
+  imports: [ScheduleModule.forRoot(), UploadsModule, EmailModule, PaymentsModule, PrismaModule, SettingsModule, ReferralsModule],
   providers: [
     CronLoggerService,
     SubscriptionRenewalService,
@@ -29,6 +31,7 @@ import { SettingsModule } from '../settings/settings.module';
     OnboardingSequenceService,
     LifecycleEmailsService,
     AnnualCreditsRefillService,
+    ReferralRewardsService,
   ],
   exports: [CronLoggerService],
 })

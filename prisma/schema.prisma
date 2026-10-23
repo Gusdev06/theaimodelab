@@ -79,6 +79,9 @@ model User {
   voiceProfiles           VoiceProfile[]
   weeklyClaims            WeeklyClaim[]
   workspaces              Workspace[]
+  referralCode            ReferralCode?
+  referralsMade           Referral[]                @relation("referrals_made")
+  referralReceived        Referral?                 @relation("referral_received")
 
   @@index([email])
   @@index([oauthProvider, oauthProviderId])
@@ -1292,4 +1295,60 @@ model AnalyticsEvent {
   @@index([createdAt])
   @@index([eventName, createdAt])
   @@map("analytics_events")
+}
+
+/// Indicação entre usuários (diferente do programa de afiliado, que paga comissão em dinheiro).
+/// Cada usuário tem um código próprio; quem entra pelo link vira um Referral PENDING e quem
+/// indicou ganha créditos bônus quando o indicado conclui a 1ª geração com o e-mail verificado.
+enum ReferralStatus {
+  PENDING
+  REWARDED
+  REVIEW
+  BLOCKED
+}
+
+/// Código de indicação do usuário. Tabela própria para não mexer na `users`.
+model ReferralCode {
+  id            String   @id @default(cuid())
+  userId        String   @unique @map("user_id")
+  code          String   @unique
+  /// Indicações já pagas a este usuário. Incrementado na transação do pagamento, com a linha travada:
+  /// é o teto total atômico e a trava que impede duas concessões do mesmo indicador ao mesmo tempo.
+  rewardedCount Int      @default(0) @map("rewarded_count")
+  createdAt     DateTime @default(now()) @map("created_at")
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("referral_codes")
+}
+
+model Referral {
+  id               String         @id @default(cuid())
+  referrerId       String         @map("referrer_id")
+  /// Uma indicação por conta indicada: é a trava contra crédito em dobro.
+  referredUserId   String         @unique @map("referred_user_id")
+  code             String
+  status           ReferralStatus @default(PENDING)
+  /// Por que foi para REVIEW/BLOCKED (ex.: shared_ip, cap_daily, self_alias).
+  reason           String?
+  /// HMAC do IP do cadastro do indicado (nunca o IP puro).
+  signupIpHash     String?        @map("signup_ip_hash")
+  /// sha256 do e-mail normalizado (sem +tag; Gmail sem pontos): pega alias do mesmo dono.
+  emailFingerprint String?        @map("email_fingerprint")
+  /// sha256 do domínio quando é próprio (não provedor público): pega farm por catch-all.
+  emailDomainKey   String?        @map("email_domain_key")
+  creditsAwarded   Int            @default(0) @map("credits_awarded")
+  rewardedAt       DateTime?      @map("rewarded_at")
+  reviewedById     String?        @map("reviewed_by_id")
+  reviewedAt       DateTime?      @map("reviewed_at")
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime       @updatedAt @map("updated_at")
+  referrer         User           @relation("referrals_made", fields: [referrerId], references: [id], onDelete: Cascade)
+  referredUser     User           @relation("referral_received", fields: [referredUserId], references: [id], onDelete: Cascade)
+
+  @@index([referrerId, status])
+  @@index([status, createdAt])
+  @@index([referrerId, signupIpHash])
+  @@index([referrerId, emailFingerprint])
+  @@index([referrerId, emailDomainKey])
+  @@map("referrals")
 }

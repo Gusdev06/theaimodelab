@@ -33,6 +33,7 @@ import { PromptEnhancerModule } from './prompt-enhancer/prompt-enhancer.module';
 import { PromptAgentModule } from './prompt-agent/prompt-agent.module';
 import { AgentModule } from './agent/agent.module';
 import { AffiliatesModule } from './affiliates/affiliates.module';
+import { ReferralsModule } from './referrals/referrals.module';
 import { PromptsModule } from './prompts/prompts.module';
 import { PromptPostsModule } from './prompt-posts/prompt-posts.module';
 import { ModelsModule } from './models/models.module';
@@ -121,6 +122,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
     PromptAgentModule,
     AgentModule,
     AffiliatesModule,
+    ReferralsModule,
     ModelsModule,
     PendingGrantsModule,
     FeedbackModule,

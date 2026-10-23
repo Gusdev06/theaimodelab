@@ -25,7 +25,9 @@ export class AffiliatesService {
     const existing = await this.prisma.affiliate.findUnique({
       where: { code },
     });
-    if (existing) {
+    // Código de indicação de usuário também conta: senão o afiliado novo passaria a receber pelo link de outra pessoa.
+    const usedByReferral = await this.prisma.referralCode.findUnique({ where: { code }, select: { id: true } });
+    if (existing || usedByReferral) {
       throw new ConflictException(`Código "${code}" já está em uso`);
     }
 
@@ -374,6 +376,10 @@ export class AffiliatesService {
 
     for (let attempt = 0; attempt < 8; attempt++) {
       const code = this.buildAffiliateCodeCandidate(user.name, user.email, attempt);
+      // O código sai do nome, que a pessoa escolhe: um nome igual ao código de indicação de outro usuário
+      // sequestraria o link dele (cadastro com código de afiliado ativo vira comissão em dinheiro).
+      const usedByReferral = await this.prisma.referralCode.findUnique({ where: { code }, select: { id: true } });
+      if (usedByReferral) continue;
       try {
         return await this.prisma.affiliate.create({
           data: {
