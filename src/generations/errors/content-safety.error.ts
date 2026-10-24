@@ -67,6 +67,9 @@ export class ContentSafetyError extends Error {
     /prohibited use/i,
     /viola.*diretrizes/i,
     /safety system/i,
+    // Veo e Gemini Omni na kie: "public error unsafe image upload" (imagem de
+    // entrada recusada pelo filtro) caía como GENERATION_FAILED genérico.
+    /unsafe image upload/i,
     /public_error_/i,
   ];
 

@@ -461,47 +461,69 @@ export class AdminService {
     userId: string,
     amount: number,
     description: string,
+    adminId?: string,
   ): Promise<void> {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new NotFoundException('Usuário não encontrado');
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    const applied = await this.prisma.$transaction(async (tx) => {
       const balance = await tx.creditBalance.findUnique({
         where: { userId },
       });
 
+      // Delta EFETIVO: remover mais do que o bônus tem zera o bônus, e o extrato
+      // registra o que saiu de verdade, não o pedido (TKT-106).
+      let delta = amount;
       if (!balance) {
-        // Create balance if it doesn't exist
+        delta = Math.max(0, amount);
         await tx.creditBalance.create({
           data: {
             userId,
-            bonusCreditsRemaining: Math.max(0, amount),
+            bonusCreditsRemaining: delta,
             planCreditsRemaining: 0,
             planCreditsUsed: 0,
           },
         });
-      } else {
-        const newBonus = balance.bonusCreditsRemaining + amount;
+      } else if (amount > 0) {
         await tx.creditBalance.update({
           where: { userId },
+          data: { bonusCreditsRemaining: { increment: amount } },
+        });
+      } else {
+        delta = -Math.min(-amount, balance.bonusCreditsRemaining);
+        if (delta < 0) {
+          const updated = await tx.creditBalance.updateMany({
+            where: { userId, bonusCreditsRemaining: { gte: -delta } },
+            data: { bonusCreditsRemaining: { decrement: -delta } },
+          });
+          if (updated.count === 0) {
+            throw new BadRequestException(
+              'O saldo mudou durante o ajuste. Tente de novo.',
+            );
+          }
+        }
+      }
+
+      if (delta !== 0) {
+        await tx.creditTransaction.create({
           data: {
-            bonusCreditsRemaining: Math.max(0, newBonus),
+            userId,
+            type: CreditTransactionType.ADMIN_ADJUSTMENT,
+            amount: delta,
+            source: 'bonus',
+            description,
+            metadata: { adminId: adminId ?? null, requested: amount, applied: delta },
           },
         });
       }
-
-      await tx.creditTransaction.create({
-        data: {
-          userId,
-          type: CreditTransactionType.ADMIN_ADJUSTMENT,
-          amount,
-          source: 'bonus',
-          description,
-        },
-      });
+      return delta;
     });
+
+    this.logger.log(
+      `Admin ${adminId ?? 'desconhecido'} ajustou ${applied} créditos (pedido ${amount}) do usuário ${userId}: ${description}`,
+    );
   }
 
   async adjustFreeGenerations(

@@ -101,6 +101,13 @@ export class PerfectpayWebhookService {
       };
     }
 
+    // Reembolso/chargeback de pack ou da isca: resolve aqui e NÃO revoga a
+    // assinatura do comprador (antes revogava, e o pack/bundle ficava — TKT-099).
+    if (kind === 'refund' || kind === 'chargeback') {
+      const handled = await this.handleNonSubscriptionRefund(payload, kind);
+      if (handled) return handled;
+    }
+
     // Cancelamento / reembolso / chargeback de assinatura recorrente.
     // refund/chargeback → revoga na hora; cancelamento normal → acesso até fim do período.
     if (kind === 'canceled' || kind === 'refund' || kind === 'chargeback') {
@@ -198,11 +205,13 @@ export class PerfectpayWebhookService {
     }
 
     // 3) Caso contrário: produto de curso → libera gerações grátis por email.
+    // Dedupe por VENDA, sem o status: `approved` e `completed` da mesma venda
+    // chegavam com ids diferentes e criavam dois bundles (TKT-098).
     const { created } = await this.pendingGrantsService.createPending({
       email,
       bundle: PERFECTPAY_COURSE_BUNDLE,
       source: 'perfectpay',
-      externalEventId,
+      externalEventId: this.extractSaleEventId(payload) ?? externalEventId,
     });
 
     this.logger.log(
@@ -305,6 +314,67 @@ export class PerfectpayWebhookService {
   }
 
   /**
+   * Reembolso que não é de assinatura. Retorna `null` quando é de assinatura
+   * (o chamador segue para a revogação). A venda registrada como Payment é
+   * marcada REFUNDED e perde a comissão PENDING em qualquer caso (TKT-110).
+   */
+  private async handleNonSubscriptionRefund(
+    payload: any,
+    kind: string,
+  ): Promise<{ processed: boolean; reason?: string } | null> {
+    const saleCode = this.extractSaleCode(payload);
+    if (saleCode) {
+      const refund = await this.paymentsService.refundExternalPayment(saleCode, kind);
+      if (refund.found && refund.type === 'CREDIT_PURCHASE') {
+        return refund.alreadyRefunded
+          ? { processed: false, reason: 'credit purchase already refunded' }
+          : {
+              processed: true,
+              reason: `credit purchase refunded: ${refund.creditsRevoked} credits revoked, ${refund.creditsShortfall} already used`,
+            };
+      }
+      if (refund.found) return null; // pagamento de assinatura
+    }
+
+    const isSubscriptionSale =
+      payload?.subscription != null || payload?.subscription_status != null;
+    if (isSubscriptionSale) return null;
+
+    const planCandidates = this.extractPlanCandidates(payload);
+    if (planCandidates.length) {
+      const plan = await this.prisma.plan.findFirst({
+        where: { perfectpayPlanCode: { in: planCandidates } },
+        select: { id: true },
+      });
+      if (plan) return null;
+      const creditPackage = await this.prisma.creditPackage.findFirst({
+        where: { perfectpayPlanCode: { in: planCandidates } },
+        select: { name: true },
+      });
+      if (creditPackage) {
+        return {
+          processed: false,
+          reason: `refund of credit package "${creditPackage.name}" with no recorded payment — nothing to revoke`,
+        };
+      }
+    }
+
+    // Isca (curso): o bundle de gerações grátis da venda deixa de valer.
+    const saleEventId = this.extractSaleEventId(payload);
+    if (!saleEventId) {
+      return { processed: false, reason: `${kind} event without sale code` };
+    }
+    const revoked = await this.pendingGrantsService.revokeForRefund(saleEventId, kind);
+    return {
+      processed: revoked.grants > 0,
+      reason:
+        revoked.grants > 0
+          ? `course refund: ${revoked.grants} grant(s) revoked`
+          : 'course refund: no grant found for this sale',
+    };
+  }
+
+  /**
    * Rede de segurança para casar o plano pelo NOME que vem no postback da assinatura
    * ("Plan Creator" → slug "creator"), quando o código do plano ainda não foi
    * cadastrado em `perfectpayPlanCode`. Casa o plano ativo cujo slug apareça como
@@ -371,10 +441,23 @@ export class PerfectpayWebhookService {
       .filter((v) => v.length > 0);
 
     if (expectedTokens.length === 0) {
-      this.logger.warn(
-        'PERFECTPAY_WEBHOOK_TOKEN not configured — skipping token check',
+      // Sem token configurado o webhook ficava ABERTO: qualquer POST ativava
+      // plano/créditos (TKT-101). Agora falha fechado; só em desenvolvimento,
+      // com PERFECTPAY_WEBHOOK_ALLOW_UNAUTHENTICATED=true, passa sem conferir.
+      if (
+        this.configService.get<string>(
+          'PERFECTPAY_WEBHOOK_ALLOW_UNAUTHENTICATED',
+        ) === 'true'
+      ) {
+        this.logger.warn(
+          'PERFECTPAY_WEBHOOK_TOKEN not configured — token check skipped (PERFECTPAY_WEBHOOK_ALLOW_UNAUTHENTICATED=true)',
+        );
+        return;
+      }
+      this.logger.error(
+        'PERFECTPAY_WEBHOOK_TOKEN não configurado — webhook recusado (configure o token da Perfect Pay no servidor)',
       );
-      return;
+      throw new UnauthorizedException('Perfectpay webhook token not configured');
     }
 
     const received =
@@ -483,6 +566,12 @@ export class PerfectpayWebhookService {
     const status = payload?.sale_status_enum ?? 'na';
     if (code) return `perfectpay-sale-${code}-${status}`;
     return null;
+  }
+
+  /** Id por venda (sem status) — chave de dedupe da isca. */
+  private extractSaleEventId(payload: any): string | null {
+    const code = payload?.code ?? payload?.sale_code ?? null;
+    return code ? `perfectpay-sale-${code}` : null;
   }
 
   /**

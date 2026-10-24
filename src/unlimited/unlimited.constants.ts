@@ -4,7 +4,10 @@ export const UNLIMITED_LOCK_KEY_PREFIX = 'unlimited:lock:';
 export const UNLIMITED_MANUAL_DELAY_KEY_PREFIX = 'unlimited:manual-delay:';
 
 // TTL do lock por usuário. Alinhar com lockDuration do BullMQ (15min — suporta vídeos longos).
-export const UNLIMITED_LOCK_TTL_SECONDS = 15 * 60;
+// 45 min = janela de vídeo do cron de presas: com retry (30 s) e modelo
+// alternativo, um job passa de 15 min e o lock vencia no meio (TKT-111). O lock
+// é liberado no fim do job; o TTL é só a rede de segurança.
+export const UNLIMITED_LOCK_TTL_SECONDS = 45 * 60;
 
 // Janela móvel de 24h para contar gerações no modo ilimitado.
 export const UNLIMITED_WINDOW_HOURS = 24;

@@ -67,62 +67,9 @@ import { GenerateMinimaxH3ImageToVideoDto } from './dto/videos/generate-minimax-
 import { GenerateMinimaxH3ReferenceToVideoDto } from './dto/videos/generate-minimax-h3-reference-to-video.dto';
 import { GenerateTextToSpeechDto } from './dto/generate-text-to-speech.dto';
 import { GenerateVoiceCloneDto } from './dto/generate-voice-clone.dto';
+import { getModelVariant, resolveModelVariant } from './model-variant';
 
 
-/**
- * Mapeia o nome do modelo da API para o modelVariant usado na tabela credit_costs.
- * NBP = gemini-3-pro-image-preview (Nano Banana Pro)
- * NB2 = gemini-3.1-flash-image-preview (Nano Banana 2)
- * THEAIMODELAB_FAST = theaimodelab-fast (theaimodelab-provider)
- * THEAIMODELAB_QUALITY = theaimodelab-quality (theaimodelab-provider)
- * VEO_FAST = veo3_fast (KIE API)
- * VEO_MAX = veo3 (KIE API)
- */
-function getModelVariant(model: string | undefined | null): string | null {
-  if (!model) return null;
-  const MODEL_TO_VARIANT: Record<string, string> = {
-    // Images
-    'gemini-3-pro-image-preview': 'NBP',
-    'gemini-3.1-flash-image-preview': 'NB2',
-    'nano-banana-pro': 'NBP',
-    'nano-banana-2': 'NB2',
-    // Sem censura
-    'sem-censura': 'SEM_CENSURA',
-    // GPT Image 2 / 2.5 Flare (Kie API) — mesmo provider, families diferentes
-    'gpt-image-2': 'GPT_IMAGE_2',
-    'gpt-image-2-5': 'GPT_IMAGE_2_5',
-    // The AI Model Lab provider (video)
-    'theaimodelab-fast': 'THEAIMODELAB_FAST',
-    'theaimodelab-quality': 'THEAIMODELAB_QUALITY',
-    'veo-3.1-fast-generate-001': 'THEAIMODELAB_FAST', // backward compat
-    'veo-3.1-generate-001': 'THEAIMODELAB_QUALITY', // backward compat
-    // KIE API (Veo 3.1)
-    veo3_fast: 'VEO_FAST',
-    veo3: 'VEO_MAX',
-    // KIE API (Grok Imagine)
-    'grok-imagine': 'GROK_IMAGINE',
-    // KIE API (Gemini Omni Video)
-    'gemini-omni-video': 'GEMINI_OMNI',
-    // KIE API (Bytedance Seedance 2.0 / 2.5)
-    'bytedance-seedance-2': 'SEEDANCE_2',
-    'bytedance-seedance-2-5': 'SEEDANCE_2_5',
-    // KIE API (Kling V3 Turbo — image-to-video)
-    'kling-v3-turbo': 'KLING_V3_TURBO',
-    // ComfyDeploy (WanImageToVideo — NSFW/legacy)
-    'comfydeploy-wan': 'COMFYDEPLOY_WAN',
-    // WaveSpeed (LTX 2.3 Spicy — image-to-video, NSFW)
-    'wavespeed-ltx-spicy': 'WAVESPEED_LTX_SPICY',
-    // WaveSpeed (Seedance 2.0 Fast Spicy — image-to-video, NSFW)
-    'wavespeed-seedance-spicy': 'WAVESPEED_SEEDANCE_SPICY',
-    // WaveSpeed (MiniMax H3 — text/image/reference to video, áudio nativo)
-    'wavespeed-minimax-h3': 'WAVESPEED_MINIMAX_H3',
-    // KIE API (Seedream Lite) — unificado: T2I se sem images, I2I se com images
-    'seedream-5-lite': 'SEEDREAM_LITE',
-    // Deepdeep API (n88ed) — image-to-image, requer imagem de input
-    deepdeep: 'DEEPDEEP',
-  };
-  return MODEL_TO_VARIANT[model] ?? null;
-}
 
 /**
  * Normaliza nomes legados de modelos para os slugs atuais do banco (tabela ai_models).
@@ -478,7 +425,7 @@ export class GenerationsService {
       ? GenerationType.IMAGE_TO_IMAGE
       : GenerationType.TEXT_TO_IMAGE;
 
-    const modelVariant = dto.model_variant ?? getModelVariant(dto.model);
+    const modelVariant = resolveModelVariant(dto.model, dto.model_variant);
     const isUnlimited = dto.unlimited === true;
 
     await this.checkConcurrentLimit(userId);
@@ -558,7 +505,7 @@ export class GenerationsService {
 
     if (!isUnlimited) {
       if (isFreeGeneration && freeGenType) {
-        await this.creditsService.consumeFreeGeneration(
+        await this.consumeFreeGenerationOrRollback(
           userId,
           generation.id,
           freeGenType,
@@ -657,7 +604,7 @@ export class GenerationsService {
       ? GenerationType.IMAGE_TO_IMAGE
       : GenerationType.TEXT_TO_IMAGE;
 
-    const modelVariant = dto.model_variant ?? getModelVariant(dto.model);
+    const modelVariant = resolveModelVariant(dto.model, dto.model_variant);
     const isUnlimited = dto.unlimited === true;
 
     await this.checkConcurrentLimit(userId);
@@ -739,7 +686,7 @@ export class GenerationsService {
 
     if (!isUnlimited) {
       if (isFreeGeneration && freeGenType) {
-        await this.creditsService.consumeFreeGeneration(
+        await this.consumeFreeGenerationOrRollback(
           userId,
           generation.id,
           freeGenType,
@@ -804,7 +751,7 @@ export class GenerationsService {
       : GenerationType.TEXT_TO_IMAGE;
 
     const modelVariant =
-      dto.model_variant ?? getModelVariant(dto.model ?? 'nano-banana-2');
+      resolveModelVariant(dto.model ?? 'nano-banana-2', dto.model_variant);
     const isUnlimited = dto.unlimited === true;
 
     await this.checkConcurrentLimit(userId);
@@ -887,7 +834,7 @@ export class GenerationsService {
 
     if (!isUnlimited) {
       if (isFreeGeneration && freeGenType) {
-        await this.creditsService.consumeFreeGeneration(
+        await this.consumeFreeGenerationOrRollback(
           userId,
           generation.id,
           freeGenType,
@@ -951,7 +898,7 @@ export class GenerationsService {
 
     const sampleCount = dto.unlimited === true ? 1 : (dto.sample_count ?? 1);
 
-    const modelVariant = dto.model_variant ?? getModelVariant(dto.model);
+    const modelVariant = resolveModelVariant(dto.model, dto.model_variant);
     const isUnlimited = dto.unlimited === true;
 
     await this.modelsService.assertActiveBySlug(
@@ -1016,7 +963,7 @@ export class GenerationsService {
 
     if (!isUnlimited) {
       if (isFreeGeneration) {
-        await this.creditsService.consumeFreeGeneration(
+        await this.consumeFreeGenerationOrRollback(
           userId,
           generation.id,
           resolveFreeGenerationType(type, modelVariant)!,
@@ -1079,7 +1026,7 @@ export class GenerationsService {
 
     const sampleCount = dto.unlimited === true ? 1 : (dto.sample_count ?? 1);
 
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
     const isUnlimited = dto.unlimited === true;
 
     await this.modelsService.assertActiveBySlug(
@@ -1180,7 +1127,7 @@ export class GenerationsService {
 
     if (!isUnlimited) {
       if (isFreeGeneration) {
-        await this.creditsService.consumeFreeGeneration(
+        await this.consumeFreeGenerationOrRollback(
           userId,
           generation.id,
           resolveFreeGenerationType(type, modelVariant)!,
@@ -1244,7 +1191,7 @@ export class GenerationsService {
 
     const sampleCount = dto.unlimited === true ? 1 : (dto.sample_count ?? 1);
 
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
     const isUnlimited = dto.unlimited === true;
 
     await this.modelsService.assertActiveBySlug(
@@ -1331,7 +1278,7 @@ export class GenerationsService {
 
     if (!isUnlimited) {
       if (isFreeGeneration) {
-        await this.creditsService.consumeFreeGeneration(
+        await this.consumeFreeGenerationOrRollback(
           userId,
           generation.id,
           resolveFreeGenerationType(type, modelVariant)!,
@@ -1516,7 +1463,7 @@ export class GenerationsService {
     });
 
     if (isFreeGeneration && freeGenType) {
-      await this.creditsService.consumeFreeGeneration(
+      await this.consumeFreeGenerationOrRollback(
         userId,
         generation.id,
         freeGenType,
@@ -1558,7 +1505,7 @@ export class GenerationsService {
     const model = dto.model ?? 'gemini-3.1-flash-image-preview';
     const resolution = dto.resolution ?? Resolution.RES_2K;
 
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
 
     const freeGenType = await this.resolveFreeGenForRequest(
       userId,
@@ -1638,7 +1585,7 @@ export class GenerationsService {
     });
 
     if (isFreeGeneration) {
-      await this.creditsService.consumeFreeGeneration(
+      await this.consumeFreeGenerationOrRollback(
         userId,
         generation.id,
         freeGenType,
@@ -1783,7 +1730,7 @@ CRITICAL REQUIREMENTS:
     });
 
     if (isFreeGeneration) {
-      await this.creditsService.consumeFreeGeneration(
+      await this.consumeFreeGenerationOrRollback(
         userId,
         generation.id,
         freeGenType,
@@ -1826,7 +1773,7 @@ CRITICAL REQUIREMENTS:
     const model = dto.model ?? 'veo3_fast';
     const hasAudio = dto.generate_audio ?? true;
 
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
 
@@ -1867,7 +1814,7 @@ CRITICAL REQUIREMENTS:
     });
 
     if (isFreeGeneration) {
-      await this.creditsService.consumeFreeGeneration(
+      await this.consumeFreeGenerationOrRollback(
         userId,
         generation.id,
         resolveFreeGenerationType(type, modelVariant)!,
@@ -1912,7 +1859,7 @@ CRITICAL REQUIREMENTS:
     const model = dto.model ?? 'veo3_fast';
     const hasAudio = dto.generate_audio ?? true;
 
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
 
@@ -1996,7 +1943,7 @@ CRITICAL REQUIREMENTS:
     await this.prisma.generationInputImage.createMany({ data: inputImageData });
 
     if (isFreeGeneration) {
-      await this.creditsService.consumeFreeGeneration(
+      await this.consumeFreeGenerationOrRollback(
         userId,
         generation.id,
         resolveFreeGenerationType(type, modelVariant)!,
@@ -2042,7 +1989,7 @@ CRITICAL REQUIREMENTS:
     const model = 'veo3_fast'; // REFERENCE_2_VIDEO only supports veo3_fast
     const hasAudio = dto.generate_audio ?? true;
 
-    const modelVariant = dto.model_variant ?? 'VEO_FAST';
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
 
@@ -2111,7 +2058,7 @@ CRITICAL REQUIREMENTS:
     });
 
     if (isFreeGeneration) {
-      await this.creditsService.consumeFreeGeneration(
+      await this.consumeFreeGenerationOrRollback(
         userId,
         generation.id,
         resolveFreeGenerationType(type, modelVariant)!,
@@ -2155,7 +2102,7 @@ CRITICAL REQUIREMENTS:
   ): Promise<CreateGenerationResponseDto> {
     const type = GenerationType.IMAGE_TO_VIDEO;
     const model = 'grok-imagine';
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
 
@@ -2242,7 +2189,7 @@ CRITICAL REQUIREMENTS:
     await this.prisma.generationInputImage.createMany({ data: inputImageData });
 
     if (isFreeGeneration && freeGenType) {
-      await this.creditsService.consumeFreeGeneration(
+      await this.consumeFreeGenerationOrRollback(
         userId,
         generation.id,
         freeGenType,
@@ -2285,7 +2232,7 @@ CRITICAL REQUIREMENTS:
   ): Promise<CreateGenerationResponseDto> {
     const type = GenerationType.TEXT_TO_VIDEO;
     const model = 'grok-imagine';
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
 
@@ -2330,7 +2277,7 @@ CRITICAL REQUIREMENTS:
     });
 
     if (isFreeGeneration && freeGenType) {
-      await this.creditsService.consumeFreeGeneration(
+      await this.consumeFreeGenerationOrRollback(
         userId,
         generation.id,
         freeGenType,
@@ -2371,7 +2318,7 @@ CRITICAL REQUIREMENTS:
     dto: GenerateGeminiOmniVideoDto,
   ): Promise<CreateGenerationResponseDto> {
     const model = 'gemini-omni-video';
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
 
@@ -2463,7 +2410,7 @@ CRITICAL REQUIREMENTS:
     }
 
     if (isFreeGeneration && freeGenType) {
-      await this.creditsService.consumeFreeGeneration(
+      await this.consumeFreeGenerationOrRollback(
         userId,
         generation.id,
         freeGenType,
@@ -2680,7 +2627,7 @@ CRITICAL REQUIREMENTS:
     }
 
     if (isFreeGeneration && freeGenType) {
-      await this.creditsService.consumeFreeGeneration(
+      await this.consumeFreeGenerationOrRollback(
         userId,
         generation.id,
         freeGenType,
@@ -2730,7 +2677,7 @@ CRITICAL REQUIREMENTS:
   ): Promise<CreateGenerationResponseDto> {
     const type = GenerationType.IMAGE_TO_VIDEO;
     const model = 'kling-v3-turbo';
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
 
@@ -2796,7 +2743,7 @@ CRITICAL REQUIREMENTS:
     });
 
     if (isFreeGeneration && freeGenType) {
-      await this.creditsService.consumeFreeGeneration(
+      await this.consumeFreeGenerationOrRollback(
         userId,
         generation.id,
         freeGenType,
@@ -2844,7 +2791,7 @@ CRITICAL REQUIREMENTS:
   ): Promise<CreateGenerationResponseDto> {
     const type = GenerationType.IMAGE_TO_VIDEO;
     const model = 'comfydeploy-wan';
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
     const resolution = dto.resolution ?? Resolution.RES_720P;
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
@@ -2907,7 +2854,7 @@ CRITICAL REQUIREMENTS:
     });
 
     if (isFreeGeneration && freeGenType) {
-      await this.creditsService.consumeFreeGeneration(
+      await this.consumeFreeGenerationOrRollback(
         userId,
         generation.id,
         freeGenType,
@@ -2948,7 +2895,7 @@ CRITICAL REQUIREMENTS:
   ): Promise<CreateGenerationResponseDto> {
     const type = GenerationType.IMAGE_TO_VIDEO;
     const model = 'wavespeed-ltx-spicy';
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
     const resolution = dto.resolution ?? Resolution.RES_480P;
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
@@ -3032,7 +2979,7 @@ CRITICAL REQUIREMENTS:
   ): Promise<CreateGenerationResponseDto> {
     const type = GenerationType.IMAGE_TO_VIDEO;
     const model = 'wavespeed-seedance-spicy';
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
     const resolution = dto.resolution ?? Resolution.RES_720P;
     // Prompt é opcional no Seedance (image-to-video guia pela imagem).
     const prompt = dto.prompt ?? '';
@@ -3128,7 +3075,7 @@ CRITICAL REQUIREMENTS:
   ): Promise<CreateGenerationResponseDto> {
     const type = GenerationType.TEXT_TO_VIDEO;
     const model = 'wavespeed-minimax-h3';
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
     const resolution = dto.resolution ?? Resolution.RES_480P;
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
@@ -3187,7 +3134,7 @@ CRITICAL REQUIREMENTS:
   ): Promise<CreateGenerationResponseDto> {
     const type = GenerationType.IMAGE_TO_VIDEO;
     const model = 'wavespeed-minimax-h3';
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
     const resolution = dto.resolution ?? Resolution.RES_480P;
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
@@ -3284,7 +3231,7 @@ CRITICAL REQUIREMENTS:
   ): Promise<CreateGenerationResponseDto> {
     const type = GenerationType.REFERENCE_VIDEO;
     const model = 'wavespeed-minimax-h3';
-    const modelVariant = dto.model_variant ?? getModelVariant(model);
+    const modelVariant = resolveModelVariant(model, dto.model_variant);
     const resolution = dto.resolution ?? Resolution.RES_480P;
 
     const hasReferenceImages = (dto.reference_images?.length ?? 0) > 0;
@@ -3695,6 +3642,13 @@ CRITICAL REQUIREMENTS:
     }
   }
 
+  /**
+   * Debita os créditos da geração recém-criada. Se o débito falhar (402 porque o
+   * saldo mudou entre a checagem e o `FOR UPDATE`, ou qualquer erro), a linha
+   * PROCESSING é apagada: nada fica órfão com `creditsConsumed` gravado e sem
+   * GENERATION_DEBIT — era isso que o cron de gerações presas "estornava" em
+   * bônus, cunhando crédito do nada (TKT-096).
+   */
   private async debitCredits(
     userId: string,
     creditsRequired: number,
@@ -3702,13 +3656,53 @@ CRITICAL REQUIREMENTS:
     type: GenerationType,
     resolution: Resolution,
   ): Promise<void> {
-    await this.creditsService.debit(
-      userId,
-      creditsRequired,
-      CreditTransactionType.GENERATION_DEBIT,
-      generationId,
-      `Geração ${type} ${resolution}`,
+    try {
+      await this.creditsService.debit(
+        userId,
+        creditsRequired,
+        CreditTransactionType.GENERATION_DEBIT,
+        generationId,
+        `Geração ${type} ${resolution}`,
+      );
+    } catch (error) {
+      await this.rollbackUnchargedGeneration(generationId, error);
+      throw error;
+    }
+  }
+
+  /** Mesma regra do débito para a geração grátis: sem cota → a linha some. */
+  private async consumeFreeGenerationOrRollback(
+    userId: string,
+    generationId: string,
+    freeGenType: FreeGenerationType,
+  ): Promise<void> {
+    try {
+      await this.creditsService.consumeFreeGeneration(
+        userId,
+        generationId,
+        freeGenType,
+      );
+    } catch (error) {
+      await this.rollbackUnchargedGeneration(generationId, error);
+      throw error;
+    }
+  }
+
+  private async rollbackUnchargedGeneration(
+    generationId: string,
+    cause: unknown,
+  ): Promise<void> {
+    this.logger.warn(
+      `Geração ${generationId} apagada: cobrança falhou antes de enfileirar (${(cause as Error)?.message ?? cause})`,
     );
+    try {
+      // Imagens de input caem em cascata (onDelete: Cascade).
+      await this.prisma.generation.delete({ where: { id: generationId } });
+    } catch (deleteError) {
+      this.logger.error(
+        `Não consegui apagar a geração ${generationId} sem cobrança: ${(deleteError as Error).message}`,
+      );
+    }
   }
 
   // ─── Read operations ──────────────────────────────────────

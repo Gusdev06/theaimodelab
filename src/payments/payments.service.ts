@@ -540,10 +540,23 @@ export class PaymentsService {
           where: { id: sub.id },
           data: { status: 'CANCELED', cancelAtPeriodEnd: false },
         });
+        const balance = await tx.creditBalance.findUnique({ where: { userId } });
         await tx.creditBalance.updateMany({
           where: { userId },
           data: { planCreditsRemaining: 0, planCreditsUsed: 0 },
         });
+        // Antes os créditos do plano sumiam sem transação: o extrato não fechava (TKT-110).
+        if (balance && balance.planCreditsRemaining > 0) {
+          await tx.creditTransaction.create({
+            data: {
+              userId,
+              type: 'SUBSCRIPTION_RENEWAL',
+              amount: -balance.planCreditsRemaining,
+              source: 'plan',
+              description: `Assinatura revogada (${opts.reason}): ${balance.planCreditsRemaining} créditos do plano retirados`,
+            },
+          });
+        }
       });
       this.logger.log(
         `Perfectpay subscription ${sub.id} REVOGADA imediatamente (${opts.reason}) — user ${userId}`,
@@ -559,6 +572,109 @@ export class PaymentsService {
     }
 
     return { processed: true };
+  }
+
+  /**
+   * Reembolso/chargeback de uma venda já registrada (TKT-099/110), idempotente
+   * pelo status do Payment:
+   *  - marca o Payment como REFUNDED (o /admin/stats para de contar a venda);
+   *  - apaga a comissão de afiliado ainda PENDING (PAID fica e é avisada no log);
+   *  - pacote de créditos: retira do bônus o que ainda sobra, até o valor do
+   *    pacote, com transação negativa ligada ao pagamento.
+   * Não toca em assinatura: quem chama decide se revoga.
+   */
+  async refundExternalPayment(
+    externalPaymentId: string,
+    reason: string,
+  ): Promise<{
+    found: boolean;
+    type?: PaymentType;
+    alreadyRefunded?: boolean;
+    creditsRevoked?: number;
+    creditsShortfall?: number;
+    earningsCanceled?: number;
+  }> {
+    return this.prisma.$transaction(async (tx) => {
+      await this.lockExternalPayment(tx, externalPaymentId);
+      const payment = await tx.payment.findFirst({
+        where: { externalPaymentId },
+        include: { creditPackage: { select: { name: true, credits: true } } },
+      });
+      if (!payment) return { found: false };
+      if (payment.status === PaymentStatus.REFUNDED) {
+        return { found: true, type: payment.type, alreadyRefunded: true };
+      }
+
+      let creditsRevoked = 0;
+      let creditsShortfall = 0;
+      if (payment.type === PaymentType.CREDIT_PURCHASE) {
+        const purchased =
+          payment.creditPackage?.credits ??
+          (
+            await tx.creditTransaction.aggregate({
+              where: { paymentId: payment.id, type: 'PURCHASE', amount: { gt: 0 } },
+              _sum: { amount: true },
+            })
+          )._sum.amount ??
+          0;
+        for (let attempt = 0; attempt < 2 && purchased > 0; attempt += 1) {
+          const balance = await tx.creditBalance.findUnique({
+            where: { userId: payment.userId },
+          });
+          const take = Math.min(purchased, balance?.bonusCreditsRemaining ?? 0);
+          if (take <= 0) break;
+          // Decremento condicional: um débito de geração concorrente não deixa o saldo negativo.
+          const updated = await tx.creditBalance.updateMany({
+            where: { userId: payment.userId, bonusCreditsRemaining: { gte: take } },
+            data: { bonusCreditsRemaining: { decrement: take } },
+          });
+          if (updated.count === 1) {
+            creditsRevoked = take;
+            break;
+          }
+        }
+        creditsShortfall = Math.max(0, purchased - creditsRevoked);
+        if (creditsRevoked > 0) {
+          await tx.creditTransaction.create({
+            data: {
+              userId: payment.userId,
+              type: 'PURCHASE',
+              amount: -creditsRevoked,
+              source: 'bonus',
+              description: `Estorno da compra ${payment.creditPackage?.name ?? ''} (${reason}): ${creditsRevoked} de ${purchased} créditos retirados`.replace('  ', ' '),
+              paymentId: payment.id,
+              metadata: { reason, purchased, creditsRevoked, creditsShortfall },
+            },
+          });
+        }
+      }
+
+      await tx.payment.update({
+        where: { id: payment.id },
+        data: { status: PaymentStatus.REFUNDED },
+      });
+      const canceled = await tx.affiliateEarning.deleteMany({
+        where: { paymentId: payment.id, status: 'PENDING' },
+      });
+      const paid = await tx.affiliateEarning.count({
+        where: { paymentId: payment.id, status: 'PAID' },
+      });
+      if (paid > 0) {
+        this.logger.warn(
+          `Venda ${externalPaymentId} reembolsada (${reason}) com comissão de afiliado já PAGA — cobrar de volta manualmente`,
+        );
+      }
+      this.logger.warn(
+        `Venda ${externalPaymentId} (${payment.type}) reembolsada (${reason}): créditos retirados ${creditsRevoked}, já consumidos ${creditsShortfall}, comissões canceladas ${canceled.count}`,
+      );
+      return {
+        found: true,
+        type: payment.type,
+        creditsRevoked,
+        creditsShortfall,
+        earningsCanceled: canceled.count,
+      };
+    });
   }
 
   /**

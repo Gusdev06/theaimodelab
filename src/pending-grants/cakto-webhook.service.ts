@@ -99,8 +99,28 @@ export class CaktoWebhookService {
         : null;
 
       if (creditPackage) {
-        // Reembolso/chargeback/cancelamento de pacote: bônus one-off não gera
-        // revogação de assinatura — apenas logamos e ignoramos (sem erro).
+        // Reembolso/chargeback de pacote: retira o bônus que ainda sobra, marca o
+        // pagamento REFUNDED e cancela a comissão (antes era ignorado — TKT-099).
+        // Nunca revoga assinatura.
+        if (kind === 'refund' || kind === 'chargeback') {
+          const saleCode = this.extractSaleCode(data);
+          if (!saleCode) {
+            return { processed: false, reason: `${kind} of credit package without sale code` };
+          }
+          const refund = await this.paymentsService.refundExternalPayment(saleCode, kind);
+          if (!refund.found) {
+            return {
+              processed: false,
+              reason: `refund of credit package "${creditPackage.name}" with no recorded payment`,
+            };
+          }
+          return refund.alreadyRefunded
+            ? { processed: false, reason: 'credit purchase already refunded' }
+            : {
+                processed: true,
+                reason: `credit purchase refunded: ${refund.creditsRevoked} credits revoked, ${refund.creditsShortfall} already used`,
+              };
+        }
         if (kind !== 'paid') {
           return {
             processed: false,
@@ -134,6 +154,19 @@ export class CaktoWebhookService {
         return { processed: false, reason: `no account for email ${email}` };
       }
       const immediate = kind === 'refund' || kind === 'chargeback';
+      if (immediate) {
+        // Pagamento da assinatura vira REFUNDED e perde a comissão PENDING (TKT-110).
+        const saleCode = this.extractSaleCode(data);
+        if (saleCode) {
+          await this.paymentsService
+            .refundExternalPayment(saleCode, kind)
+            .catch((error: unknown) =>
+              this.logger.error(
+                `Cakto: não consegui marcar a venda ${saleCode} como reembolsada: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+            );
+        }
+      }
       return this.paymentsService.revokePerfectpaySubscription(user.id, {
         immediate,
         reason: kind,
@@ -259,10 +292,21 @@ export class CaktoWebhookService {
       ?.trim();
 
     if (!expected) {
-      this.logger.warn(
-        'CAKTO_WEBHOOK_SECRET not configured — skipping secret check',
+      // Sem segredo configurado o webhook ficava ABERTO (TKT-101). Falha fechado;
+      // só em desenvolvimento, com CAKTO_WEBHOOK_ALLOW_UNAUTHENTICATED=true, passa.
+      if (
+        this.configService.get<string>('CAKTO_WEBHOOK_ALLOW_UNAUTHENTICATED') ===
+        'true'
+      ) {
+        this.logger.warn(
+          'CAKTO_WEBHOOK_SECRET not configured — secret check skipped (CAKTO_WEBHOOK_ALLOW_UNAUTHENTICATED=true)',
+        );
+        return;
+      }
+      this.logger.error(
+        'CAKTO_WEBHOOK_SECRET não configurado — webhook recusado (configure o segredo da Cakto no servidor)',
       );
-      return;
+      throw new UnauthorizedException('Cakto webhook secret not configured');
     }
 
     const received =

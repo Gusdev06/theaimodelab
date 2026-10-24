@@ -189,6 +189,7 @@ export class CreditsController {
       dto.modelVariant,
       dto.freeGenerationType,
       dto.hasVideoInput,
+      dto.model,
     );
   }
 }

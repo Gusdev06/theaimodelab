@@ -128,7 +128,7 @@ const PATTERNS: Array<[RegExp, GenerationFailureCodeValue]> = [
   // Gemini Omni (PUBLIC_ERROR_*), GPT Image 2 ("guardrails", "appear to be
   // unsafe") e Kling ("sensitive information").
   [
-    /public_error_|guardrails|may violate|appear to be unsafe|flagged (as|by|for)|sensitive information|content policy|prohibited use|violat.*(polic|guideline)|viola.*diretrizes|could not be processed|safety system|moderation|\bnsfw\b/i,
+    /public_error_|unsafe image upload|guardrails|may violate|appear to be unsafe|flagged (as|by|for)|sensitive information|content policy|prohibited use|violat.*(polic|guideline)|viola.*diretrizes|could not be processed|safety system|moderation|\bnsfw\b/i,
     GenerationFailureCode.CONTENT_SAFETY_BLOCKED,
   ],
   // ── nosso lado / provedor ──────────────────────────────────────────────────

@@ -5,10 +5,42 @@ import {
   CreditTransactionType,
   Generation,
   GenerationStatus,
+  GenerationType,
 } from '@prisma/client';
 import { CronLoggerService } from './cron-logger.service';
+import { computeRefundable } from '../credits/refundable';
 
-const STUCK_THRESHOLD_MINUTES = 25;
+/**
+ * Janela por família, contada a partir de `processingStartedAt` (quando o
+ * worker pegou o job), não de `createdAt`: uma geração que ficou na fila não é
+ * "presa", e um vídeo que passou pelo modelo alternativo ganha a janela inteira
+ * de novo (TKT-107). Quem nunca começou a processar tem uma janela própria,
+ * contada da criação.
+ */
+export const STUCK_THRESHOLD_MINUTES = {
+  image: 20,
+  video: 45,
+  audio: 10,
+  /** PROCESSING sem processingStartedAt: ainda na fila (ou job perdido). */
+  queued: 60,
+} as const;
+
+const IMAGE_TYPES: GenerationType[] = [
+  GenerationType.TEXT_TO_IMAGE,
+  GenerationType.IMAGE_TO_IMAGE,
+  GenerationType.FACE_SWAP,
+  GenerationType.VIRTUAL_TRY_ON,
+];
+const AUDIO_TYPES: GenerationType[] = [GenerationType.VOICE_CLONE];
+const VIDEO_TYPES: GenerationType[] = [
+  GenerationType.TEXT_TO_VIDEO,
+  GenerationType.IMAGE_TO_VIDEO,
+  GenerationType.REFERENCE_VIDEO,
+  GenerationType.MOTION_CONTROL,
+  GenerationType.SPOKEN_VIDEO,
+  GenerationType.AVATAR_VIDEO,
+];
+
 const SCHEDULE = '*/15 * * * *';
 
 @Injectable()
@@ -24,15 +56,15 @@ export class StuckGenerationsService {
   async handleStuckGenerations() {
     try {
       return await this.cronLogger.wrap(
-        { cronName: 'StuckGenerationsService.handleStuckGenerations', schedule: SCHEDULE },
+        {
+          cronName: 'StuckGenerationsService.handleStuckGenerations',
+          schedule: SCHEDULE,
+        },
         async () => {
-          const threshold = new Date();
-          threshold.setMinutes(threshold.getMinutes() - STUCK_THRESHOLD_MINUTES);
-
           const stuckGenerations = await this.prisma.generation.findMany({
             where: {
               status: GenerationStatus.PROCESSING,
-              createdAt: { lt: threshold },
+              OR: StuckGenerationsService.buildStuckConditions(new Date()),
             },
           });
 
@@ -40,7 +72,9 @@ export class StuckGenerationsService {
             return { stuckFound: 0, recovered: 0, failed: 0 };
           }
 
-          this.logger.log(`Found ${stuckGenerations.length} stuck generations to clean up`);
+          this.logger.log(
+            `Found ${stuckGenerations.length} stuck generations to clean up`,
+          );
 
           let recovered = 0;
           let failed = 0;
@@ -48,10 +82,10 @@ export class StuckGenerationsService {
             try {
               await this.failAndRefund(generation);
               recovered++;
-            } catch (error: any) {
+            } catch (error) {
               failed++;
               this.logger.error(
-                `Failed to clean up stuck generation ${generation.id}: ${error.message}`,
+                `Failed to clean up stuck generation ${generation.id}: ${error instanceof Error ? error.message : String(error)}`,
               );
             }
           }
@@ -59,12 +93,40 @@ export class StuckGenerationsService {
           return { stuckFound: stuckGenerations.length, recovered, failed };
         },
       );
-    } catch (error: any) {
-      this.logger.error(`Stuck generations cron failed: ${error.message}`, error.stack);
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      this.logger.error(
+        `Stuck generations cron failed: ${failure.message}`,
+        failure.stack,
+      );
     }
   }
 
+  static buildStuckConditions(now: Date) {
+    const before = (minutes: number): Date =>
+      new Date(now.getTime() - minutes * 60_000);
+    return [
+      {
+        type: { in: IMAGE_TYPES },
+        processingStartedAt: { lt: before(STUCK_THRESHOLD_MINUTES.image) },
+      },
+      {
+        type: { in: VIDEO_TYPES },
+        processingStartedAt: { lt: before(STUCK_THRESHOLD_MINUTES.video) },
+      },
+      {
+        type: { in: AUDIO_TYPES },
+        processingStartedAt: { lt: before(STUCK_THRESHOLD_MINUTES.audio) },
+      },
+      {
+        processingStartedAt: null,
+        createdAt: { lt: before(STUCK_THRESHOLD_MINUTES.queued) },
+      },
+    ];
+  }
+
   private async failAndRefund(generation: Generation) {
+    let refunded = 0;
     await this.prisma.$transaction(async (tx) => {
       // Mark generation as failed
       await tx.generation.update({
@@ -106,29 +168,32 @@ export class StuckGenerationsService {
         return;
       }
 
-      // Look at the original debit transactions to know where to refund
-      const debitTransactions = await tx.creditTransaction.findMany({
+      // Só devolve o que foi debitado para esta geração e ainda não devolvido.
+      // Sem GENERATION_DEBIT não há estorno: a linha nasceu sem cobrança
+      // (débito falhou/abortou) e "devolver" em bônus era crédito do nada (TKT-096).
+      const ledger = await tx.creditTransaction.findMany({
         where: {
           generationId: generation.id,
-          type: CreditTransactionType.GENERATION_DEBIT,
+          type: {
+            in: [
+              CreditTransactionType.GENERATION_DEBIT,
+              CreditTransactionType.GENERATION_REFUND,
+            ],
+          },
         },
         orderBy: { createdAt: 'asc' },
       });
 
-      let planRefund = 0;
-      let bonusRefund = 0;
-
-      for (const debit of debitTransactions) {
-        if (debit.source === 'plan') {
-          planRefund += Math.abs(debit.amount);
-        } else {
-          bonusRefund += Math.abs(debit.amount);
-        }
+      const refundable = computeRefundable(ledger, generation.creditsConsumed);
+      if (!refundable) {
+        this.logger.warn(
+          `Generation ${generation.id} timed out with creditsConsumed=${generation.creditsConsumed} but no GENERATION_DEBIT — nothing to refund`,
+        );
+        return;
       }
-
-      // If no debit records found, refund to bonus credits as fallback
-      if (debitTransactions.length === 0) {
-        bonusRefund = generation.creditsConsumed;
+      const { plan: planRefund, bonus: bonusRefund } = refundable;
+      if (planRefund + bonusRefund === 0) {
+        return;
       }
 
       const balance = await tx.creditBalance.findUnique({
@@ -171,10 +236,11 @@ export class StuckGenerationsService {
           },
         });
       }
+      refunded = planRefund + bonusRefund;
     });
 
     this.logger.warn(
-      `Marked generation ${generation.id} as failed (timeout) and refunded ${generation.creditsConsumed} credits`,
+      `Marked generation ${generation.id} as failed (timeout) and refunded ${refunded} credits`,
     );
   }
 }
