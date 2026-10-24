@@ -101,7 +101,7 @@ function setup(users: UserRow[]) {
     sendWelcomeEmail: jest.fn(async () => undefined),
     sendVerificationEmail: jest.fn(async () => undefined),
   };
-  const pendingGrants = { consumeForUser: jest.fn() };
+  const pendingGrants = { consumeForUser: jest.fn(async () => undefined) };
   const meta = { trackLead: jest.fn(async () => undefined) };
   const welcome = { grantIfEligible: jest.fn(async () => undefined) };
   const service = new AuthService(
