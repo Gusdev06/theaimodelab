@@ -10,11 +10,25 @@ export const SETTING_KEYS = {
   onboardingSequenceEnabled: 'onboarding_sequence_enabled',
   /** Créditos de boas-vindas concedidos no cadastro (0 ou ausente = desligado). */
   welcomeCreditsAmount: 'welcome_credits_amount',
+  /** Créditos que quem indicou ganha por indicado que conclui a 1ª geração (0 = desligado; ausente = env/200). */
+  referralRewardCredits: 'referral_reward_credits',
+  /** Indicações premiadas por indicador antes de as próximas irem para revisão do admin. */
+  referralMaxRewardsPerReferrer: 'referral_max_rewards_per_referrer',
+  /** Indicações premiadas por indicador em 24 h; o excedente espera o dia seguinte. */
+  referralMaxRewardsPerDay: 'referral_max_rewards_per_day',
+  /** Indicações premiadas na plataforma inteira em 24 h; acima disso tudo vai para revisão (disjuntor anti-farm). */
+  referralMaxRewardsGlobalPerDay: 'referral_max_rewards_global_per_day',
 } as const;
 
 @Injectable()
 export class SettingsService {
   constructor(private readonly prisma: PrismaService) {}
+
+  /** Valor cru da chave; undefined = a linha não existe (o chamador separa "ausente" de "inválido"). */
+  async getRaw(key: string): Promise<string | undefined> {
+    const row = await this.prisma.appSetting.findUnique({ where: { key } });
+    return row ? row.value : undefined;
+  }
 
   async getBool(key: string, defaultValue: boolean): Promise<boolean> {
     const row = await this.prisma.appSetting.findUnique({ where: { key } });

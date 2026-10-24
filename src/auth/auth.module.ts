@@ -12,6 +12,7 @@ import { EmailModule } from '../email/email.module';
 import { PendingGrantsModule } from '../pending-grants/pending-grants.module';
 import { MetaModule } from '../meta/meta.module';
 import { SettingsModule } from '../settings/settings.module';
+import { ReferralsModule } from '../referrals/referrals.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { SettingsModule } from '../settings/settings.module';
     PendingGrantsModule,
     MetaModule,
     SettingsModule,
+    ReferralsModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({

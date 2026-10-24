@@ -112,6 +112,7 @@ function setup(users: UserRow[]) {
     pendingGrants as never,
     meta as never,
     welcome as never,
+    { attachOnSignup: jest.fn(async () => undefined), tryReward: jest.fn(async () => undefined) } as never,
   );
   return { service, prisma, jwt };
 }

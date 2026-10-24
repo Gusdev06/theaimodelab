@@ -15,6 +15,7 @@ import { TrackingDto } from './dto/tracking.dto';
 import { MetaConversionsService, MetaRequestContext } from '../meta/meta-conversions.service';
 import { WelcomeCreditsService } from './welcome-credits.service';
 import { accountDisabledException } from './strategies/jwt.strategy';
+import { ReferralsService } from '../referrals/referrals.service';
 
 const SIGNUP_BONUS_CREDITS = 50;
 
@@ -60,6 +61,7 @@ export class AuthService {
     private readonly pendingGrantsService: PendingGrantsService,
     private readonly metaConversionsService: MetaConversionsService,
     private readonly welcomeCreditsService: WelcomeCreditsService,
+    private readonly referralsService: ReferralsService,
   ) { }
 
   /**
@@ -183,6 +185,17 @@ export class AuthService {
     // Concede créditos de boas-vindas (env WELCOME_CREDITS_AMOUNT; default OFF).
     // Idempotente e à prova de falhas — nunca quebra o signup.
     await this.welcomeCreditsService.grantIfEligible(user.id);
+
+    // Indicação entre usuários: só quando o código não é de afiliado ativo (esse vira referredByCode).
+    // Nunca lança — falha aqui não quebra o signup.
+    if (!user.referredByCode) {
+      await this.referralsService.attachOnSignup({
+        referredUserId: user.id,
+        referredEmail: user.email,
+        rawCode: referralCode,
+        ipAddress: requestContext?.ipAddress,
+      });
+    }
 
     // Envia email de verificação (fire-and-forget)
     const verificationCode = this.generateSixDigitCode();
@@ -578,6 +591,16 @@ export class AuthService {
       // Idempotente e à prova de falhas — nunca quebra o login/cadastro Google.
       await this.welcomeCreditsService.grantIfEligible(user.id);
 
+      // Sem IP de propósito: no site, quem chama esta rota é o servidor do Next (callback do
+      // Google), então o IP seria o mesmo para todo mundo e jogaria toda indicação na revisão.
+      if (!user.referredByCode) {
+        await this.referralsService.attachOnSignup({
+          referredUserId: user.id,
+          referredEmail: user.email,
+          rawCode: googleUser.referralCode,
+        });
+      }
+
       this.emailService.sendWelcomeEmail(user.email, user.name).catch((err) => {
         this.logger.error(`Failed to send welcome email: ${err.message}`);
       });
@@ -689,6 +712,9 @@ export class AuthService {
         data: { used: true },
       });
     });
+
+    // A indicação desta conta pode estar só esperando o e-mail confirmado (tryReward nunca lança).
+    void this.referralsService.tryReward(verificationToken.userId);
 
     // Busca o usuário para enviar welcome email
     const user = await this.prisma.user.findUnique({
