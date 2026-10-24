@@ -1,6 +1,99 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
+import type { BuyerLocale } from '../pending-grants/buyer-locale';
+
+/** Textos do e-mail de acesso da isca, por idioma do comprador (TKT-004). */
+interface PendingGrantsCopy {
+  htmlLang: string;
+  /** Prefixo da rota do site: o /login sem prefixo cai no português. */
+  sitePath: 'en' | 'es' | 'pt-br';
+  subject: string;
+  greeting: (name: string | null) => string;
+  title: string;
+  intro: string;
+  includedLabel: string;
+  items: string[];
+  claim: string;
+  button: string;
+  important: string;
+  footer: string;
+}
+
+export const PENDING_GRANTS_COPY: Record<BuyerLocale, PendingGrantsCopy> = {
+  en: {
+    htmlLang: 'en',
+    sitePath: 'en',
+    subject: 'You earned free generations on The AI Model Lab! 🎉',
+    greeting: (name) => (name ? `Hi, ${name}!` : 'Hi!'),
+    title: 'You earned free generations 🎁',
+    intro:
+      "Thanks for your purchase. We've set aside a pack of <strong>free generations</strong> for your account on The AI Model Lab.",
+    includedLabel: 'Included',
+    items: [
+      '1 Nano Banana 2 generation',
+      '1 Nano Banana Pro generation',
+      '1 Face Swap',
+      '1 Virtual Try-On',
+      '1 Veo 3.1 Fast',
+      '1 Upscale',
+    ],
+    claim:
+      "To claim them, create your account now using <strong>this same email</strong>. They'll be added to your account automatically after you sign up.",
+    button: 'Create my account and claim',
+    important:
+      "Important: sign up with the same email this message was sent to — otherwise the generations can't be credited.",
+    footer: "Any questions? Just reply to this email and we'll help you out.",
+  },
+  es: {
+    htmlLang: 'es',
+    sitePath: 'es',
+    subject: '¡Ganaste generaciones gratis en The AI Model Lab! 🎉',
+    greeting: (name) => (name ? `¡Hola, ${name}!` : '¡Hola!'),
+    title: 'Ganaste generaciones gratis 🎁',
+    intro:
+      'Gracias por tu compra. Reservamos un pack de <strong>generaciones gratis</strong> para tu cuenta en The AI Model Lab.',
+    includedLabel: 'Incluye',
+    items: [
+      '1 generación Nano Banana 2',
+      '1 generación Nano Banana Pro',
+      '1 cambio de rostro (Face Swap)',
+      '1 probador virtual (Virtual Try-On)',
+      '1 video Veo 3.1 Fast',
+      '1 Upscale',
+    ],
+    claim:
+      'Para activarlas, crea tu cuenta ahora con <strong>este mismo correo</strong>. Se suman a tu cuenta automáticamente cuando te registras.',
+    button: 'Crear mi cuenta y activar',
+    important:
+      'Importante: regístrate con el mismo correo al que llegó este mensaje. Con otro correo, las generaciones no se pueden acreditar.',
+    footer: '¿Dudas? Responde este correo y te ayudamos.',
+  },
+  pt: {
+    htmlLang: 'pt-BR',
+    sitePath: 'pt-br',
+    subject: 'Você ganhou gerações grátis no The AI Model Lab! 🎉',
+    greeting: (name) => (name ? `Oi, ${name}!` : 'Oi!'),
+    title: 'Você ganhou gerações grátis 🎁',
+    intro:
+      'Obrigado pela compra. Reservamos um pacote de <strong>gerações grátis</strong> para a sua conta no The AI Model Lab.',
+    includedLabel: 'Inclui',
+    items: [
+      '1 geração Nano Banana 2',
+      '1 geração Nano Banana Pro',
+      '1 troca de rosto (Face Swap)',
+      '1 provador virtual (Virtual Try-On)',
+      '1 vídeo Veo 3.1 Fast',
+      '1 Upscale',
+    ],
+    claim:
+      'Para ativar, crie sua conta agora com <strong>este mesmo e-mail</strong>. Elas entram na sua conta automaticamente depois do cadastro.',
+    button: 'Criar minha conta e ativar',
+    important:
+      'Importante: cadastre-se com o mesmo e-mail que recebeu esta mensagem. Com outro e-mail, as gerações não podem ser creditadas.',
+    footer: 'Dúvidas? Responda este e-mail e a gente ajuda.',
+  },
+};
 
 @Injectable()
 export class EmailService implements OnModuleInit {
@@ -164,18 +257,29 @@ export class EmailService implements OnModuleInit {
     }
   }
 
-  async sendPendingGrantsEmailEs(to: string, name?: string | null): Promise<void> {
+  /**
+   * E-mail de acesso da isca (gerações grátis) no idioma do comprador (TKT-004).
+   * Antes saía num idioma só para todo mundo e o botão caía no /login em
+   * português; agora texto e link seguem o `locale` (ver pending-grants/buyer-locale.ts).
+   */
+  async sendPendingGrantsEmail(
+    to: string,
+    name: string | null | undefined,
+    locale: BuyerLocale = 'en',
+  ): Promise<void> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping pending grants email');
       return;
     }
 
+    const copy = PENDING_GRANTS_COPY[locale] ?? PENDING_GRANTS_COPY.en;
+
     try {
       const { error } = await this.client.emails.send({
         from: this.fromEmail,
         to: [to],
-        subject: 'You earned free generations on The AI Model Lab! 🎉',
-        html: this.getPendingGrantsTemplateEs(name ?? null),
+        subject: copy.subject,
+        html: this.getPendingGrantsTemplate(copy, name ?? null),
       });
 
       if (error) {
@@ -183,10 +287,19 @@ export class EmailService implements OnModuleInit {
         return;
       }
 
-      this.logger.log(`Pending grants email (ES) sent to ${to}`);
+      this.logger.log(`Pending grants email (${locale}) sent to ${to}`);
     } catch (error: any) {
       this.logger.error(`Failed to send pending grants email: ${error.message}`);
     }
+  }
+
+  /**
+   * @deprecated Nome histórico: apesar do "Es", sempre mandou a versão em inglês.
+   * Mantido para os webhooks que ainda não resolvem o idioma do comprador
+   * (Hotmart, Cartpanda, Greenn). Prefira sendPendingGrantsEmail(to, name, locale).
+   */
+  async sendPendingGrantsEmailEs(to: string, name?: string | null): Promise<void> {
+    return this.sendPendingGrantsEmail(to, name ?? null, 'en');
   }
 
   async sendCreditPurchaseEmail(
@@ -525,16 +638,19 @@ export class EmailService implements OnModuleInit {
 </html>`;
   }
 
-  private getPendingGrantsTemplateEs(name: string | null): string {
-    const signupUrl = `${this.frontendUrl}/login`;
+  private getPendingGrantsTemplate(copy: PendingGrantsCopy, name: string | null): string {
+    // O site tem rota por idioma (/en, /es, /pt-br); o /login sem prefixo cai no
+    // português para todo mundo.
+    const signupUrl = `${this.frontendUrl}/${copy.sitePath}/login`;
     const logoHtml = this.logoUrl
       ? `<img src="${this.logoUrl}" alt="The AI Model Lab" width="80" height="80" style="display: block; border-radius: 12px;">`
       : '';
-    const greeting = name ? `Hi, ${name}!` : 'Hi!';
+    const greeting = copy.greeting(name);
+    const items = copy.items.map((item) => `<li>${item}</li>`).join('\n                  ');
 
     return `
 <!DOCTYPE html>
-<html>
+<html lang="${copy.htmlLang}">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
 <body style="margin: 0; padding: 0; background-color: #f9f9f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #f9f9f9; padding: 40px 20px;">
@@ -544,33 +660,28 @@ export class EmailService implements OnModuleInit {
           <tr>
             <td style="padding: 48px 40px;">
               ${logoHtml ? `<div style="margin-bottom: 32px;">${logoHtml}</div>` : ''}
-              <h1 style="margin: 0 0 16px; font-size: 24px; font-weight: 700; color: #1a1a1a; line-height: 1.3;">${greeting} You earned free generations 🎁</h1>
-              <p style="margin: 0 0 20px; font-size: 15px; color: #666; line-height: 1.6;">Thanks for your purchase. We've set aside a pack of <strong>free generations</strong> for your account on The AI Model Lab.</p>
+              <h1 style="margin: 0 0 16px; font-size: 24px; font-weight: 700; color: #1a1a1a; line-height: 1.3;">${greeting} ${copy.title}</h1>
+              <p style="margin: 0 0 20px; font-size: 15px; color: #666; line-height: 1.6;">${copy.intro}</p>
               <div style="margin: 0 0 28px; padding: 20px; background-color: #f5f5f5; border-radius: 8px;">
-                <p style="margin: 0 0 8px; font-size: 13px; color: #999; text-transform: uppercase; letter-spacing: 1px;">Included</p>
+                <p style="margin: 0 0 8px; font-size: 13px; color: #999; text-transform: uppercase; letter-spacing: 1px;">${copy.includedLabel}</p>
                 <ul style="margin: 0; padding-left: 18px; font-size: 14px; color: #1a1a1a; line-height: 1.8;">
-                  <li>1 Nano Banana 2 generation</li>
-                  <li>1 Nano Banana Pro generation</li>
-                  <li>1 Face Swap</li>
-                  <li>1 Virtual Try-On</li>
-                  <li>1 Veo 3.1 Fast</li>
-                  <li>1 Upscale</li>
+                  ${items}
                 </ul>
               </div>
-              <p style="margin: 0 0 28px; font-size: 15px; color: #666; line-height: 1.6;">To claim them, create your account now using <strong>this same email</strong>. They'll be added to your account automatically after you sign up.</p>
+              <p style="margin: 0 0 28px; font-size: 15px; color: #666; line-height: 1.6;">${copy.claim}</p>
               <div style="margin: 0 0 28px;">
                 <a href="${signupUrl}"
                    style="display: inline-block; background-color: #1a1a1a; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 600;">
-                  Create my account and claim
+                  ${copy.button}
                 </a>
               </div>
-              <p style="margin: 0; font-size: 13px; color: #999; line-height: 1.6;">Important: sign up with the same email this message was sent to — otherwise the generations can't be credited.</p>
+              <p style="margin: 0; font-size: 13px; color: #999; line-height: 1.6;">${copy.important}</p>
             </td>
           </tr>
           <tr>
             <td style="padding: 0 40px 40px;">
               <hr style="border: none; border-top: 1px solid #eee; margin: 0 0 24px;">
-              <p style="margin: 0; font-size: 13px; color: #999; line-height: 1.5;">Any questions? Just reply to this email and we'll help you out.</p>
+              <p style="margin: 0; font-size: 13px; color: #999; line-height: 1.5;">${copy.footer}</p>
             </td>
           </tr>
         </table>

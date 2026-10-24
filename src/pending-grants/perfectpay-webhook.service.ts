@@ -14,6 +14,12 @@ import {
   PERFECTPAY_COURSE_BUNDLE,
   PendingGrantsService,
 } from './pending-grants.service';
+import {
+  BuyerLocale,
+  DEFAULT_PERFECTPAY_PRODUCT_LOCALES,
+  parseProductLocales,
+  resolvePerfectpayBuyerLocale,
+} from './buyer-locale';
 
 /**
  * Webhook do Perfect Pay (https://www.perfectpay.com.br).
@@ -211,10 +217,30 @@ export class PerfectpayWebhookService {
 
     if (created) {
       const buyerName = this.extractName(payload);
-      await this.emailService.sendPendingGrantsEmailEs(email, buyerName);
+      // Idioma pelo produto comprado (pack ES × EN), depois país e moeda (TKT-004).
+      const locale = resolvePerfectpayBuyerLocale(payload, this.productLocales());
+      this.logger.log(
+        `Perfectpay: e-mail de acesso da isca em "${locale}" para ${email} ` +
+          `(product=${payload?.product?.code ?? 'n/a'})`,
+      );
+      await this.emailService.sendPendingGrantsEmail(email, buyerName, locale);
     }
 
     return { processed: true };
+  }
+
+  /**
+   * Mapa produto → idioma: o padrão (CPF e CNPJ) mais o que vier em
+   * PERFECTPAY_PRODUCT_LOCALES ("PPPBXXXXX:es,PPPBYYYYY:en"), para produto novo
+   * entrar sem deploy.
+   */
+  private productLocales(): Record<string, BuyerLocale> {
+    return {
+      ...DEFAULT_PERFECTPAY_PRODUCT_LOCALES,
+      ...parseProductLocales(
+        this.configService.get<string>('PERFECTPAY_PRODUCT_LOCALES'),
+      ),
+    };
   }
 
   /**
