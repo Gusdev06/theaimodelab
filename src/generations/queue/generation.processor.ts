@@ -47,15 +47,29 @@ import {
   isUnrecoverableJobError,
   unwrapJobError,
 } from './unrecoverable.error';
-import { ContentSafetyError } from '../errors/content-safety.error';
+import { ContentSafetyService } from '../../content-safety/content-safety.service';
+import {
+  ConsentRequiredSafetyError,
+  ContentSafetyError,
+  decideSafetyFallback,
+  isMinorSafetyBlock,
+  isTerminalSafetyBlock,
+  MinorSafetyBlockError,
+  minorSupportCodeOf,
+  type SafetyFallbackTarget,
+  type TerminalSafetyBlockError,
+} from '../errors/content-safety.error';
 import {
   classifyGenerationFailure,
+  failureCodeOf,
+  failureUserMessage,
   GenerationFailureCode,
   rawFailureText,
 } from '../errors/failure-reason';
 import { isMinorRefusal } from '../errors/minor-refusal';
 
 import {
+  ContentSafetyEventKind,
   GenerationStatus,
   GenerationType,
   GenerationImageRole,
@@ -109,6 +123,69 @@ const FACE_SWAP_SEEDREAM_PROMPT =
 
 /** `minor_refusal` = a alternativa recusou por menor: sem retry do original. */
 type FallbackOutcome = 'completed' | 'failed' | 'none' | 'minor_refusal';
+/** O desvio que vem depois de um bloqueio do filtro (ver assertSafetyFallbackAllowed). */
+interface SafetyFallbackRequest {
+  /** modelo que bloqueou: vai para a trilha de auditoria como `provider:<modelo>` */
+  model: string;
+  /**
+   * 'uncensored' = fallbackToSeedream (Unlocked sem censura, com as fotos da geração);
+   * 'same_provider' = retryWithRefinedPrompt (prompt reescrito no MESMO provedor com filtro).
+   */
+  target: SafetyFallbackTarget;
+  /**
+   * Só conta para 'uncensored': o job já sabe que leva foto/frame/referência/vídeo do usuário. Falso ou ausente,
+   * a guarda olha as imagens guardadas da geração (é o que o fallbackToSeedream manda ao Unlocked).
+   */
+  userMedia?: boolean;
+}
+
+/** O que o encerramento de uma geração precisa do job (handleFailure). */
+interface FailureJobMeta {
+  generationId: string;
+  userId: string;
+  creditsConsumed: number;
+  usedFreeGeneration?: boolean;
+}
+
+/** Lê do job (dado sem tipo do BullMQ) o que o encerramento precisa; null quando falta id da geração ou do usuário. */
+function failureMetaOf(jobData: unknown): FailureJobMeta | null {
+  if (!jobData || typeof jobData !== 'object') return null;
+  const data = jobData as Record<string, unknown>;
+  if (typeof data.generationId !== 'string' || typeof data.userId !== 'string') {
+    return null;
+  }
+  return {
+    generationId: data.generationId,
+    userId: data.userId,
+    creditsConsumed:
+      typeof data.creditsConsumed === 'number' ? data.creditsConsumed : 0,
+    usedFreeGeneration: data.usedFreeGeneration === true,
+  };
+}
+
+/**
+ * O BullMQ ainda vai repetir este job? No evento 'failed', a falha definitiva já vem com `finishedOn` (fim das
+ * tentativas, UnrecoverableError, job descartado). Olhar só `attemptsMade < attempts` não basta: nesses casos a
+ * contagem fica abaixo do limite, ninguém encerrava a geração e ela ficava PROCESSING até o cron de presas.
+ * Usado também pelo UnlimitedProcessor.
+ */
+export function willBeRetried(
+  job: Pick<Job, 'attemptsMade' | 'opts' | 'finishedOn'>,
+): boolean {
+  if (job.finishedOn) return false;
+  return job.attemptsMade < (job.opts.attempts ?? 1);
+}
+
+/** Modelo do job para a trilha de auditoria (vídeo usa resolvedModel, Seedance usa modelId); '' = o da geração. */
+function jobModelOf(jobData: unknown): string {
+  if (!jobData || typeof jobData !== 'object') return '';
+  const data = jobData as Record<string, unknown>;
+  for (const key of ['resolvedModel', 'modelId', 'model']) {
+    const value = data[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return '';
+}
 
 @Processor(GENERATION_QUEUE, {
   concurrency: 5,
@@ -141,6 +218,7 @@ export class GenerationProcessor extends WorkerHost {
     private readonly promptEnhancer: PromptEnhancerService,
     private readonly plansService: PlansService,
     private readonly configService: ConfigService,
+    private readonly contentSafety: ContentSafetyService,
   ) {
     super();
   }
@@ -150,9 +228,24 @@ export class GenerationProcessor extends WorkerHost {
       `Processing job ${job.id} [${job.name}] for generation ${job.data.generationId}`,
     );
 
-    await this.dispatchWithFallback(job.name, job.data as GenerationJobData, {
-      queued: true,
-    });
+    try {
+      await this.dispatchWithFallback(job.name, job.data as GenerationJobData, {
+        queued: true,
+      });
+    } catch (error) {
+      // O fallback embrulha o erro em GenerationUnrecoverableError: desembrulha antes de conferir o bloqueio terminal.
+      const terminal = this.terminalSafetyBlockOf(
+        unwrapJobError(error as Error),
+        job.data,
+      );
+      if (!terminal) throw error;
+      // Bloqueio terminal (menor de idade, foto sem atestado): encerra aqui e o job CONCLUI. Relançar faria o
+      // BullMQ (attempts 2, backoff 30 s) mandar o mesmo prompt e as mesmas fotos ao provedor de novo.
+      this.logger.warn(
+        `Job ${job.id} [${job.name}] encerrado sem nova tentativa: ${terminal.name} (${terminal.failureCode})`,
+      );
+      await this.finalizeTerminalBlock(job.data, terminal);
+    }
   }
 
   /**
@@ -285,10 +378,17 @@ export class GenerationProcessor extends WorkerHost {
       // Recusa por MENOR encerra aqui, ANTES do kind: sem desvio nenhum (nem
       // para modelo com filtro) e sem retry. Sem isso, pedido só com texto ia
       // ao MiniMax (sem filtro) com o mesmo prompt que o provedor recusou.
-      // Merge com a PR #4: trocar a condição por
-      // `isTerminalSafetyBlock(unwrapJobError(original)) || isMinorSafetyBlock(original)`
-      // e manter o curto-circuito antes do kind (o desvio nunca desfaz bloqueio terminal).
-      if (isMinorRefusal(unwrapJobError(original))) {
+      // Bloqueio terminal da guarda da PR #4 (menor, foto sem atestado): sobe como
+      // veio, sem desvio nem retry; o process() encerra pelo finalizeTerminalBlock.
+      const unwrapped = unwrapJobError(original);
+      if (isTerminalSafetyBlock(unwrapped)) {
+        if (unwrapped instanceof MinorSafetyBlockError) {
+          await this.recordMinorRefusal(jobName, data, unwrapped);
+        }
+        if (!opts.queued) throw unwrapped;
+        throw new GenerationUnrecoverableError(unwrapped);
+      }
+      if (isMinorRefusal(unwrapped)) {
         this.logger.warn(
           `[FALLBACK] gen=${data.generationId} ${jobName}: recusa por menor — sem desvio nem retry`,
         );
@@ -305,6 +405,11 @@ export class GenerationProcessor extends WorkerHost {
       try {
         outcome = await this.tryFallback(jobName, data, original, safety);
       } catch (orchestrationError) {
+        // A guarda de segurança barrou o desvio (foto sem atestado, menor): bloqueio terminal.
+        if (isTerminalSafetyBlock(orchestrationError)) {
+          if (!opts.queued) throw orchestrationError;
+          throw new GenerationUnrecoverableError(orchestrationError);
+        }
         // Falha da orquestração (banco, plano) nunca troca o motivo real da falha.
         this.logger.error(
           `[FALLBACK] gen=${data.generationId} orquestração falhou: ${(orchestrationError as Error).message}`,
@@ -529,6 +634,15 @@ export class GenerationProcessor extends WorkerHost {
       `[FALLBACK] gen=${generation.id} ${generation.modelUsed} → ${plan.model} (${kind}: ${errorCode}) motivo="${originalError.message}"`,
     );
 
+    // Desvio por bloqueio de conteúdo leva prompt e fotos a modelo sem filtro (MiniMax H3):
+    // mesma guarda da PR #4 (lança bloqueio terminal se for menor ou foto sem atestado).
+    if (kind === 'safety') {
+      await this.assertSafetyFallbackAllowed(generation.id, originalError, {
+        model: generation.modelUsed,
+        target: 'uncensored',
+      });
+    }
+
     const attempt = {
       from: generation.modelUsed,
       to: plan.model,
@@ -546,7 +660,8 @@ export class GenerationProcessor extends WorkerHost {
     } catch (fallbackError) {
       // A alternativa recusou por menor: o pedido não roda de novo em lugar
       // nenhum, nem no retry do modelo original (que pode ser sem filtro).
-      const minorRefusal = isMinorRefusal(fallbackError);
+      const minorRefusal =
+        isMinorRefusal(fallbackError) || isTerminalSafetyBlock(fallbackError);
       const failedMessage = String(
         (fallbackError as Error | null)?.message ?? fallbackError,
       );
@@ -814,6 +929,12 @@ export class GenerationProcessor extends WorkerHost {
         await this.completeGeneration(data.generationId, result, startTime);
       } catch (error) {
         if (this.isSafetyRelatedError(error)) {
+          // alvo 'uncensored': o desvio abaixo é o Unlocked sem censura (fallbackToSeedream), com as fotos da geração
+          await this.assertSafetyFallbackAllowed(data.generationId, error, {
+            model: data.model,
+            target: 'uncensored',
+            userMedia: data.hasInputImages,
+          });
           const result = await this.fallbackToSeedream(
             data.generationId,
             data.prompt,
@@ -879,6 +1000,12 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
+        // alvo 'uncensored': o desvio abaixo é o Unlocked sem censura (fallbackToSeedream), com as fotos da geração
+        await this.assertSafetyFallbackAllowed(data.generationId, error, {
+          model: data.model,
+          target: 'uncensored',
+          userMedia: data.hasInputImages,
+        });
         const result = await this.fallbackToSeedream(
           data.generationId,
           data.prompt,
@@ -952,6 +1079,12 @@ export class GenerationProcessor extends WorkerHost {
         await this.completeGeneration(data.generationId, result, startTime);
       } catch (error) {
         if (this.isSafetyRelatedError(error)) {
+          // alvo 'uncensored': o desvio abaixo é o Unlocked sem censura (fallbackToSeedream), com as fotos da geração
+          await this.assertSafetyFallbackAllowed(data.generationId, error, {
+            model: data.model,
+            target: 'uncensored',
+            userMedia: data.hasInputImages,
+          });
           const result = await this.fallbackToSeedream(
             data.generationId,
             data.prompt,
@@ -1024,6 +1157,12 @@ export class GenerationProcessor extends WorkerHost {
       );
     } catch (theaimodelabError) {
       if (this.isSafetyRelatedError(theaimodelabError)) {
+        // alvo 'uncensored': o desvio abaixo é o Unlocked sem censura (fallbackToSeedream), com as fotos da geração
+        await this.assertSafetyFallbackAllowed(data.generationId, theaimodelabError, {
+          model: data.model,
+          target: 'uncensored',
+          userMedia: data.hasInputImages,
+        });
         const result = await this.fallbackToSeedream(
           data.generationId,
           data.prompt,
@@ -1081,6 +1220,12 @@ export class GenerationProcessor extends WorkerHost {
         );
       } catch (nanoBananaError) {
         if (this.isSafetyRelatedError(nanoBananaError)) {
+          // alvo 'uncensored': o desvio abaixo é o Unlocked sem censura (fallbackToSeedream), com as fotos da geração
+          await this.assertSafetyFallbackAllowed(data.generationId, nanoBananaError, {
+            model: nanaBananaModel,
+            target: 'uncensored',
+            userMedia: data.hasInputImages,
+          });
           const result = await this.fallbackToSeedream(
             data.generationId,
             data.prompt,
@@ -1124,6 +1269,12 @@ export class GenerationProcessor extends WorkerHost {
     } catch (error) {
       // Bloqueio de conteúdo vai direto pro Unlocked, como os demais modelos.
       if (this.isSafetyRelatedError(error)) {
+        // alvo 'uncensored': o desvio abaixo é o Unlocked sem censura (fallbackToSeedream), com as fotos da geração
+        await this.assertSafetyFallbackAllowed(data.generationId, error, {
+          model: 'seedream-5-lite',
+          target: 'uncensored',
+          userMedia: data.hasInputImages,
+        });
         const result = await this.fallbackToSeedream(
           data.generationId,
           data.prompt,
@@ -1161,6 +1312,12 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
+        // alvo 'uncensored': o desvio abaixo é o Unlocked sem censura (fallbackToSeedream), com as fotos da geração
+        await this.assertSafetyFallbackAllowed(data.generationId, error, {
+          model: data.model,
+          target: 'uncensored',
+          userMedia: !!data.imageUrls?.length,
+        });
         const result = await this.fallbackToSeedream(
           data.generationId,
           data.prompt,
@@ -1202,6 +1359,11 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
+        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para)
+        await this.assertSafetyFallbackAllowed(data.generationId, error, {
+          model: data.model,
+          target: 'same_provider',
+        });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
           data.prompt,
@@ -1269,6 +1431,12 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
+        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para).
+        // O primeiro frame é foto do usuário, mas ela já está neste provedor: refazer aqui não a leva a lugar novo.
+        await this.assertSafetyFallbackAllowed(data.generationId, error, {
+          model: data.resolvedModel,
+          target: 'same_provider',
+        });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
           data.prompt,
@@ -1330,6 +1498,11 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
+        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para)
+        await this.assertSafetyFallbackAllowed(data.generationId, error, {
+          model: data.resolvedModel,
+          target: 'same_provider',
+        });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
           data.prompt,
@@ -1395,6 +1568,13 @@ export class GenerationProcessor extends WorkerHost {
       );
     } catch (theaimodelabError) {
       if (this.isSafetyRelatedError(theaimodelabError)) {
+        // try-on sempre leva a foto da pessoa e a da roupa
+        // alvo 'uncensored': o desvio abaixo é o Unlocked sem censura (fallbackToSeedream), com as fotos da geração
+        await this.assertSafetyFallbackAllowed(data.generationId, theaimodelabError, {
+          model: data.model,
+          target: 'uncensored',
+          userMedia: true,
+        });
         const result = await this.fallbackToSeedream(
           data.generationId,
           data.prompt,
@@ -1452,6 +1632,12 @@ export class GenerationProcessor extends WorkerHost {
         );
       } catch (nanoBananaError) {
         if (this.isSafetyRelatedError(nanoBananaError)) {
+          // alvo 'uncensored': o desvio abaixo é o Unlocked sem censura (fallbackToSeedream), com as fotos da geração
+          await this.assertSafetyFallbackAllowed(data.generationId, nanoBananaError, {
+            model: nanoBananaModel,
+            target: 'uncensored',
+            userMedia: true,
+          });
           const result = await this.fallbackToSeedream(
             data.generationId,
             data.prompt,
@@ -1506,6 +1692,13 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
+        // troca de rosto sempre leva duas fotos do usuário (rosto e cena)
+        // alvo 'uncensored': o desvio abaixo é o Unlocked sem censura (fallbackToSeedream), com as fotos da geração
+        await this.assertSafetyFallbackAllowed(data.generationId, error, {
+          model: 'face-swap',
+          target: 'uncensored',
+          userMedia: true,
+        });
         const result = await this.fallbackToSeedream(
           data.generationId,
           FACE_SWAP_SEEDREAM_PROMPT,
@@ -1617,6 +1810,11 @@ export class GenerationProcessor extends WorkerHost {
     } catch (error) {
       // Se foi bloqueado por safety E tem prompt, tenta refinar e gerar de novo.
       if (this.isSafetyRelatedError(error) && data.prompt) {
+        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para)
+        await this.assertSafetyFallbackAllowed(data.generationId, error, {
+          model: 'grok-imagine',
+          target: 'same_provider',
+        });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
           data.prompt,
@@ -1658,6 +1856,11 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
+        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para)
+        await this.assertSafetyFallbackAllowed(data.generationId, error, {
+          model: 'grok-imagine',
+          target: 'same_provider',
+        });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
           data.prompt,
@@ -1700,6 +1903,11 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
+        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para)
+        await this.assertSafetyFallbackAllowed(data.generationId, error, {
+          model: 'gemini-omni',
+          target: 'same_provider',
+        });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
           data.prompt,
@@ -1746,6 +1954,11 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error)) {
+        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para)
+        await this.assertSafetyFallbackAllowed(data.generationId, error, {
+          model: data.modelId ?? 'bytedance/seedance-2',
+          target: 'same_provider',
+        });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
           data.prompt,
@@ -1792,6 +2005,11 @@ export class GenerationProcessor extends WorkerHost {
       await this.completeGeneration(data.generationId, result, startTime);
     } catch (error) {
       if (this.isSafetyRelatedError(error) && data.prompt) {
+        // alvo 'same_provider': nova tentativa com o prompt reescrito no MESMO provedor com filtro (só menor para)
+        await this.assertSafetyFallbackAllowed(data.generationId, error, {
+          model: 'kling-v3-turbo',
+          target: 'same_provider',
+        });
         const retryResult = await this.retryWithRefinedPrompt(
           data.generationId,
           data.prompt,
@@ -2028,6 +2246,247 @@ export class GenerationProcessor extends WorkerHost {
     return false;
   }
 
+  /**
+   * Guarda que roda ANTES de todo desvio de um bloqueio de segurança. Passa calada quando o desvio pode seguir e
+   * LANÇA um bloqueio terminal quando não pode; o process() (e o UnlimitedProcessor, e os run*Directly) encerram a
+   * geração pelo caminho normal de falha (handleFailure: estorno, SSE, MINOR_BLOCKED) sem nova tentativa do BullMQ.
+   *  - menor de idade, qualquer alvo → MinorSafetyBlockError (CONTENT_POLICY_MINOR);
+   *  - alvo 'same_provider' (retryWithRefinedPrompt) → segue: a foto já está nesse provedor com filtro;
+   *  - alvo 'uncensored' (fallbackToSeedream) com foto do usuário (pode ser pessoa real) sem atestado de imagem →
+   *    ConsentRequiredSafetyError (CONTENT_BLOCKED_NEEDS_CONSENT): nada de modelo sem censura com a foto;
+   *  - alvo 'uncensored' só com texto, ou com foto atestada → segue o desvio de sempre.
+   * Erro de banco na leitura das fotos ou do atestado nunca libera o desvio (conta como foto sem atestado).
+   *
+   * PR API #3 (fix/creditos-auditoria) reescreve este processor (dispatchWithFallback + generation-fallback.ts).
+   * Ao mergear, reaplicar aqui: (1) esta guarda antes de todo fallbackToSeedream (alvo 'uncensored') e de todo
+   * retryWithRefinedPrompt (alvo 'same_provider'); (2) a mesma guarda, alvo 'uncensored', antes do fallback
+   * automático de modelo por bloqueio de conteúdo (vídeo kie → MiniMax H3), que também leva prompt e fotos a outro
+   * provedor; (3) o catch de bloqueio terminal no process() e no UnlimitedProcessor.process() (sem relançar);
+   * (4) failureCodeOf/failureUserMessage no handleFailure e no markFailed do ilimitado.
+   * Na #3 o erro chega embrulhado em GenerationUnrecoverableError: o catch de (3) passa por unwrapJobError antes de
+   * terminalSafetyBlockOf, senão a recusa por menor não é reconhecida. O "unsafe image upload" da #3 entra no
+   * CONTENT_BLOCK_PATTERN de errors/failure-reason.ts. Merge de teste: conflito neste arquivo, no unlimited.processor.ts,
+   * no errors/failure-reason.ts e no .env.example.
+   */
+  private async assertSafetyFallbackAllowed(
+    generationId: string,
+    error: unknown,
+    request: SafetyFallbackRequest,
+  ): Promise<void> {
+    const isMinor = isMinorSafetyBlock(error);
+    const checksMedia = !isMinor && request.target === 'uncensored';
+    const hasUserImages =
+      checksMedia &&
+      (request.userMedia === true ||
+        (await this.hasStoredInputImages(generationId)));
+    const hasConsent =
+      hasUserImages && (await this.hasConsentForGeneration(generationId));
+    const decision = decideSafetyFallback({
+      target: request.target,
+      isMinor,
+      hasUserImages,
+      hasConsent,
+    });
+
+    if (decision === 'allow_fallback') return;
+
+    if (decision === 'fail_minor') {
+      const minorError = new MinorSafetyBlockError(error, request.model);
+      this.logger.warn(
+        `[SAFETY_GUARD] gen=${generationId} model=${request.model}: provedor recusou por MENOR de idade — geração encerrada sem desvio ("${minorError.providerDetail.slice(0, 200)}")`,
+      );
+      throw minorError;
+    }
+
+    this.logger.warn(
+      `[SAFETY_GUARD] gen=${generationId} model=${request.model}: bloqueio com foto do usuário sem atestado de imagem — encerrada sem desvio para modelo sem censura`,
+    );
+    throw new ConsentRequiredSafetyError(error, request.model);
+  }
+
+  /**
+   * Bloqueio que encerra a geração SEM nova tentativa: o que a guarda lançou (menor, foto sem atestado) e toda
+   * recusa por MENOR que escapou dela (provedor sem desvio, o próprio Unlocked, a nova tentativa com prompt
+   * reescrito). Devolve o erro pronto para o encerramento (a recusa por menor vira MinorSafetyBlockError com o
+   * modelo do job para a trilha) ou null quando a falha segue o caminho normal, com o retry do BullMQ.
+   * Público: o UnlimitedProcessor usa a mesma regra.
+   */
+  terminalSafetyBlockOf(
+    error: unknown,
+    jobData: unknown,
+  ): TerminalSafetyBlockError | null {
+    if (isTerminalSafetyBlock(error)) return error;
+    if (!this.isMinorProviderRefusal(error)) return null;
+    return new MinorSafetyBlockError(error, jobModelOf(jobData));
+  }
+
+  /** Recusa do provedor por MENOR de idade (mesma regra da classificação CONTENT_POLICY_MINOR). */
+  private isMinorProviderRefusal(error: unknown): error is Error {
+    if (!(error instanceof Error)) return false;
+    const isSafetyError = this.isSafetyRelatedError(error);
+    // o código de criança pode vir só no campo supportCode, fora do texto que a classificação lê
+    if (isSafetyError && isMinorSafetyBlock(error)) return true;
+    return (
+      failureCodeOf(error, isSafetyError) ===
+      GenerationFailureCode.CONTENT_POLICY_MINOR
+    );
+  }
+
+  /**
+   * Encerra a geração de um bloqueio terminal pelo caminho normal de falha (estorno como em toda falha, SSE,
+   * MINOR_BLOCKED uma vez). Nunca lança: um erro aqui faria o BullMQ repetir o job e reenviar o pedido ao provedor.
+   */
+  private async finalizeTerminalBlock(
+    jobData: unknown,
+    error: TerminalSafetyBlockError,
+  ): Promise<void> {
+    const meta = failureMetaOf(jobData);
+    if (!meta) {
+      this.logger.error(
+        `[SAFETY_GUARD] job sem generationId/userId — bloqueio ${error.failureCode} não pôde encerrar a geração`,
+      );
+      return;
+    }
+    try {
+      await this.handleFailure(
+        meta.generationId,
+        meta.userId,
+        meta.creditsConsumed,
+        error,
+        meta.usedFreeGeneration,
+      );
+    } catch (finalizeError) {
+      this.logger.error(
+        `[SAFETY_GUARD] gen=${meta.generationId}: encerramento do bloqueio ${error.failureCode} falhou (${(finalizeError as Error).message}) — conferir o estorno no admin`,
+      );
+      await this.failStuckGeneration(meta.generationId, meta.userId, error);
+    }
+  }
+
+  /**
+   * Última linha de defesa quando o encerramento normal (handleFailure / markFailed) lançou: marca FAILED só se a
+   * geração ainda estiver PROCESSING e avisa o site pelo SSE. Não estorna (o estorno pode ter rodado antes do erro;
+   * o log de quem chamou pede a conferência). Nunca lança. Público: o UnlimitedProcessor usa no onFailed.
+   */
+  async failStuckGeneration(
+    generationId: string,
+    userId: string,
+    error: Error,
+  ): Promise<void> {
+    const errorCode = failureCodeOf(error, this.isSafetyRelatedError(error));
+    const errorMessage = failureUserMessage(errorCode, error);
+    try {
+      const { count } = await this.prisma.generation.updateMany({
+        where: { id: generationId, status: GenerationStatus.PROCESSING },
+        data: { status: GenerationStatus.FAILED, errorMessage, errorCode },
+      });
+      if (count === 0) return;
+      this.generationEvents.emit({
+        userId,
+        generationId,
+        status: 'failed',
+        data: { errorMessage, errorCode, creditsRefunded: 0 },
+      });
+    } catch (updateError) {
+      this.logger.error(
+        `Generation ${generationId} segue PROCESSING: nem o encerramento de reserva gravou (${(updateError as Error).message}) — o cron de presas encerra depois`,
+      );
+    }
+  }
+
+  /** A geração tem foto do usuário guardada? É o que fallbackToSeedream manda para o Unlocked. */
+  private async hasStoredInputImages(generationId: string): Promise<boolean> {
+    try {
+      const count = await this.prisma.generationInputImage.count({
+        where: { generationId },
+      });
+      return count > 0;
+    } catch (error) {
+      this.logger.error(
+        `[SAFETY_GUARD] gen=${generationId}: falha ao ler as imagens de entrada (${(error as Error).message}) — tratando como foto do usuário`,
+      );
+      return true;
+    }
+  }
+
+  /** O pedido que criou a geração trouxe atestado de consentimento? Falha de leitura = sem atestado. */
+  private async hasConsentForGeneration(generationId: string): Promise<boolean> {
+    try {
+      return await this.contentSafety.hasConsentForGeneration(generationId);
+    } catch (error) {
+      this.logger.error(
+        `[SAFETY_GUARD] gen=${generationId}: falha ao ler o atestado de consentimento (${(error as Error).message}) — tratando como sem atestado`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Evento MINOR_BLOCKED de uma geração encerrada por recusa do provedor por menor. Chamado UMA vez, por quem grava
+   * o FAILED (handleFailure / markFailed do ilimitado), depois da trava de idempotência. Modelo = o que recusou
+   * (MinorSafetyBlockError.model) ou o da geração; trecho = o prompt original (antes da reescrita automática).
+   * O site avisa que pedidos assim ficam registrados. Nunca lança. Público: o UnlimitedProcessor usa no markFailed.
+   */
+  async recordProviderMinorBlock(
+    generationId: string,
+    userId: string,
+    error: Error,
+  ): Promise<void> {
+    let model =
+      error instanceof MinorSafetyBlockError && error.model ? error.model : '';
+    let prompt: string | null = null;
+    try {
+      const generation = await this.prisma.generation.findUnique({
+        where: { id: generationId },
+        select: { modelUsed: true, prompt: true, parameters: true },
+      });
+      if (!model && generation?.modelUsed) model = generation.modelUsed;
+      const params =
+        generation?.parameters && typeof generation.parameters === 'object'
+          ? (generation.parameters as Record<string, unknown>)
+          : {};
+      prompt =
+        typeof params.originalPrompt === 'string'
+          ? params.originalPrompt
+          : (generation?.prompt ?? null);
+    } catch (lookupError) {
+      this.logger.warn(
+        `[SAFETY_GUARD] gen=${generationId}: geração não lida para o registro (${(lookupError as Error).message})`,
+      );
+    }
+    await this.recordMinorBlock({
+      userId,
+      generationId,
+      model: model || 'desconhecido',
+      match: minorSupportCodeOf(error) ?? 'provider',
+      excerpt: prompt,
+    });
+  }
+
+  /** Evento MINOR_BLOCKED na trilha de auditoria. Nunca lança: o registro não pode travar a falha nem o estorno. */
+  private async recordMinorBlock(event: {
+    userId: string;
+    generationId: string;
+    model: string;
+    match: string;
+    excerpt: string | null;
+  }): Promise<void> {
+    try {
+      await this.contentSafety.record({
+        userId: event.userId,
+        kind: ContentSafetyEventKind.MINOR_BLOCKED,
+        route: `provider:${event.model}`,
+        match: event.match,
+        excerpt: event.excerpt,
+        generationId: event.generationId,
+      });
+    } catch (recordError) {
+      this.logger.error(
+        `[SAFETY_GUARD] gen=${event.generationId}: MINOR_BLOCKED não registrado (${(recordError as Error).message})`,
+      );
+    }
+  }
+
   // ─── Seedream universal fallback (for safety-blocked image generations) ──
 
   private async fallbackToSeedream(
@@ -2082,6 +2541,14 @@ export class GenerationProcessor extends WorkerHost {
       this.logger.error(
         `[FALLBACK_SEEDREAM_SAFETY] ${context} gen=${generationId} Unlocked também falhou: ${(fallbackError as Error).message}`,
       );
+      // Se o próprio Unlocked recusou por menor, esse é o motivo: bloqueio terminal (CONTENT_POLICY_MINOR, sem nova
+      // tentativa do BullMQ), registrado como provider:sem-censura.
+      if (
+        isMinorSafetyBlock(fallbackError) &&
+        this.isSafetyRelatedError(fallbackError)
+      ) {
+        throw new MinorSafetyBlockError(fallbackError, 'sem-censura');
+      }
       throw originalError instanceof ContentSafetyError
         ? originalError
         : new ContentSafetyError((originalError as Error).message);
@@ -2179,6 +2646,9 @@ export class GenerationProcessor extends WorkerHost {
       // ORIGINAL ao modelo sem filtro. (PR #4 faz o mesmo com isMinorSafetyBlock.)
       if (isMinorRefusal(retryError)) throw retryError;
       if (this.isSafetyRelatedError(retryError)) {
+        // Recusa por menor sai como veio: reembalada viraria CONTENT_SAFETY_BLOCKED e o site sugeriria modelo sem
+        // censura. O process() a encerra como bloqueio terminal (sem nova tentativa do BullMQ).
+        if (isMinorSafetyBlock(retryError)) throw retryError;
         throw new ContentSafetyError(
           'A imagem ou texto enviado viola nossas diretrizes de conteúdo mesmo após ajuste automático. Tente reformular sua ideia de forma diferente.',
           retryError instanceof ContentSafetyError
@@ -2260,17 +2730,25 @@ export class GenerationProcessor extends WorkerHost {
         quantity: true,
         creditsConsumed: true,
         userId: true,
+        user: { select: { isActive: true } },
       },
     });
 
     // Calculate expiresAt based on user's plan retention
-    if (generation) {
+    // Conta inativa (guarda legal, exclusão, bloqueio) não ganha prazo: a guarda tira o prazo de todas as gerações da
+    // conta para o cron da galeria não apagar evidência, e a geração que termina depois dela não pode trazer o prazo
+    // de volta. O prazo só é gravado com a conta ativa NA escrita (updateMany abaixo), não só na leitura daqui.
+    let expiresAt: Date | null = null;
+    if (generation && generation.user?.isActive !== false) {
       const retentionDays = await this.getUserRetentionDays(generation.userId);
       if (retentionDays !== null) {
-        const expiresAt = new Date();
+        expiresAt = new Date();
         expiresAt.setDate(expiresAt.getDate() + retentionDays);
-        updateData.expiresAt = expiresAt;
       }
+    } else if (generation) {
+      this.logger.warn(
+        `Generation ${generationId}: owner account inactive — completed without gallery expiry (legal hold protection)`,
+      );
     }
 
     const isImage =
@@ -2320,21 +2798,31 @@ export class GenerationProcessor extends WorkerHost {
       }
     }
 
-    const [updatedGeneration] = await this.prisma.$transaction([
-      this.prisma.generation.update({
-        where: { id: generationId },
-        data: updateData,
-      }),
-      this.prisma.generationOutput.createMany({
-        data: result.outputUrls.map((url, i) => ({
-          generationId,
-          url,
-          thumbnailUrl: thumbnailUrls[i],
-          blurDataUrl: blurDataUrls[i],
-          order: i,
-        })),
-      }),
-    ]);
+    const completion = this.prisma.generation.update({
+      where: { id: generationId },
+      data: updateData,
+    });
+    const outputs = this.prisma.generationOutput.createMany({
+      data: result.outputUrls.map((url, i) => ({
+        generationId,
+        url,
+        thumbnailUrl: thumbnailUrls[i],
+        blurDataUrl: blurDataUrls[i],
+        order: i,
+      })),
+    });
+    // o prazo vai por último na transação, com a conta conferida de novo na escrita (a guarda pode ter desativado a
+    // conta durante as miniaturas): conta inativa fica sem prazo (count 0)
+    const [updatedGeneration] = expiresAt
+      ? await this.prisma.$transaction([
+          completion,
+          outputs,
+          this.prisma.generation.updateMany({
+            where: { id: generationId, user: { isActive: true } },
+            data: { expiresAt },
+          }),
+        ])
+      : await this.prisma.$transaction([completion, outputs]);
 
     this.generationEvents.emit({
       userId: updatedGeneration.userId,
@@ -2372,19 +2860,30 @@ export class GenerationProcessor extends WorkerHost {
 
     // Only refund after all retries are exhausted. Erro irrecuperável (bloqueio,
     // entrada recusada, alternativa já tentada) não tem retry: finaliza agora.
-    const unrecoverable = isUnrecoverableJobError(error);
-    if (!unrecoverable && job.attemptsMade < (job.opts.attempts ?? 1)) {
+    if (!isUnrecoverableJobError(error) && willBeRetried(job)) {
       this.logger.warn(`Job ${job.id} will be retried`);
       return;
     }
 
-    await this.handleFailure(
-      job.data.generationId,
-      job.data.userId,
-      job.data.creditsConsumed,
-      unwrapJobError(error),
-      job.data.usedFreeGeneration,
-    );
+    try {
+      await this.handleFailure(
+        job.data.generationId,
+        job.data.userId,
+        job.data.creditsConsumed,
+        unwrapJobError(error),
+        job.data.usedFreeGeneration,
+      );
+    } catch (finalizeError) {
+      // sem isso a geração ficava PROCESSING até o cron de presas (o job já não volta para a fila)
+      this.logger.error(
+        `Job ${job.id}: encerramento da geração ${job.data.generationId} falhou (${(finalizeError as Error).message}) — conferir o estorno no admin`,
+      );
+      await this.failStuckGeneration(
+        job.data.generationId,
+        job.data.userId,
+        error,
+      );
+    }
   }
 
   private async handleFailure(
@@ -2411,17 +2910,13 @@ export class GenerationProcessor extends WorkerHost {
 
     const isSafetyError = this.isSafetyRelatedError(error);
     // classifica a mensagem CRUA do provedor num código estável — é ele que o
-    // front usa pra dizer ao usuário o motivo real da falha
-    const errorCode = classifyGenerationFailure(
-      rawFailureText(error),
-      isSafetyError,
-    );
-    const isContentBlock =
-      errorCode === GenerationFailureCode.CONTENT_SAFETY_BLOCKED;
+    // front usa pra dizer ao usuário o motivo real da falha. O código que a
+    // guarda de segurança decidiu (menor, foto sem atestado) vem pronto no erro.
+    const errorCode = failureCodeOf(error, isSafetyError);
+    const isMinorBlock =
+      errorCode === GenerationFailureCode.CONTENT_POLICY_MINOR;
 
-    const userMessage = isContentBlock
-      ? 'A imagem ou texto enviado viola nossas diretrizes de conteúdo. Tente reformular seu prompt ou use outra imagem.'
-      : error.message;
+    const userMessage = failureUserMessage(errorCode, error);
 
     this.logger.error(
       `Generation ${generationId} failed (${errorCode}): ${error.message}`,
@@ -2436,6 +2931,11 @@ export class GenerationProcessor extends WorkerHost {
         errorCode,
       },
     });
+
+    // MINOR_BLOCKED uma vez por geração: só aqui, depois da trava de idempotência acima
+    if (isMinorBlock) {
+      await this.recordProviderMinorBlock(generationId, userId, error);
+    }
 
     if (usedFreeGeneration) {
       await this.creditsService.refundFreeGeneration(userId, generationId);
@@ -2460,6 +2960,12 @@ export class GenerationProcessor extends WorkerHost {
         : `Refunded ${creditsConsumed} credits for failed generation ${generationId}`,
     );
 
+    // recusa por menor: a foto enviada é a evidência do caso (fica no bucket e na tabela, para a equipe e as
+    // autoridades); nas outras falhas, apaga os arquivos de entrada para economizar armazenamento
+    if (isMinorBlock) {
+      this.logger.warn(`Generation ${generationId}: entradas mantidas como evidência (recusa por menor de idade)`);
+      return;
+    }
     // Fire-and-forget: delete input files from S3 to save storage
     this.cleanupInputFiles(generationId);
   }

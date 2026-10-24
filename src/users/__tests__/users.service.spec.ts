@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 import { UsersService } from '../users.service';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CURRENT_TERMS_VERSION } from '../terms.constants';
+import { CURRENT_TERMS_VERSION, LEGACY_TERMS_VERSION } from '../terms.constants';
 
 // ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -322,14 +322,14 @@ describe('UsersService', () => {
   // ────────────────────── acceptTerms ──────────────────────
 
   describe('acceptTerms', () => {
-    it('should stamp termsAcceptedAt + current version when never accepted', async () => {
+    it('should stamp termsAcceptedAt + the version the app showed when never accepted', async () => {
       const accepted = { ...mockUser, termsAcceptedAt: now, termsVersion: CURRENT_TERMS_VERSION };
       mockPrisma.user.findUnique
         .mockResolvedValueOnce({ ...mockUser, termsAcceptedAt: null, termsVersion: null })
         .mockResolvedValueOnce(accepted); // getProfile
       mockPrisma.user.update.mockResolvedValue(accepted);
 
-      const result = await service.acceptTerms('user-1');
+      const result = await service.acceptTerms('user-1', CURRENT_TERMS_VERSION);
 
       expect(mockPrisma.user.update).toHaveBeenCalledWith({
         where: { id: 'user-1' },
@@ -339,15 +339,53 @@ describe('UsersService', () => {
       expect(result.termsAcceptedAt).toEqual(now);
     });
 
-    it('should re-stamp when the accepted version is stale', async () => {
+    it('old app (no version in the body) records the legacy version it actually showed', async () => {
       mockPrisma.user.findUnique
-        .mockResolvedValueOnce({ ...mockUser, termsAcceptedAt: now, termsVersion: '2000-01-01' })
-        .mockResolvedValueOnce({ ...mockUser, termsAcceptedAt: now, termsVersion: CURRENT_TERMS_VERSION });
+        .mockResolvedValueOnce({ ...mockUser, termsAcceptedAt: null, termsVersion: null })
+        .mockResolvedValueOnce({ ...mockUser, termsAcceptedAt: now, termsVersion: LEGACY_TERMS_VERSION });
       mockPrisma.user.update.mockResolvedValue(mockUser);
 
       await service.acceptTerms('user-1');
 
+      expect(mockPrisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { termsAcceptedAt: expect.any(Date), termsVersion: LEGACY_TERMS_VERSION },
+      });
+    });
+
+    it('should re-stamp when the accepted version is stale', async () => {
+      mockPrisma.user.findUnique
+        .mockResolvedValueOnce({ ...mockUser, termsAcceptedAt: now, termsVersion: LEGACY_TERMS_VERSION })
+        .mockResolvedValueOnce({ ...mockUser, termsAcceptedAt: now, termsVersion: CURRENT_TERMS_VERSION });
+      mockPrisma.user.update.mockResolvedValue(mockUser);
+
+      await service.acceptTerms('user-1', CURRENT_TERMS_VERSION);
+
       expect(mockPrisma.user.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('never downgrades: an older client accepting again keeps the newer version and its date', async () => {
+      const accepted = { ...mockUser, termsAcceptedAt: now, termsVersion: CURRENT_TERMS_VERSION };
+      mockPrisma.user.findUnique.mockResolvedValueOnce(accepted).mockResolvedValueOnce(accepted);
+
+      const result = await service.acceptTerms('user-1');
+
+      expect(mockPrisma.user.update).not.toHaveBeenCalled();
+      expect(result.termsVersion).toBe(CURRENT_TERMS_VERSION);
+    });
+
+    it('unknown version (site newer than the API) records the newest version the API knows', async () => {
+      mockPrisma.user.findUnique
+        .mockResolvedValueOnce({ ...mockUser, termsAcceptedAt: null, termsVersion: null })
+        .mockResolvedValueOnce({ ...mockUser, termsAcceptedAt: now, termsVersion: CURRENT_TERMS_VERSION });
+      mockPrisma.user.update.mockResolvedValue(mockUser);
+
+      await service.acceptTerms('user-1', '2099-01-01');
+
+      expect(mockPrisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { termsAcceptedAt: expect.any(Date), termsVersion: CURRENT_TERMS_VERSION },
+      });
     });
 
     it('should be idempotent on the current version (keeps original date)', async () => {
@@ -356,7 +394,7 @@ describe('UsersService', () => {
         .mockResolvedValueOnce(accepted)
         .mockResolvedValueOnce(accepted);
 
-      const result = await service.acceptTerms('user-1');
+      const result = await service.acceptTerms('user-1', CURRENT_TERMS_VERSION);
 
       expect(mockPrisma.user.update).not.toHaveBeenCalled();
       expect(result.termsAcceptedAt).toEqual(now);

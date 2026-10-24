@@ -2,7 +2,11 @@ import { Body, Controller, Post, UsePipes, ValidationPipe } from '@nestjs/common
 import { PromptEnhancerService } from './prompt-enhancer.service';
 import { EnhancePromptDto } from './dto/enhance-prompt.dto';
 import { EnhanceInfluencerDto } from './dto/enhance-influencer.dto';
+import { UseInterceptors } from '@nestjs/common';
+import { ContentSafetyInterceptor } from '../content-safety/content-safety.interceptor';
 
+// segurança de conteúdo: recusa referência a menor e exige atestado de consentimento nas ferramentas de foto
+@UseInterceptors(ContentSafetyInterceptor)
 @Controller('api/v1/prompt-enhancer')
 export class PromptEnhancerController {
   constructor(private readonly promptEnhancerService: PromptEnhancerService) {}

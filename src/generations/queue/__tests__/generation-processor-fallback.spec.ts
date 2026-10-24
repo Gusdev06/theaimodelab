@@ -2,7 +2,7 @@ import { UnrecoverableError } from 'bullmq';
 import { GenerationProcessor } from '../generation.processor';
 import { GenerationJobName } from '../generation-queue.constants';
 import { GenerationUnrecoverableError } from '../unrecoverable.error';
-import { ContentSafetyError } from '../../errors/content-safety.error';
+import { ContentSafetyError, MinorSafetyBlockError } from '../../errors/content-safety.error';
 
 /**
  * Orquestração do fallback (dispatchWithFallback): provedores e banco
@@ -60,7 +60,10 @@ function setup(record: GenerationRecord | null, config: Record<string, string> =
         return record;
       }),
     },
-    generationInputImage: { findMany: jest.fn(async () => []) },
+    generationInputImage: {
+      findMany: jest.fn(async () => []),
+      count: jest.fn(async () => 0),
+    },
   };
   const creditsService = {
     adjustGenerationCost: jest.fn(async () => undefined),
@@ -71,6 +74,8 @@ function setup(record: GenerationRecord | null, config: Record<string, string> =
   const configService = {
     get: jest.fn((key: string, fallback?: string) => config[key] ?? fallback),
   };
+  // guarda da PR #4: atestado de imagem da geração (padrão: sem atestado)
+  const contentSafety = { hasConsentForGeneration: jest.fn(async () => false) };
   // uploads + 16 provedores: só a orquestração é testada aqui (dispatch é simulado).
   const middle = Array.from({ length: 17 }, () => ({}));
   const ProcessorCtor = GenerationProcessor as unknown as new (...args: unknown[]) => GenerationProcessor;
@@ -82,8 +87,9 @@ function setup(record: GenerationRecord | null, config: Record<string, string> =
     {}, // promptEnhancer
     plansService,
     configService,
+    contentSafety,
   );
-  return { processor, prisma, creditsService, plansService, configService };
+  return { processor, prisma, creditsService, plansService, configService, contentSafety };
 }
 
 /** primário falha com `primaryError`; alternativa entrega (ou falha com `fallbackError`). */
@@ -423,7 +429,9 @@ describe('GenerationProcessor — fallback automático de modelo', () => {
       ['entrada recusada', new Error('Veo generation failed: the image is not compliant'), 'safety'],
     ])('GENERATION_FALLBACK_UNCENSORED_WITH_MEDIA=true libera o desvio com foto (%s)', async (_label, original, kind) => {
       const record = makeRecord({ type: 'IMAGE_TO_VIDEO' });
-      const { processor } = setup(record, { GENERATION_FALLBACK_UNCENSORED_WITH_MEDIA: 'true' });
+      const { processor, contentSafety } = setup(record, { GENERATION_FALLBACK_UNCENSORED_WITH_MEDIA: 'true' });
+      // bloqueio de conteúdo com foto só desvia com atestado de imagem (guarda da PR #4)
+      contentSafety.hasConsentForGeneration.mockResolvedValue(true);
       const { calls } = scriptDispatch(processor, record, GenerationJobName.IMAGE_TO_VIDEO_KIE, original);
 
       await processor.dispatchWithFallback(GenerationJobName.IMAGE_TO_VIDEO_KIE, veoImageJob() as any, { queued: true });
@@ -471,7 +479,7 @@ describe('GenerationProcessor — fallback automático de modelo', () => {
       new Error('Veo generation failed: The prompt could not be submitted. Support codes: 58061214');
 
     it.each([
-      ['Veo kie T2V, código de criança', GenerationJobName.TEXT_TO_VIDEO_KIE, veoJob(), 'veo3_fast', childCodeVeo(), 'safety', 'CONTENT_SAFETY_BLOCKED'],
+      ['Veo kie T2V, código de criança', GenerationJobName.TEXT_TO_VIDEO_KIE, veoJob(), 'veo3_fast', childCodeVeo(), 'safety', 'CONTENT_POLICY_MINOR'],
       [
         'Veo kie T2V, "child" em bloqueio de política',
         GenerationJobName.TEXT_TO_VIDEO_KIE,
@@ -479,7 +487,7 @@ describe('GenerationProcessor — fallback automático de modelo', () => {
         'veo3_fast',
         new Error('Veo generation failed: request violates content policy, it depicts a child.'),
         'safety',
-        'CONTENT_SAFETY_BLOCKED',
+        'CONTENT_POLICY_MINOR',
       ],
       [
         'Veo kie T2V, "child" que o classificador lia como falha técnica',
@@ -506,7 +514,7 @@ describe('GenerationProcessor — fallback automático de modelo', () => {
         'grok-imagine',
         new ContentSafetyError('Content flagged: involving a minor (430)', '430'),
         'safety',
-        'CONTENT_SAFETY_BLOCKED',
+        'CONTENT_POLICY_MINOR',
       ],
     ])('%s: MiniMax nunca roda, irrecuperável, fallbackBlocked MINOR_REFUSAL', async (_label, jobName, job, model, refusal, kind, errorCode) => {
       const record = makeRecord({ modelUsed: model });
@@ -691,7 +699,8 @@ describe('GenerationProcessor — fallback automático de modelo', () => {
         expect(grok.generateTextToVideo).toHaveBeenCalledTimes(1);
         expect(calls).toEqual([GenerationJobName.TEXT_TO_VIDEO_GROK]);
         expect(error).toBeInstanceOf(GenerationUnrecoverableError);
-        expect((error as GenerationUnrecoverableError).original).toBe(refusal);
+        // a guarda da PR #4 converte a recusa por menor em bloqueio terminal (MinorSafetyBlockError)
+        expect((error as GenerationUnrecoverableError).original).toBeInstanceOf(MinorSafetyBlockError);
         expect(record.parameters).toMatchObject({ fallbackBlocked: { reason: 'MINOR_REFUSAL' } });
       });
 

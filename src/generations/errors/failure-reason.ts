@@ -1,3 +1,9 @@
+import {
+  ContentSafetyError,
+  isMinorSafetyBlock,
+  MINOR_BLOCK_USER_MESSAGE,
+} from './content-safety.error';
+
 /**
  * Classificação do motivo real de uma geração ter falhado.
  *
@@ -15,6 +21,17 @@
  * `web/messages/{en,es,pt-BR}/home.json` → `home.errors.<código em camelCase>`.
  */
 export const GenerationFailureCode = {
+  /**
+   * Provedor recusou por MENOR de idade (código de criança do Vertex, "sexual/minors"…). Mesmo código da trava
+   * da API antes do provedor: o site mostra a recusa por menor e nunca sugere modelo sem censura.
+   */
+  CONTENT_POLICY_MINOR: 'CONTENT_POLICY_MINOR',
+  /**
+   * O filtro bloqueou um pedido com foto do usuário SEM o atestado de imagem, então o desvio para o Unlocked
+   * (sem censura) não aconteceu. Decidido pela guarda do processor (ConsentRequiredSafetyError), nunca pelo texto
+   * do provedor: o site pede para marcar a autorização de imagem e gerar de novo.
+   */
+  CONTENT_BLOCKED_NEEDS_CONSENT: 'CONTENT_BLOCKED_NEEDS_CONSENT',
   /** Provedor recusou por política de conteúdo / filtro de segurança. */
   CONTENT_SAFETY_BLOCKED: 'CONTENT_SAFETY_BLOCKED',
   /** A imagem enviada foi recusada pelo provedor (não o prompt). */
@@ -54,6 +71,18 @@ export const GenerationFailureCode = {
 export type GenerationFailureCodeValue =
   (typeof GenerationFailureCode)[keyof typeof GenerationFailureCode];
 
+const KNOWN_FAILURE_CODES: ReadonlySet<string> = new Set(
+  Object.values(GenerationFailureCode),
+);
+
+/** Texto para o usuário quando o provedor bloqueou o conteúdo (gravado em errorMessage e no evento SSE). */
+export const CONTENT_BLOCKED_USER_MESSAGE =
+  'A imagem ou texto enviado viola nossas diretrizes de conteúdo. Tente reformular seu prompt ou use outra imagem.';
+
+/** Texto para o usuário de CONTENT_BLOCKED_NEEDS_CONSENT (o site traduz pelo código; este é o pt-BR gravado). */
+export const CONTENT_BLOCKED_NEEDS_CONSENT_MESSAGE =
+  'O filtro do modelo bloqueou esta geração. Para tentar no Unlocked com a sua foto, marque a autorização de imagem e gere de novo.';
+
 /**
  * Erro de provedor que já vem com uma mensagem amigável, mas guarda o motivo
  * técnico original em `providerDetail`.
@@ -78,6 +107,14 @@ export function rawFailureText(error: Error): string {
   const detail = (error as ProviderFailureError).providerDetail;
   return detail ? `${error.message} ${detail}` : error.message;
 }
+
+/**
+ * Bloqueio de conteúdo. Cobre também os textos que o ContentSafetyError não
+ * reconhece — Gemini Omni (PUBLIC_ERROR_*), GPT Image 2 ("guardrails", "appear
+ * to be unsafe") e Kling ("sensitive information").
+ */
+const CONTENT_BLOCK_PATTERN =
+  /public_error_|unsafe image upload|guardrails|may violate|appear to be unsafe|flagged (as|by|for)|sensitive information|content policy|prohibited use|violat.*(polic|guideline)|viola.*diretrizes|could not be processed|safety system|moderation|\bnsfw\b/i;
 
 /**
  * Padrões observados nas mensagens reais dos provedores (Veo/Vertex, Kling,
@@ -124,13 +161,8 @@ const PATTERNS: Array<[RegExp, GenerationFailureCodeValue]> = [
   ],
   // ── bloqueio de conteúdo ───────────────────────────────────────────────────
   // Fica DEPOIS da entrada inválida (mais específica) e ANTES dos erros de
-  // provedor. Cobre também os textos que o ContentSafetyError não reconhece —
-  // Gemini Omni (PUBLIC_ERROR_*), GPT Image 2 ("guardrails", "appear to be
-  // unsafe") e Kling ("sensitive information").
-  [
-    /public_error_|unsafe image upload|guardrails|may violate|appear to be unsafe|flagged (as|by|for)|sensitive information|content policy|prohibited use|violat.*(polic|guideline)|viola.*diretrizes|could not be processed|safety system|moderation|\bnsfw\b/i,
-    GenerationFailureCode.CONTENT_SAFETY_BLOCKED,
-  ],
+  // provedor.
+  [CONTENT_BLOCK_PATTERN, GenerationFailureCode.CONTENT_SAFETY_BLOCKED],
   // ── nosso lado / provedor ──────────────────────────────────────────────────
   [/unable to generate audio/i, GenerationFailureCode.AUDIO_UNAVAILABLE],
   [
@@ -178,6 +210,18 @@ export function classifyGenerationFailure(
 ): GenerationFailureCodeValue {
   const msg = rawMessage ?? '';
 
+  // Menor de idade vence qualquer outro motivo (inclusive entrada inválida):
+  // com CONTENT_SAFETY_BLOCKED o site sugeriria um modelo sem censura. O sinal
+  // de menor só conta em bloqueio de conteúdo — "child_process exited" não é.
+  if (
+    isMinorSafetyBlock(msg) &&
+    (isSafetyError ||
+      CONTENT_BLOCK_PATTERN.test(msg) ||
+      ContentSafetyError.fromErrorMessage(msg) !== null)
+  ) {
+    return GenerationFailureCode.CONTENT_POLICY_MINOR;
+  }
+
   for (const [pattern, code] of PATTERNS) {
     if (!pattern.test(msg)) continue;
     // Bloqueio já confirmado vence erro genérico de provedor: um "500" ou
@@ -191,4 +235,40 @@ export function classifyGenerationFailure(
   if (isSafetyError) return GenerationFailureCode.CONTENT_SAFETY_BLOCKED;
 
   return GenerationFailureCode.GENERATION_FAILED;
+}
+
+/**
+ * Código da falha de um erro. O que a guarda de segurança decidiu vem pronto no erro (`failureCode` de
+ * MinorSafetyBlockError / ConsentRequiredSafetyError) e vence o texto; o resto sai de classifyGenerationFailure
+ * sobre o texto cru (rawFailureText).
+ */
+export function failureCodeOf(
+  error: Error,
+  isSafetyError = false,
+): GenerationFailureCodeValue {
+  const preset = (error as { failureCode?: unknown }).failureCode;
+  if (typeof preset === 'string' && KNOWN_FAILURE_CODES.has(preset)) {
+    return preset as GenerationFailureCodeValue;
+  }
+  return classifyGenerationFailure(rawFailureText(error), isSafetyError);
+}
+
+/**
+ * Texto gravado em `errorMessage` e mandado no evento SSE. Bloqueios nunca mostram o texto cru do provedor (que
+ * pode citar o filtro, o modelo ou trazer o pedido); menor de idade usa o mesmo texto da trava da API.
+ */
+export function failureUserMessage(
+  code: GenerationFailureCodeValue,
+  error: Error,
+): string {
+  switch (code) {
+    case GenerationFailureCode.CONTENT_POLICY_MINOR:
+      return MINOR_BLOCK_USER_MESSAGE;
+    case GenerationFailureCode.CONTENT_BLOCKED_NEEDS_CONSENT:
+      return CONTENT_BLOCKED_NEEDS_CONSENT_MESSAGE;
+    case GenerationFailureCode.CONTENT_SAFETY_BLOCKED:
+      return CONTENT_BLOCKED_USER_MESSAGE;
+    default:
+      return error.message;
+  }
 }

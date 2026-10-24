@@ -1,5 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Resolution } from '@prisma/client';
+import { ContentSafetyEventKind, Resolution } from '@prisma/client';
+import { ErrorCodes } from '../common/constants/error-codes';
+import { ContentSafetyService } from '../content-safety/content-safety.service';
+import { isUncensoredModel, requiresConsentAlways } from '../content-safety/content-safety.interceptor';
+import { assessText } from '../content-safety/minor-guard';
 import {
   TheaimodelabChatClient,
   ChatMessage,
@@ -43,7 +47,53 @@ export class AgentService {
     private readonly generations: GenerationsService,
     private readonly models: ModelsService,
     private readonly credits: CreditsService,
+    private readonly contentSafety: ContentSafetyService,
   ) {}
+
+  /**
+   * Trava de segurança do agente, antes de qualquer geração: o prompt que o LLM escreve passa pela mesma
+   * conferência de menor das rotas de geração, e foto do usuário nunca vai a modelo sem censura por aqui (o
+   * agente não tem a tela do atestado de imagem). Devolve o erro para o agente, ou null quando pode seguir.
+   */
+  private async refuseUnsafe(
+    userId: string,
+    tool: string,
+    texts: (string | undefined)[],
+    media: { hasUserImages: boolean; model?: string },
+  ): Promise<Record<string, unknown> | null> {
+    for (const text of texts) {
+      const verdict = assessText(text);
+      if (!verdict.blocked) continue;
+      if (verdict.reason === 'script') {
+        // alfabeto que a trava não lê: recusado sem leitura e fora da trilha de abuso
+        return { error: ErrorCodes.CONTENT_POLICY_LANGUAGE.message, code: ErrorCodes.CONTENT_POLICY_LANGUAGE.code };
+      }
+      if (verdict.reason === 'size') {
+        return { error: ErrorCodes.REQUEST_TOO_LARGE.message, code: ErrorCodes.REQUEST_TOO_LARGE.code };
+      }
+      await this.contentSafety.record({
+        userId,
+        kind: ContentSafetyEventKind.MINOR_BLOCKED,
+        route: `agent:${tool}`,
+        match: verdict.match ?? null,
+        excerpt: text ?? null,
+      });
+      return { error: ErrorCodes.CONTENT_POLICY_MINOR.message, code: ErrorCodes.CONTENT_POLICY_MINOR.code };
+    }
+    if (requiresConsentAlways(media.model) || (media.hasUserImages && isUncensoredModel(media.model))) {
+      await this.contentSafety.record({
+        userId,
+        kind: ContentSafetyEventKind.CONSENT_MISSING,
+        route: `agent:${tool}`,
+        match: media.model ?? null,
+      });
+      return {
+        error: 'Foto de pessoa em modelo sem censura só pelo gerador, com a autorização de imagem. Use outro modelo aqui.',
+        code: ErrorCodes.CONSENT_REQUIRED.code,
+      };
+    }
+    return null;
+  }
 
   async chat(userId: string, dto: AgentChatDto) {
     const model = dto.model || DEFAULT_MODEL;
@@ -166,12 +216,19 @@ export class AgentService {
         }
 
         case 'melhorar_prompt': {
+          const refused = await this.refuseUnsafe(userId, name, [str(args.prompt)], { hasUserImages: false });
+          if (refused) return refused;
           const r = await this.promptEnhancer.enhance(str(args.prompt));
           return { prompt: r.prompt, negativePrompt: r.negativePrompt };
         }
 
         case 'gerar_imagem': {
           const refImages = this.resolveImages(args.image_indexes, images);
+          const refused = await this.refuseUnsafe(userId, name, [str(args.prompt)], {
+            hasUserImages: refImages.length > 0,
+            model: str(args.model),
+          });
+          if (refused) return refused;
           return {
             ...(await this.generations.generateImage(userId, {
               prompt: str(args.prompt),
@@ -184,6 +241,11 @@ export class AgentService {
         }
 
         case 'gerar_video_texto': {
+          const refused = await this.refuseUnsafe(userId, name, [str(args.prompt), optStr(args.negative_prompt)], {
+            hasUserImages: false,
+            model: str(args.model),
+          });
+          if (refused) return refused;
           return {
             ...(await this.generations.generateTextToVideo(userId, {
               prompt: str(args.prompt),
@@ -199,6 +261,11 @@ export class AgentService {
 
         case 'gerar_video_imagem': {
           const frame = this.pickImage(args.image_index, images);
+          const refused = await this.refuseUnsafe(userId, name, [str(args.prompt)], {
+            hasUserImages: true,
+            model: optStr(args.model),
+          });
+          if (refused) return refused;
           return {
             ...(await this.generations.generateImageToVideo(userId, {
               prompt: str(args.prompt),

@@ -26,6 +26,13 @@ import { UpdatePromptTemplateDto } from './dto/update-prompt-template.dto';
 import { ModelsService } from '../models/models.service';
 import { UploadsService } from '../uploads/uploads.service';
 import { Logger } from '@nestjs/common';
+import {
+  holdAccountEmail,
+  legalHoldDeletionConflict,
+  loadLegalHold,
+  readHoldAccount,
+  scanReportsCitingAccount,
+} from '../users/account-erasure.service';
 
 const PROMPT_THUMB_WIDTH = 400;
 const PROMPT_THUMB_HEIGHT = 500;
@@ -708,7 +715,33 @@ export class AdminService {
       throw new BadRequestException('Não é possível excluir um administrador');
     }
 
-    await this.prisma.user.delete({ where: { id: userId } });
+    // A exclusão definitiva apaga em cascata gerações, posts, avatares e entradas: com guarda legal (denúncia ou
+    // bloqueio por menor) isso destruiria a evidência. Mesma regra da exclusão LGPD: denúncias lidas fora da
+    // transação e conferidas de novo dentro dela, junto com o delete (ninguém denuncia no meio sem ser visto).
+    const email = holdAccountEmail(user);
+    const reportScan = await scanReportsCitingAccount(
+      this.prisma,
+      await readHoldAccount(this.prisma, user.id, email),
+    );
+    await this.prisma.$transaction(
+      async (tx) => {
+        const hold = await loadLegalHold(tx, {
+          account: await readHoldAccount(tx, user.id, email),
+          scan: reportScan,
+          now: new Date(),
+          ignoreSafetyEvents: false,
+        });
+        if (hold.active) {
+          this.logger.warn(
+            `deleteUser: exclusão definitiva da conta ${user.id} recusada (guarda legal: ${hold.kinds.join(', ')}; ` +
+              `denúncias: ${hold.reportIds.join(', ') || 'nenhuma'})`,
+          );
+          throw legalHoldDeletionConflict(hold);
+        }
+        await tx.user.delete({ where: { id: userId } });
+      },
+      { maxWait: 10_000, timeout: 30_000 },
+    );
   }
 
   async getProviderStats() {

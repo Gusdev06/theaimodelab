@@ -7,11 +7,11 @@ import { GenerationEventsService } from '../generation-events.service';
 import { UnlimitedService } from '../../unlimited/unlimited.service';
 import { ContentSafetyError } from '../errors/content-safety.error';
 import {
-  classifyGenerationFailure,
+  failureCodeOf,
+  failureUserMessage,
   GenerationFailureCode,
-  rawFailureText,
 } from '../errors/failure-reason';
-import { GenerationProcessor } from './generation.processor';
+import { GenerationProcessor, willBeRetried } from './generation.processor';
 import { isUnrecoverableJobError, unwrapJobError } from './unrecoverable.error';
 import { GENERATION_UNLIMITED_QUEUE } from './generation-queue.constants';
 
@@ -44,9 +44,24 @@ export class UnlimitedProcessor extends WorkerHost {
 
     // Delega processamento real ao GenerationProcessor (mesmo dispatcher,
     // mesmos providers, mesma lógica de fallback/safety).
-    await this.generationProcessor.dispatchWithFallback(job.name, job.data, {
-      queued: true,
-    });
+    try {
+      await this.generationProcessor.dispatchWithFallback(job.name, job.data, {
+        queued: true,
+      });
+    } catch (error) {
+      // O fallback embrulha o erro em GenerationUnrecoverableError: desembrulha antes de conferir o bloqueio terminal.
+      const terminal = this.generationProcessor.terminalSafetyBlockOf(
+        unwrapJobError(error as Error),
+        job.data,
+      );
+      if (!terminal) throw error;
+      // Bloqueio terminal (menor de idade, foto sem atestado): encerra aqui e o job CONCLUI (o onCompleted solta o
+      // lock). Relançar faria o BullMQ mandar o mesmo prompt e as mesmas fotos ao provedor 30 s depois.
+      this.logger.warn(
+        `[UNLIMITED] Job ${job.id} [${job.name}] encerrado sem nova tentativa: ${terminal.name} (${terminal.failureCode})`,
+      );
+      await this.finalize(meta, terminal);
+    }
   }
 
   @OnWorkerEvent('completed')
@@ -68,20 +83,21 @@ export class UnlimitedProcessor extends WorkerHost {
 
     // Só finaliza após esgotar tentativas — durante retries o lock fica preso
     // de propósito (mesma "geração ilimitada" do ponto de vista do usuário).
-    if (
-      !isUnrecoverableJobError(error) &&
-      job.attemptsMade < (job.opts.attempts ?? 1)
-    ) {
+    if (!isUnrecoverableJobError(error) && willBeRetried(job)) {
       this.logger.warn(`[UNLIMITED] Job ${job.id} will be retried`);
       return;
     }
 
-    await this.markFailed(meta.generationId, meta.userId, unwrapJobError(error));
-    await this.unlimitedService.releaseLock(meta.userId).catch((err) => {
-      this.logger.warn(
-        `[UNLIMITED] Failed to release lock for user ${meta.userId}: ${(err as Error).message}`,
-      );
-    });
+    try {
+      await this.finalize(meta, unwrapJobError(error));
+    } finally {
+      // o lock sai mesmo se o encerramento falhar: preso, travaria o ilimitado do usuário
+      await this.unlimitedService.releaseLock(meta.userId).catch((err) => {
+        this.logger.warn(
+          `[UNLIMITED] Failed to release lock for user ${meta.userId}: ${(err as Error).message}`,
+        );
+      });
+    }
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────
@@ -94,6 +110,26 @@ export class UnlimitedProcessor extends WorkerHost {
       );
     }
     return { generationId: data.generationId, userId: data.userId };
+  }
+
+  /**
+   * Encerra a geração (markFailed). Nunca lança: no process() um erro faria o BullMQ repetir o job e reenviar o
+   * pedido ao provedor; no onFailed a geração ficaria PROCESSING. Se o encerramento normal falhar, marca FAILED só
+   * se ainda estiver PROCESSING (failStuckGeneration).
+   */
+  private async finalize(meta: UnlimitedJobMeta, error: Error): Promise<void> {
+    try {
+      await this.markFailed(meta.generationId, meta.userId, error);
+    } catch (finalizeError) {
+      this.logger.error(
+        `[UNLIMITED] Encerramento da geração ${meta.generationId} falhou: ${(finalizeError as Error).message}`,
+      );
+      await this.generationProcessor.failStuckGeneration(
+        meta.generationId,
+        meta.userId,
+        error,
+      );
+    }
   }
 
   /**
@@ -117,15 +153,11 @@ export class UnlimitedProcessor extends WorkerHost {
     }
 
     const isSafetyError = error instanceof ContentSafetyError;
-    // mesma classificação do fluxo normal — o front mostra o motivo pelo código
-    const errorCode = classifyGenerationFailure(
-      rawFailureText(error),
-      isSafetyError,
-    );
-    const userMessage =
-      errorCode === GenerationFailureCode.CONTENT_SAFETY_BLOCKED
-        ? 'A imagem ou texto enviado viola nossas diretrizes de conteúdo. Tente reformular seu prompt ou use outra imagem.'
-        : error.message;
+    // mesma classificação do fluxo normal — o front mostra o motivo pelo código;
+    // o código que a guarda de segurança decidiu (menor, foto sem atestado) vem pronto no erro
+    const errorCode = failureCodeOf(error, isSafetyError);
+    // bloqueio nunca mostra o texto cru do provedor; menor usa o texto da trava da API
+    const userMessage = failureUserMessage(errorCode, error);
 
     await this.prisma.generation.update({
       where: { id: generationId },
@@ -135,6 +167,15 @@ export class UnlimitedProcessor extends WorkerHost {
         errorCode,
       },
     });
+
+    // MINOR_BLOCKED uma vez por geração: só aqui, depois da trava de idempotência acima
+    if (errorCode === GenerationFailureCode.CONTENT_POLICY_MINOR) {
+      await this.generationProcessor.recordProviderMinorBlock(
+        generationId,
+        userId,
+        error,
+      );
+    }
 
     this.generationEvents.emit({
       userId,

@@ -364,6 +364,45 @@ export class HeyGenProvider {
   }
 
   /**
+   * DELETE /v3/avatars/{group_id} sem engolir erro (exclusão de conta, LGPD): resolve só quando a HeyGen confirma
+   * (2xx) ou quando o avatar já não existe lá (404). Qualquer outro status, falta de chave, timeout ou falha de rede
+   * lança, para quem chamou guardar o vínculo e tentar de novo. O deleteAvatarGroup acima continua best-effort.
+   */
+  async deleteAvatarGroupStrict(groupId: string): Promise<'deleted' | 'not_found'> {
+    this.ensureConfigured();
+    const id = typeof groupId === 'string' ? groupId.trim() : '';
+    if (!id) {
+      throw new Error('HeyGen: id do grupo de avatar vazio.');
+    }
+
+    let response: Response;
+    try {
+      response = await this.fetchWithTimeout(
+        `${this.baseUrl}/v3/avatars/${encodeURIComponent(id)}`,
+        { method: 'DELETE', headers: this.headers() },
+        30_000,
+      );
+    } catch (err) {
+      throw new Error(
+        `HeyGen fora do alcance ao apagar o avatar ${id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    if (response.status === 404) {
+      this.logger.log(`[HEYGEN] deleteAvatarGroupStrict groupId=${id}: já não existia (404)`);
+      return 'not_found';
+    }
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(
+        `HeyGen recusou apagar o avatar ${id}: HTTP ${response.status} ${body.slice(0, 200)}`.trim(),
+      );
+    }
+    this.logger.log(`[HEYGEN] deleteAvatarGroupStrict groupId=${id}: apagado`);
+    return 'deleted';
+  }
+
+  /**
    * POST /v3/videos — generates a video using a trained avatar (look).
    * `engine` defaults to avatar_iv when omitted.
    */

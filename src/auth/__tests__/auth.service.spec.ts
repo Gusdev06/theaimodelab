@@ -151,7 +151,7 @@ describe('AuthService', () => {
 
       // Verifies email is lowercased when checking for existing user
       expect(mockPrisma.user.findUnique).toHaveBeenCalledWith({
-        where: { email: 'test@example.com', isActive: true },
+        where: { email: 'test@example.com' },
       });
 
       // Verifies password is hashed
@@ -250,7 +250,7 @@ describe('AuthService', () => {
       });
 
       expect(mockPrisma.user.findUnique).toHaveBeenCalledWith({
-        where: { email: 'test@example.com', isActive: true },
+        where: { email: 'test@example.com' },
       });
       expect(mockPrisma.user.create).toHaveBeenCalledWith({
         data: expect.objectContaining({ email: 'test@example.com' }),
