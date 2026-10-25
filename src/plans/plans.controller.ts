@@ -1,8 +1,9 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Query, Req } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { PlansService } from './plans.service';
 import { PlanResponseDto } from './dto/plan-response.dto';
 import { Public } from '../common/decorators/public.decorator';
+import { CheckoutCodesService } from '../checkout-codes/checkout-codes.service';
 
 // Preço de assinatura em USD (centavos) por plano. Fonte da verdade é a tabela
 // plan_prices (USD); este mapa é só um fallback para nunca exibir preço em BRL
@@ -18,7 +19,10 @@ const USD_PRICE_CENTS_FALLBACK: Record<string, number> = {
 @ApiTags('plans')
 @Controller('api/v1/plans')
 export class PlansController {
-  constructor(private readonly plansService: PlansService) {}
+  constructor(
+    private readonly plansService: PlansService,
+    private readonly checkoutCodes: CheckoutCodesService,
+  ) {}
 
   @Public()
   @Get()
@@ -27,6 +31,7 @@ export class PlansController {
   @ApiResponse({ status: 200, type: [PlanResponseDto] })
   async findAll(
     @Query('currency') currencyQuery?: string,
+    @Req() req?: { headers?: Record<string, unknown> },
   ): Promise<PlanResponseDto[]> {
     // Duas vitrines por moeda:
     //  - BRL (Brasil, /pt-br): assinatura via Cakto. Expõe os 7 tiers com PlanPrice
@@ -38,8 +43,13 @@ export class PlansController {
         ? 'BRL'
         : 'USD';
 
+    // Link de checkout da marca do site que pediu (Funvmake com produtos próprios).
+    // Sem link próprio, ou na marca de origem, vale o link do plano.
+    const brandLinks = await this.checkoutCodes.storefrontLinks(req?.headers, requestedCurrency, 'plan');
+
     if (requestedCurrency === 'BRL') {
-      return this.plansService.findBrlPublicPlans();
+      const brlPlans = await this.plansService.findBrlPublicPlans();
+      return brlPlans.map((p) => ({ ...p, checkoutUrl: brandLinks.get(p.id) ?? p.checkoutUrl }));
     }
 
     const plans = await this.plansService.findAllPlans();
@@ -73,7 +83,7 @@ export class PlansController {
           sortOrder: p.sortOrder,
           billingInterval: p.billingInterval,
           basePlanSlug: p.basePlanSlug ?? null,
-          checkoutUrl: p.checkoutUrl ?? null,
+          checkoutUrl: brandLinks.get(p.id) ?? p.checkoutUrl ?? null,
         };
       }),
     );

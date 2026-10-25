@@ -15,6 +15,7 @@ import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { PlansModule } from './plans/plans.module';
+import { CheckoutCodesModule } from './checkout-codes/checkout-codes.module';
 import { UsersModule } from './users/users.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { CustomThrottlerGuard } from './common/guards/throttle.guard';
@@ -108,6 +109,7 @@ import { ReportsModule } from './reports/reports.module';
     PrismaModule,
     AuthModule,
     PlansModule,
+    CheckoutCodesModule,
     UsersModule,
     UploadsModule,
     WebhookLogsModule,

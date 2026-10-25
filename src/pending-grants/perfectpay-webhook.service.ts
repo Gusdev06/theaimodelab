@@ -10,6 +10,7 @@ import { EmailService } from '../email/email.service';
 import { WebhookLogsService } from '../webhook-logs/webhook-logs.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaymentsService } from '../payments/payments.service';
+import { CheckoutCodesService, SalePackage } from '../checkout-codes/checkout-codes.service';
 import {
   PERFECTPAY_COURSE_BUNDLE,
   PendingGrantsService,
@@ -65,6 +66,7 @@ export class PerfectpayWebhookService {
     private readonly emailService: EmailService,
     private readonly prisma: PrismaService,
     private readonly paymentsService: PaymentsService,
+    private readonly checkoutCodes: CheckoutCodesService,
   ) {}
 
   async handle(
@@ -165,16 +167,31 @@ export class PerfectpayWebhookService {
           })
         : null;
 
+    // 1a) Código extra (checkout_codes): produto de outra marca (Funvmake) ou de outra
+    // conta da Perfect Pay (CPF → CNPJ), inclusive o código antigo de quem renova.
+    let extraPackage: SalePackage | null = null;
+    if (!plan) {
+      const extra = await this.checkoutCodes.findSaleTarget('perfectpay', planCandidates, {
+        activePlanOnly: true,
+      });
+      if (extra?.kind === 'plan') plan = extra.plan;
+      else if (extra?.kind === 'package') extraPackage = extra.creditPackage;
+    }
+
     // 1b) Rede de segurança para assinaturas: se o código não casou (ex.: plano novo
     // sem perfectpayPlanCode cadastrado), tenta casar pelo nome do plano do postback
     // ("Plan Creator" → slug "creator"). Só para vendas recorrentes, para não
     // confundir pacote de crédito avulso com plano.
-    if (!plan && isSubscriptionSale) {
+    if (!plan && !extraPackage && isSubscriptionSale) {
       plan = await this.matchPlanByName(payload);
     }
 
     if (plan) {
       return this.handlePlanSubscription(payload, email, plan);
+    }
+
+    if (extraPackage) {
+      return this.handleCreditPurchase(payload, email, extraPackage);
     }
 
     // Se é assinatura recorrente mas nenhum plano casou, NÃO trata como curso:
@@ -355,6 +372,17 @@ export class PerfectpayWebhookService {
         return {
           processed: false,
           reason: `refund of credit package "${creditPackage.name}" with no recorded payment — nothing to revoke`,
+        };
+      }
+      // Código extra (outra marca/conta): plano segue para a revogação; pacote não é isca.
+      const extra = await this.checkoutCodes.findSaleTarget('perfectpay', planCandidates, {
+        activePlanOnly: false,
+      });
+      if (extra?.kind === 'plan') return null;
+      if (extra?.kind === 'package') {
+        return {
+          processed: false,
+          reason: `refund of credit package "${extra.creditPackage.name}" with no recorded payment — nothing to revoke`,
         };
       }
     }

@@ -16,9 +16,10 @@ import { CaktoWebhookService } from './cakto-webhook.service';
 import { WebhookLogsModule } from '../webhook-logs/webhook-logs.module';
 import { EmailModule } from '../email/email.module';
 import { PaymentsModule } from '../payments/payments.module';
+import { CheckoutCodesModule } from '../checkout-codes/checkout-codes.module';
 
 @Module({
-  imports: [PrismaModule, WebhookLogsModule, EmailModule, PaymentsModule],
+  imports: [PrismaModule, WebhookLogsModule, EmailModule, PaymentsModule, CheckoutCodesModule],
   controllers: [
     HublaWebhookController,
     HotmartWebhookController,
