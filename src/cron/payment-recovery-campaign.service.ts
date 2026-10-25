@@ -12,6 +12,7 @@ import {
   type RecoveryLead,
   type SocialProof,
 } from '../payments/recovery/recovery-templates';
+import { resolveBrand } from '../brand/brand';
 
 const RECENT_CANCEL_DAYS = 30;
 const DAYS_BEFORE_EMAIL_2 = 3;
@@ -118,7 +119,7 @@ export class PaymentRecoveryCampaignService {
           const open = await this.prisma.paymentRecoveryCampaign.findMany({
             where: { recoveredAt: null, abandonedAt: null },
             include: {
-              user: { select: { name: true, email: true } },
+              user: { select: { name: true, email: true, signupBrand: true } },
               subscription: {
                 include: { plan: { select: { name: true, priceCents: true } } },
               },
@@ -164,7 +165,7 @@ export class PaymentRecoveryCampaignService {
               if (!emailToSend) continue;
 
               const lead = this.buildLead(campaign);
-              const sent = await this.sendEmail(emailToSend, lead, brand, campaign.user.email);
+              const sent = await this.sendEmail(emailToSend, lead, brand, campaign.user.email, campaign.user.signupBrand);
 
               if (sent) {
                 const fieldUpdate =
@@ -239,6 +240,7 @@ export class PaymentRecoveryCampaignService {
     lead: RecoveryLead,
     brand: BrandConfig,
     toEmail: string,
+    signupBrand: string | null,
   ): Promise<boolean> {
     const built = buildRecoveryEmail(n, lead, brand);
     try {
@@ -246,6 +248,7 @@ export class PaymentRecoveryCampaignService {
         to: toEmail,
         subject: built.subject,
         html: built.html,
+        brand: resolveBrand(signupBrand),
       });
       if (!id) {
         this.logger.warn(`Email ${n} não enviado para ${toEmail} (service não configurado)`);
