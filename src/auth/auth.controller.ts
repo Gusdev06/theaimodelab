@@ -1,3 +1,4 @@
+import { detectBrandFromHeaders } from '../brand/brand';
 import {
   Controller,
   Post,
@@ -73,6 +74,7 @@ export class AuthController {
       registerDto,
       detectLocaleFromHeaders(req.headers),
       this.metaConversionsService.buildRequestContext(req),
+      detectBrandFromHeaders(req.headers),
     );
   }
 
@@ -95,8 +97,8 @@ export class AuthController {
     status: 400,
     description: 'Dados inválidos',
   })
-  async login(@Body() loginDto: LoginDto): Promise<AuthResponseDto> {
-    return this.authService.login(loginDto.email, loginDto.password);
+  async login(@Body() loginDto: LoginDto, @Req() req: any): Promise<AuthResponseDto> {
+    return this.authService.login(loginDto.email, loginDto.password, detectBrandFromHeaders(req.headers));
   }
 
   @Public()
@@ -148,6 +150,7 @@ export class AuthController {
       detectLocaleFromHeaders(req.headers),
       googleAuthDto.tracking,
       this.metaConversionsService.buildRequestContext(req),
+      detectBrandFromHeaders(req.headers),
     );
   }
 
@@ -189,8 +192,8 @@ export class AuthController {
   @ApiOperation({ summary: 'Verificar email com código de 6 dígitos' })
   @ApiResponse({ status: 200, description: 'Email verificado com sucesso' })
   @ApiResponse({ status: 400, description: 'Código inválido ou expirado' })
-  async verifyEmail(@Body() dto: VerifyEmailDto): Promise<{ message: string }> {
-    return this.authService.verifyEmail(dto.code);
+  async verifyEmail(@Body() dto: VerifyEmailDto, @Req() req: any): Promise<{ message: string }> {
+    return this.authService.verifyEmail(dto.code, detectBrandFromHeaders(req.headers));
   }
 
   @Public()
@@ -201,8 +204,8 @@ export class AuthController {
   @ApiOperation({ summary: 'Reenviar email de verificação' })
   @ApiResponse({ status: 200, description: 'Email de verificação reenviado' })
   @ApiResponse({ status: 400, description: 'Aguarde antes de solicitar novamente' })
-  async resendVerification(@Body() dto: ResendVerificationDto): Promise<{ message: string }> {
-    return this.authService.resendVerificationEmail(dto.email);
+  async resendVerification(@Body() dto: ResendVerificationDto, @Req() req: any): Promise<{ message: string }> {
+    return this.authService.resendVerificationEmail(dto.email, detectBrandFromHeaders(req.headers));
   }
 
   @Public()
@@ -219,8 +222,8 @@ export class AuthController {
     status: 400,
     description: 'Dados inválidos',
   })
-  async forgotPassword(@Body() dto: ForgotPasswordDto): Promise<{ message: string }> {
-    return this.authService.forgotPassword(dto.email);
+  async forgotPassword(@Body() dto: ForgotPasswordDto, @Req() req: any): Promise<{ message: string }> {
+    return this.authService.forgotPassword(dto.email, detectBrandFromHeaders(req.headers));
   }
 
   @Public()

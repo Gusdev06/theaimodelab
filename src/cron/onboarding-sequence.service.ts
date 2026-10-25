@@ -1,3 +1,4 @@
+import { resolveBrand } from '../brand/brand';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
@@ -28,6 +29,8 @@ interface SequenceRecipient {
   plan: string | null;
   /** user.locale cru do banco — resolvido pra pt-BR/en/es na hora do envio. */
   locale: string | null;
+  /** users.signup_brand: site em que a conta nasceu (null = The AI Model Lab) — marca e links do e-mail */
+  signupBrand?: string | null;
 }
 
 @Injectable()
@@ -98,6 +101,7 @@ export class OnboardingSequenceService {
         email: true,
         name: true,
         locale: true,
+        signupBrand: true,
         createdAt: true,
         emailSequenceLogs: { select: { emailKey: true } },
       },
@@ -116,7 +120,7 @@ export class OnboardingSequenceService {
 
       const ok = await this.sendSequenceEmail(
         emailToSend,
-        { userId: user.id, email: user.email, name: user.name, plan: null, locale: user.locale },
+        { userId: user.id, email: user.email, name: user.name, plan: null, locale: user.locale, signupBrand: user.signupBrand },
         appUrl,
         logoUrl,
       );
@@ -153,6 +157,7 @@ export class OnboardingSequenceService {
             email: true,
             name: true,
             locale: true,
+            signupBrand: true,
             emailSequenceLogs: { select: { emailKey: true } },
           },
         },
@@ -185,6 +190,7 @@ export class OnboardingSequenceService {
           name: sub.user.name,
           plan: sub.plan.name,
           locale: sub.user.locale,
+          signupBrand: sub.user.signupBrand,
         },
         appUrl,
         logoUrl,
@@ -206,9 +212,13 @@ export class OnboardingSequenceService {
     logoUrl: string,
   ): Promise<boolean> {
     try {
+      // conta que nasceu noutra marca (Funvmake): links, logo, nome e remetente dela
+      const brand = resolveBrand(recipient.signupBrand);
+      const brandAppUrl = brand.key === 'taml' ? appUrl : brand.frontendUrl;
+      const brandLogoUrl = brand.key === 'taml' ? logoUrl : brand.logoUrl || logoUrl;
       const content = template.content[resolveEmailLocale(recipient.locale)];
-      const innerHtml = await renderMarkdownToEmailHtml(content.body(appUrl));
-      const wrappedHtml = wrapInBroadcastTemplate(innerHtml, logoUrl);
+      const innerHtml = await renderMarkdownToEmailHtml(content.body(brandAppUrl));
+      const wrappedHtml = wrapInBroadcastTemplate(innerHtml, brandLogoUrl);
       const vars = buildMergeVars({
         name: recipient.name,
         plan: recipient.plan,
@@ -221,6 +231,7 @@ export class OnboardingSequenceService {
         to: recipient.email,
         subject,
         html,
+        brand,
       });
       if (!id) {
         this.logger.warn(`Email ${template.key} não enviado para ${recipient.email} (service não configurado)`);

@@ -80,11 +80,12 @@ describe('AuthController', () => {
     };
 
     it('should call authService.login with email and password and return result', async () => {
-      const result = await controller.login(loginDto);
+      const result = await controller.login(loginDto, { headers: {} });
 
       expect(mockAuthService.login).toHaveBeenCalledWith(
         loginDto.email,
         loginDto.password,
+        null,
       );
       expect(mockAuthService.login).toHaveBeenCalledTimes(1);
       expect(result).toEqual(mockAuthResponse);
@@ -143,10 +144,11 @@ describe('AuthController', () => {
     };
 
     it('should call authService.forgotPassword with email', async () => {
-      const result = await controller.forgotPassword(forgotPasswordDto);
+      const result = await controller.forgotPassword(forgotPasswordDto, { headers: {} });
 
       expect(mockAuthService.forgotPassword).toHaveBeenCalledWith(
         forgotPasswordDto.email,
+        null,
       );
       expect(mockAuthService.forgotPassword).toHaveBeenCalledTimes(1);
       expect(result).toEqual({

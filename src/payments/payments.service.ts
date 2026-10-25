@@ -1,3 +1,4 @@
+import { resolveBrand } from '../brand/brand';
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { FreeGenerationType, PaymentStatus, PaymentType, Prisma } from '@prisma/client';
@@ -225,6 +226,7 @@ export class PaymentsService {
         country: true,
         fbp: true,
         fbc: true,
+        signupBrand: true,
       },
     });
 
@@ -234,6 +236,7 @@ export class PaymentsService {
         user.name,
         plan.name,
         plan.creditsPerMonth,
+        resolveBrand(user.signupBrand),
       );
     }
 
@@ -457,6 +460,7 @@ export class PaymentsService {
           country: true,
           fbp: true,
           fbc: true,
+          signupBrand: true,
         },
       });
       if (user?.email) {
@@ -465,6 +469,7 @@ export class PaymentsService {
           user.name,
           plan.name,
           plan.creditsPerMonth,
+          resolveBrand(user.signupBrand),
         );
         // Purchase no Meta CAPI apenas na ATIVAÇÃO (primeira compra/troca de
         // plano). Renovações mensais não disparam — decisão de negócio: o pixel
@@ -775,6 +780,7 @@ export class PaymentsService {
         country: true,
         fbp: true,
         fbc: true,
+        signupBrand: true,
       },
     });
 
@@ -784,6 +790,7 @@ export class PaymentsService {
         user.name,
         creditPackage.credits,
         creditPackage.name,
+        resolveBrand(user.signupBrand),
       );
     }
 
@@ -1237,6 +1244,7 @@ export class PaymentsService {
         newRetryCount,
         maxRetries,
         isCanceled,
+        resolveBrand(subscription.user.signupBrand),
       );
     }
   }

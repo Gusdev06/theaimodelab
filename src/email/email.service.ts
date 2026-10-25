@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
+import { applyBrand, Brand, brandedFrom } from '../brand/brand';
 
 @Injectable()
 export class EmailService implements OnModuleInit {
@@ -25,6 +26,17 @@ export class EmailService implements OnModuleInit {
 
     this.client = new Resend(apiKey);
     this.logger.log('Resend email service initialized');
+  }
+
+  /**
+   * Remetente, assunto e corpo na marca do destinatário (src/brand/brand.ts). Sem marca, ou na origem, sai
+   * exatamente como antes.
+   */
+  private branded(message: { subject: string; html: string }, brand?: Brand): { from: string; subject: string; html: string } {
+    if (!brand || brand.key === 'taml') return { from: this.fromEmail, ...message };
+    const originUrl = this.frontendUrl.split(',')[0]?.trim() ?? '';
+    const swapped = applyBrand(message, brand, { frontendUrl: originUrl, logoUrl: this.logoUrl });
+    return { from: brandedFrom(this.fromEmail, brand), ...swapped };
   }
 
   /**
@@ -66,7 +78,7 @@ export class EmailService implements OnModuleInit {
     }
   }
 
-  async sendVerificationEmail(to: string, name: string, code: string): Promise<void> {
+  async sendVerificationEmail(to: string, name: string, code: string, brand?: Brand): Promise<void> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping verification email');
       return;
@@ -74,10 +86,8 @@ export class EmailService implements OnModuleInit {
 
     try {
       const { error } = await this.client.emails.send({
-        from: this.fromEmail,
+        ...this.branded({ subject: 'Your verification code — The AI Model Lab', html: this.getVerificationTemplate(name, code) }, brand),
         to: [to],
-        subject: 'Your verification code — The AI Model Lab',
-        html: this.getVerificationTemplate(name, code),
       });
 
       if (error) {
@@ -91,7 +101,7 @@ export class EmailService implements OnModuleInit {
     }
   }
 
-  async sendPasswordResetEmail(to: string, name: string, resetToken: string): Promise<void> {
+  async sendPasswordResetEmail(to: string, name: string, resetToken: string, brand?: Brand): Promise<void> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping password reset email');
       return;
@@ -101,10 +111,8 @@ export class EmailService implements OnModuleInit {
 
     try {
       const { error } = await this.client.emails.send({
-        from: this.fromEmail,
+        ...this.branded({ subject: 'Reset your password — The AI Model Lab', html: this.getPasswordResetTemplate(name, resetUrl) }, brand),
         to: [to],
-        subject: 'Reset your password — The AI Model Lab',
-        html: this.getPasswordResetTemplate(name, resetUrl),
       });
 
       if (error) {
@@ -123,7 +131,7 @@ export class EmailService implements OnModuleInit {
    * via Google OAuth (sem senha local). Em vez de silêncio, orienta o usuário
    * a entrar pelo login com Google.
    */
-  async sendOAuthLoginInfoEmail(to: string, name: string): Promise<void> {
+  async sendOAuthLoginInfoEmail(to: string, name: string, brand?: Brand): Promise<void> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping OAuth login info email');
       return;
@@ -131,10 +139,8 @@ export class EmailService implements OnModuleInit {
 
     try {
       const { error } = await this.client.emails.send({
-        from: this.fromEmail,
+        ...this.branded({ subject: 'Your account uses Google sign-in — The AI Model Lab', html: this.getOAuthLoginInfoTemplate(name) }, brand),
         to: [to],
-        subject: 'Your account uses Google sign-in — The AI Model Lab',
-        html: this.getOAuthLoginInfoTemplate(name),
       });
 
       if (error) {
@@ -148,7 +154,7 @@ export class EmailService implements OnModuleInit {
     }
   }
 
-  async sendWelcomeEmail(to: string, name: string): Promise<void> {
+  async sendWelcomeEmail(to: string, name: string, brand?: Brand): Promise<void> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping welcome email');
       return;
@@ -156,10 +162,8 @@ export class EmailService implements OnModuleInit {
 
     try {
       const { error } = await this.client.emails.send({
-        from: this.fromEmail,
+        ...this.branded({ subject: 'Welcome to The AI Model Lab!', html: this.getWelcomeTemplate(name) }, brand),
         to: [to],
-        subject: 'Welcome to The AI Model Lab!',
-        html: this.getWelcomeTemplate(name),
       });
 
       if (error) {
@@ -178,6 +182,7 @@ export class EmailService implements OnModuleInit {
     name: string,
     planName: string,
     credits: number,
+    brand?: Brand,
   ): Promise<void> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping subscription email');
@@ -186,10 +191,8 @@ export class EmailService implements OnModuleInit {
 
     try {
       const { error } = await this.client.emails.send({
-        from: this.fromEmail,
+        ...this.branded({ subject: `Your ${planName} subscription is active — The AI Model Lab`, html: this.getSubscriptionTemplate(name, planName, credits) }, brand),
         to: [to],
-        subject: `Your ${planName} subscription is active — The AI Model Lab`,
-        html: this.getSubscriptionTemplate(name, planName, credits),
       });
 
       if (error) {
@@ -233,6 +236,7 @@ export class EmailService implements OnModuleInit {
     name: string,
     credits: number,
     packageName?: string,
+    brand?: Brand,
   ): Promise<void> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping credit purchase email');
@@ -241,10 +245,8 @@ export class EmailService implements OnModuleInit {
 
     try {
       const { error } = await this.client.emails.send({
-        from: this.fromEmail,
+        ...this.branded({ subject: 'Credits added to your account — The AI Model Lab', html: this.getCreditPurchaseTemplate(name, credits, packageName) }, brand),
         to: [to],
-        subject: 'Credits added to your account — The AI Model Lab',
-        html: this.getCreditPurchaseTemplate(name, credits, packageName),
       });
 
       if (error) {
@@ -265,6 +267,7 @@ export class EmailService implements OnModuleInit {
     attemptNumber: number,
     maxAttempts: number,
     canceled: boolean,
+    brand?: Brand,
   ): Promise<void> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping payment failed email');
@@ -277,10 +280,8 @@ export class EmailService implements OnModuleInit {
 
     try {
       const { error } = await this.client.emails.send({
-        from: this.fromEmail,
+        ...this.branded({ subject: subject, html: this.getPaymentFailedTemplate(name, planName, attemptNumber, maxAttempts, canceled) }, brand),
         to: [to],
-        subject,
-        html: this.getPaymentFailedTemplate(name, planName, attemptNumber, maxAttempts, canceled),
       });
 
       if (error) {
@@ -344,16 +345,16 @@ export class EmailService implements OnModuleInit {
     to: string;
     subject: string;
     html: string;
+    /** marca do destinatário (src/brand/brand.ts); sem ela, sai como sempre saiu */
+    brand?: Brand;
   }): Promise<{ id: string | null }> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping raw email');
       return { id: null };
     }
     const { data, error } = await this.client.emails.send({
-      from: this.fromEmail,
+      ...this.branded({ subject: params.subject, html: params.html }, params.brand),
       to: [params.to],
-      subject: params.subject,
-      html: params.html,
     });
     if (error) {
       throw new Error(`Resend error: ${JSON.stringify(error)}`);

@@ -1,3 +1,4 @@
+import { resolveBrand } from '../brand/brand';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
@@ -41,6 +42,8 @@ interface LifecycleRecipient {
   email: string;
   name: string | null;
   plan: string | null;
+  /** users.signup_brand: site em que a conta nasceu (null = The AI Model Lab) — marca e links do e-mail */
+  signupBrand?: string | null;
 }
 
 @Injectable()
@@ -115,6 +118,7 @@ export class LifecycleEmailsService {
             email: true,
             name: true,
             locale: true,
+            signupBrand: true,
             creditBalance: {
               select: {
                 planCreditsRemaining: true,
@@ -177,6 +181,7 @@ export class LifecycleEmailsService {
         body,
         {
           userId: sub.user.id,
+          signupBrand: sub.user.signupBrand,
           email: sub.user.email,
           name: sub.user.name,
           plan: sub.plan.name,
@@ -219,6 +224,7 @@ export class LifecycleEmailsService {
             email: true,
             name: true,
             locale: true,
+            signupBrand: true,
             creditBalance: {
               select: {
                 planCreditsRemaining: true,
@@ -290,6 +296,7 @@ export class LifecycleEmailsService {
         body,
         {
           userId: sub.user.id,
+          signupBrand: sub.user.signupBrand,
           email: sub.user.email,
           name: sub.user.name,
           plan: sub.plan.name,
@@ -336,6 +343,7 @@ export class LifecycleEmailsService {
             email: true,
             name: true,
             locale: true,
+            signupBrand: true,
             // Se o usuário voltou a assinar (nova ACTIVE), não é winback.
             subscriptions: {
               where: { status: SubscriptionStatus.ACTIVE },
@@ -388,6 +396,7 @@ export class LifecycleEmailsService {
         body,
         {
           userId: sub.user.id,
+          signupBrand: sub.user.signupBrand,
           email: sub.user.email,
           name: sub.user.name,
           plan: null,
@@ -428,6 +437,8 @@ export class LifecycleEmailsService {
         to: recipient.email,
         subject,
         html,
+        // conta que nasceu noutra marca (Funvmake): nome, links e remetente dela
+        brand: resolveBrand(recipient.signupBrand),
       });
       if (!id) {
         this.logger.warn(

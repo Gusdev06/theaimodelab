@@ -29,6 +29,7 @@ model User {
   country                 String?
   currency                String                    @default("BRL")
   locale                  String                    @default("pt-BR")
+  signupBrand             String?                   @map("signup_brand") /// site em que a conta nasceu ou foi vista primeiro: null = The AI Model Lab, "funvmake" = Funvmake (marca dos e-mails)
   timezone                String?
   marketingOptOut         Boolean                   @default(false) @map("marketing_opt_out")
   unlimitedModeImage      Boolean                   @default(false) @map("unlimited_mode_image")

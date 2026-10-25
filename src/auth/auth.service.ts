@@ -1,3 +1,4 @@
+import { BrandKey, brandKeyFor, resolveBrand } from '../brand/brand';
 import { Injectable, ConflictException, UnauthorizedException, BadRequestException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
@@ -67,6 +68,22 @@ export class AuthService {
   /**
    * Verifica se email já está em uso
    */
+  /** Marca do e-mail deste pedido: o site que pediu vence a marca gravada na conta (src/brand/brand.ts). */
+  private emailBrand(requestBrand: BrandKey | null | undefined, storedBrand: string | null | undefined) {
+    return resolveBrand(brandKeyFor(requestBrand, storedBrand));
+  }
+
+  /**
+   * Conta antiga sem marca gravada que aparece por um site reconhecido (hoje só a Funvmake): grava a marca para
+   * os e-mails sem pedido (cron, pagamento) saírem no site certo. Só preenche vazio; nunca troca nem atrasa o login.
+   */
+  private rememberBrand(user: { id: string; signupBrand?: string | null }, brand: BrandKey | null | undefined): void {
+    if (!brand || user.signupBrand) return;
+    this.prisma.user
+      .updateMany({ where: { id: user.id, signupBrand: null }, data: { signupBrand: brand } })
+      .catch((err: Error) => this.logger.warn(`rememberBrand ${user.id}: ${err.message}`));
+  }
+
   async checkAvailability(email?: string): Promise<{ emailTaken: boolean }> {
     let emailTaken = false;
 
@@ -85,6 +102,7 @@ export class AuthService {
     registerDto: RegisterDto,
     locale?: LocaleContext,
     requestContext?: MetaRequestContext,
+    brand?: BrandKey | null,
   ): Promise<AuthResponseDto> {
     const { email, password, name, referralCode, tracking } = registerDto;
 
@@ -122,6 +140,7 @@ export class AuthService {
           passwordHash: hashedPassword,
           isActive: true,
           role: 'USER',
+          ...(brand && { signupBrand: brand }),
           ...(validReferralCode && { referredByCode: validReferralCode }),
           ...(locale?.country && { country: locale.country }),
           ...(locale && { currency: locale.currency, locale: locale.locale }),
@@ -209,7 +228,7 @@ export class AuthService {
       },
     });
 
-    this.emailService.sendVerificationEmail(user.email, user.name, verificationCode).catch((err) => {
+    this.emailService.sendVerificationEmail(user.email, user.name, verificationCode, this.emailBrand(brand, user.signupBrand)).catch((err) => {
       this.logger.error(`Failed to send verification email: ${err.message}`);
     });
 
@@ -337,7 +356,7 @@ export class AuthService {
   /**
    * Login do usuário
    */
-  async login(email: string, password: string): Promise<AuthResponseDto> {
+  async login(email: string, password: string, brand?: BrandKey | null): Promise<AuthResponseDto> {
     const user = await this.validateUser(email, password);
 
     if (!user) {
@@ -348,6 +367,7 @@ export class AuthService {
       throw new UnauthorizedException({ message: t('errors.auth.EMAIL_NOT_VERIFIED'), code: 'EMAIL_NOT_VERIFIED' });
     }
 
+    this.rememberBrand(user, brand);
     const tokens = await this.generateTokens(user);
 
     return {
@@ -366,6 +386,7 @@ export class AuthService {
     locale?: LocaleContext,
     tracking?: TrackingDto,
     requestContext?: MetaRequestContext,
+    brand?: BrandKey | null,
   ): Promise<AuthResponseDto> {
     // Primeiro confere o token; só depois entra no login. Assim o erro do login (conta desativada, banco fora)
     // chega como é, em vez de virar "token inválido" ou disparar a 2ª tentativa como access token.
@@ -375,7 +396,7 @@ export class AuthService {
       provider: 'google',
       referralCode,
       tracking,
-    }, locale, requestContext);
+    }, locale, requestContext, brand);
   }
 
   /** Confere o token do Google (ID token primeiro, depois access token) e devolve quem é a pessoa. */
@@ -460,7 +481,7 @@ export class AuthService {
     provider: string;
     referralCode?: string;
     tracking?: TrackingDto;
-  }, locale?: LocaleContext, requestContext?: MetaRequestContext): Promise<AuthResponseDto> {
+  }, locale?: LocaleContext, requestContext?: MetaRequestContext, brand?: BrandKey | null): Promise<AuthResponseDto> {
     // Busca usuário existente por email ou Google ID
     let user = await this.prisma.user.findFirst({
       where: {
@@ -486,6 +507,7 @@ export class AuthService {
     }
 
     if (user) {
+      this.rememberBrand(user, brand);
       // Se o usuário existe mas não tinha OAuth, atualiza
       if (!user.oauthProvider) {
         user = await this.prisma.user.update({
@@ -524,6 +546,7 @@ export class AuthService {
             oauthProviderId: googleUser.googleId,
             emailVerified: true, // Google já verifica o email
             role: 'USER',
+            ...(brand && { signupBrand: brand }),
             ...(validReferralCode && { referredByCode: validReferralCode }),
             ...(locale?.country && { country: locale.country }),
             ...(locale && { currency: locale.currency, locale: locale.locale }),
@@ -601,7 +624,7 @@ export class AuthService {
         });
       }
 
-      this.emailService.sendWelcomeEmail(user.email, user.name).catch((err) => {
+      this.emailService.sendWelcomeEmail(user.email, user.name, this.emailBrand(brand, user.signupBrand)).catch((err) => {
         this.logger.error(`Failed to send welcome email: ${err.message}`);
       });
 
@@ -686,7 +709,7 @@ export class AuthService {
   /**
    * Verifica email do usuário usando o token enviado por email
    */
-  async verifyEmail(code: string): Promise<{ message: string }> {
+  async verifyEmail(code: string, brand?: BrandKey | null): Promise<{ message: string }> {
     const tokenHash = createHash('sha256').update(code).digest('hex');
 
     const verificationToken = await this.prisma.emailVerificationToken.findFirst({
@@ -722,7 +745,8 @@ export class AuthService {
     });
 
     if (user) {
-      this.emailService.sendWelcomeEmail(user.email, user.name).catch((err) => {
+      this.rememberBrand(user, brand);
+      this.emailService.sendWelcomeEmail(user.email, user.name, this.emailBrand(brand, user.signupBrand)).catch((err) => {
         this.logger.error(`Failed to send welcome email: ${err.message}`);
       });
     }
@@ -733,7 +757,7 @@ export class AuthService {
   /**
    * Reenvia email de verificação para o usuário pelo email
    */
-  async resendVerificationEmail(email: string): Promise<{ message: string }> {
+  async resendVerificationEmail(email: string, brand?: BrandKey | null): Promise<{ message: string }> {
     const user = await this.prisma.user.findUnique({
       where: { email: email.toLowerCase(), isActive: true },
     });
@@ -771,7 +795,7 @@ export class AuthService {
       },
     });
 
-    this.emailService.sendVerificationEmail(user.email, user.name, verificationCode).catch((err) => {
+    this.emailService.sendVerificationEmail(user.email, user.name, verificationCode, this.emailBrand(brand, user.signupBrand)).catch((err) => {
       this.logger.error(`Failed to send verification email: ${err.message}`);
     });
 
@@ -781,7 +805,7 @@ export class AuthService {
   /**
    * Solicita reset de senha — gera token e retorna (dev) ou envia email (prod)
    */
-  async forgotPassword(email: string): Promise<{ message: string }> {
+  async forgotPassword(email: string, brand?: BrandKey | null): Promise<{ message: string }> {
     const normalizedEmail = email.trim().toLowerCase();
     const user = await this.prisma.user.findUnique({
       where: { email: normalizedEmail },
@@ -808,7 +832,7 @@ export class AuthService {
       this.logger.warn(
         `forgotPassword: conta OAuth-only para ${normalizedEmail} (id=${user.id}) — enviando email de login Google`,
       );
-      this.emailService.sendOAuthLoginInfoEmail(user.email, user.name).catch((err) => {
+      this.emailService.sendOAuthLoginInfoEmail(user.email, user.name, this.emailBrand(brand, user.signupBrand)).catch((err) => {
         this.logger.error(`Failed to send OAuth login info email: ${err.message}`);
       });
       return { message: successMessage };
@@ -833,7 +857,7 @@ export class AuthService {
     });
 
     // Envia email de reset (fire-and-forget)
-    this.emailService.sendPasswordResetEmail(user.email, user.name, resetToken).catch((err) => {
+    this.emailService.sendPasswordResetEmail(user.email, user.name, resetToken, this.emailBrand(brand, user.signupBrand)).catch((err) => {
       this.logger.error(`Failed to send password reset email: ${err.message}`);
     });
 
