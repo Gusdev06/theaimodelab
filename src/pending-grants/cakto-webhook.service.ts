@@ -9,6 +9,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { WebhookLogsService } from '../webhook-logs/webhook-logs.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaymentsService } from '../payments/payments.service';
+import { CheckoutCodesService, SalePackage } from '../checkout-codes/checkout-codes.service';
 
 /**
  * Webhook da Cakto (https://cakto.com.br) — gateway BRL do Brasil, coexiste com o
@@ -42,7 +43,7 @@ import { PaymentsService } from '../payments/payments.service';
  * teste da Cakto após deploy e ajustar os helpers se necessário.
  *
  * Autenticação: compara timing-safe o `secret` do payload (ou header/query) com
- * CAKTO_WEBHOOK_SECRET. Sem env configurada, pula a checagem (com warning), em
+ * CAKTO_WEBHOOK_SECRET e os de CAKTO_WEBHOOK_EXTRA_SECRETS (outras contas). Sem env configurada, pula a checagem (com warning), em
  * paridade com os outros providers do módulo.
  */
 @Injectable()
@@ -54,6 +55,7 @@ export class CaktoWebhookService {
     private readonly webhookLogs: WebhookLogsService,
     private readonly prisma: PrismaService,
     private readonly paymentsService: PaymentsService,
+    private readonly checkoutCodes: CheckoutCodesService,
   ) {}
 
   async handle(
@@ -79,24 +81,37 @@ export class CaktoWebhookService {
     // PACOTE de crédito avulso (produto de pagamento único). Se nada casar, o
     // evento é de outro produto da conta (não é nosso) → ignora sem erro.
     const offerCandidates = this.extractOfferCandidates(data);
-    const plan = offerCandidates.length
+    let plan: { id: string; slug: string; name: string } | null = offerCandidates.length
       ? await this.prisma.plan.findFirst({
           where: { caktoOfferCode: { in: offerCandidates } },
           select: { id: true, slug: true, name: true },
         })
       : null;
 
+    // Código extra (checkout_codes): oferta de outra marca (Funvmake) ou de outra conta
+    // da Cakto (troca de titular), inclusive a oferta antiga de quem renova.
+    let extraPackage: SalePackage | null = null;
+    if (!plan) {
+      const extra = await this.checkoutCodes.findSaleTarget('cakto', offerCandidates, {
+        activePlanOnly: false,
+      });
+      if (extra?.kind === 'plan') plan = extra.plan;
+      else if (extra?.kind === 'package') extraPackage = extra.creditPackage;
+    }
+
     const kind = this.classifyEvent(payload, data);
 
     if (!plan) {
       // Pacote de crédito avulso (one-off, BRL via Cakto). Concede créditos bônus
       // reutilizando o mesmo caminho do fluxo Perfect Pay de pacotes.
-      const creditPackage = offerCandidates.length
-        ? await this.prisma.creditPackage.findFirst({
-            where: { caktoOfferCode: { in: offerCandidates } },
-            select: { id: true, name: true, credits: true },
-          })
-        : null;
+      const creditPackage =
+        extraPackage ??
+        (offerCandidates.length
+          ? await this.prisma.creditPackage.findFirst({
+              where: { caktoOfferCode: { in: offerCandidates } },
+              select: { id: true, name: true, credits: true },
+            })
+          : null);
 
       if (creditPackage) {
         // Reembolso/chargeback de pacote: retira o bônus que ainda sobra, marca o
@@ -287,11 +302,15 @@ export class CaktoWebhookService {
     headers?: Record<string, string>,
     querySecret?: string,
   ): void {
-    const expected = this.configService
-      .get<string>('CAKTO_WEBHOOK_SECRET')
-      ?.trim();
+    // Segredo da conta principal + os de outras contas da Cakto (troca de titular, outra
+    // marca), separados por vírgula em CAKTO_WEBHOOK_EXTRA_SECRETS. O principal fica
+    // inteiro, sem dividir por vírgula, para nunca quebrar o segredo que já está no ar.
+    const expectedSecrets = [
+      this.configService.get<string>('CAKTO_WEBHOOK_SECRET')?.trim(),
+      ...(this.configService.get<string>('CAKTO_WEBHOOK_EXTRA_SECRETS') ?? '').split(',').map((v) => v.trim()),
+    ].filter((v): v is string => typeof v === 'string' && v.length > 0);
 
-    if (!expected) {
+    if (expectedSecrets.length === 0) {
       // Sem segredo configurado o webhook ficava ABERTO (TKT-101). Falha fechado;
       // só em desenvolvimento, com CAKTO_WEBHOOK_ALLOW_UNAUTHENTICATED=true, passa.
       if (
@@ -322,8 +341,10 @@ export class CaktoWebhookService {
     }
 
     const a = Buffer.from(received);
-    const b = Buffer.from(expected);
-    const valid = a.length === b.length && timingSafeEqual(a, b);
+    const valid = expectedSecrets.some((secret) => {
+      const b = Buffer.from(secret);
+      return a.length === b.length && timingSafeEqual(a, b);
+    });
     if (!valid) {
       throw new UnauthorizedException('Invalid Cakto secret');
     }

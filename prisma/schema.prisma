@@ -127,6 +127,7 @@ model Plan {
   unlimitedPriority        Int?           @map("unlimited_priority")
   unlimitedModels          Json?          @map("unlimited_models")
   prices                   PlanPrice[]
+  checkoutCodes            CheckoutCode[]
   subscriptions            Subscription[] @relation("currentPlan")
   scheduledSubscriptions   Subscription[] @relation("scheduledPlan")
 
@@ -179,6 +180,7 @@ model CreditPackage {
   caktoOfferCode     String?              @map("cakto_offer_code")
   createdAt          DateTime             @default(now()) @map("created_at")
   prices             CreditPackagePrice[]
+  checkoutCodes      CheckoutCode[]
   payments           Payment[]
 
   @@map("credit_packages")
@@ -199,6 +201,41 @@ model CreditPackagePrice {
   @@unique([creditPackageId, currency])
   @@index([currency])
   @@map("credit_package_prices")
+}
+
+/// Códigos de checkout extras de um plano ou pacote, por marca e por conta do gateway. O código e o link
+/// principais continuam no próprio plano/pacote (`perfectpayPlanCode`, `caktoOfferCode`, `checkoutUrl`); cada
+/// linha aqui faz o webhook reconhecer mais um código e, com `checkoutUrl`, mostra esse link na vitrine da marca.
+/// Serve para a Funvmake vender com produtos próprios e para trocar de conta no gateway (CPF → CNPJ, conta
+/// antiga → nova) sem perder as renovações de quem assinou no código antigo.
+model CheckoutCode {
+  id              String         @id @default(cuid())
+  /// 'perfectpay' | 'cakto'
+  gateway         String
+  /// Código que chega no webhook. Perfect Pay: `plan.code` do postback (ou o código do link). Cakto: a oferta.
+  code            String
+  /// Marca cuja vitrine mostra `checkoutUrl`: 'taml' | 'funvmake'. Na marca de origem o link do plano manda.
+  brand           String         @default("taml")
+  /// Moeda do link: 'USD' e 'EUR' (planos, Perfect Pay) | 'BRL' (Cakto).
+  currency        String
+  /// Link mostrado na vitrine da marca. Null = só reconhece a venda (código antigo, renovações).
+  checkoutUrl     String?        @map("checkout_url")
+  /// Conta do gateway, só para leitura ('cpf', 'cnpj-brain2', 'conta-antiga').
+  account         String?
+  note            String?
+  planId          String?        @map("plan_id")
+  creditPackageId String?        @map("credit_package_id")
+  isActive        Boolean        @default(true) @map("is_active")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+  plan            Plan?          @relation(fields: [planId], references: [id], onDelete: Cascade)
+  creditPackage   CreditPackage? @relation(fields: [creditPackageId], references: [id], onDelete: Cascade)
+
+  @@unique([gateway, code])
+  @@index([planId])
+  @@index([creditPackageId])
+  @@index([brand, currency])
+  @@map("checkout_codes")
 }
 
 model MarketingLead {

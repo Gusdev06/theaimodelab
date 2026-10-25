@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { PlansController } from '../plans.controller';
 import { PlansService } from '../plans.service';
+import { CheckoutCodesService } from '../../checkout-codes/checkout-codes.service';
 
 const mockPlansService = {
   findAllPlans: jest.fn(),
@@ -12,7 +13,10 @@ describe('PlansController', () => {
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [PlansController],
-      providers: [{ provide: PlansService, useValue: mockPlansService }],
+      providers: [
+        { provide: PlansService, useValue: mockPlansService },
+        { provide: CheckoutCodesService, useValue: { storefrontLinks: jest.fn(async () => new Map()) } },
+      ],
     }).compile();
 
     controller = module.get<PlansController>(PlansController);

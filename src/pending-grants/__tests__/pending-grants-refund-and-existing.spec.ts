@@ -113,7 +113,7 @@ describe('PendingGrantsService', () => {
 });
 
 describe('PerfectpayWebhookService — reembolso não revoga assinatura por engano (TKT-099)', () => {
-  function webhook(paymentRefund: any, extra: { plan?: any; pkg?: any } = {}) {
+  function webhook(paymentRefund: any, extra: { plan?: any; pkg?: any; extraTarget?: any } = {}) {
     const paymentsService = {
       refundExternalPayment: jest.fn(async () => paymentRefund),
       revokePerfectpaySubscription: jest.fn(async () => ({ processed: true })),
@@ -132,6 +132,7 @@ describe('PerfectpayWebhookService — reembolso não revoga assinatura por enga
       {} as any,
       prisma as any,
       paymentsService as any,
+      { findSaleTarget: jest.fn(async () => extra.extraTarget ?? null) } as any,
     );
     return { service, paymentsService, pendingGrantsService };
   }
@@ -167,6 +168,19 @@ describe('PerfectpayWebhookService — reembolso não revoga assinatura por enga
     const { service, paymentsService, pendingGrantsService } = webhook({ found: false }, { pkg: { name: 'Mega' } });
 
     const result = await service.handle(refundPayload({ plan: { code: 'PPPACK' } }));
+
+    expect(result.processed).toBe(false);
+    expect(pendingGrantsService.revokeForRefund).not.toHaveBeenCalled();
+    expect(paymentsService.revokePerfectpaySubscription).not.toHaveBeenCalled();
+  });
+
+  it('reembolso de pack de outra marca (código extra) sem pagamento registrado: não vira reembolso da isca', async () => {
+    const { service, paymentsService, pendingGrantsService } = webhook(
+      { found: false },
+      { extraTarget: { kind: 'package', creditPackage: { id: 'pkg-1', name: 'Mega', credits: 25000 } } },
+    );
+
+    const result = await service.handle(refundPayload({ plan: { code: 'PPFUNV' } }));
 
     expect(result.processed).toBe(false);
     expect(pendingGrantsService.revokeForRefund).not.toHaveBeenCalled();

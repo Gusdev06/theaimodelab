@@ -4,6 +4,7 @@ import {
   Post,
   Body,
   Query,
+  Req,
   UsePipes,
   ValidationPipe,
   GoneException,
@@ -27,6 +28,7 @@ import { PlansService } from '../plans/plans.service';
 import { StripeService } from '../payments/stripe.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { MetaConversionsService } from '../meta/meta-conversions.service';
+import { CheckoutCodesService } from '../checkout-codes/checkout-codes.service';
 
 @ApiTags('credits')
 @ApiBearerAuth()
@@ -38,6 +40,7 @@ export class CreditsController {
     private readonly stripeService: StripeService,
     private readonly prisma: PrismaService,
     private readonly metaConversionsService: MetaConversionsService,
+    private readonly checkoutCodes: CheckoutCodesService,
   ) {}
 
   @Get('balance')
@@ -72,6 +75,7 @@ export class CreditsController {
   async getPackages(
     @CurrentUser('sub') userId: string,
     @Query('currency') currencyQuery?: string,
+    @Req() req?: { headers?: Record<string, unknown> },
   ) {
     let resolvedCurrency = currencyQuery?.toUpperCase();
     if (!resolvedCurrency) {
@@ -81,15 +85,18 @@ export class CreditsController {
       });
       resolvedCurrency = user.currency;
     }
-    return this.buildPackagesForCurrency(resolvedCurrency!, true);
+    return this.buildPackagesForCurrency(resolvedCurrency!, true, req?.headers);
   }
 
   @Public()
   @Get('packages/public')
   @ApiOperation({ summary: 'Lista pacotes de créditos (público, sem autenticação)' })
-  async getPackagesPublic(@Query('currency') currencyQuery?: string) {
+  async getPackagesPublic(
+    @Query('currency') currencyQuery?: string,
+    @Req() req?: { headers?: Record<string, unknown> },
+  ) {
     const resolvedCurrency = (currencyQuery ?? 'BRL').toUpperCase();
-    return this.buildPackagesForCurrency(resolvedCurrency, false);
+    return this.buildPackagesForCurrency(resolvedCurrency, false, req?.headers);
   }
 
   /**
@@ -104,9 +111,12 @@ export class CreditsController {
   private async buildPackagesForCurrency(
     requestedCurrency: string,
     includeStripePriceId: boolean,
+    headers?: Record<string, unknown>,
   ) {
     const currency = requestedCurrency.toUpperCase();
     const packages = await this.creditsService.getPackages();
+    // Link da marca do site que pediu (Funvmake com produtos próprios); sem ele, o de sempre.
+    const brandLinks = await this.checkoutCodes.storefrontLinks(headers, currency, 'package');
     const results = await Promise.all(
       packages.map(async (pkg) => {
         let priceCents = pkg.priceCents;
@@ -128,6 +138,7 @@ export class CreditsController {
         } catch {
           return null;
         }
+        checkoutUrl = brandLinks.get(pkg.id) ?? checkoutUrl;
 
         // BRL só aparece se houver preço BRL de verdade E link de checkout Cakto.
         // Sem offer code cadastrado → checkoutUrl NULL → não mostra o pacote em BRL.
