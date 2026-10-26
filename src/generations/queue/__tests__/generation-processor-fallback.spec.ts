@@ -2,7 +2,7 @@ import { UnrecoverableError } from 'bullmq';
 import { GenerationProcessor } from '../generation.processor';
 import { GenerationJobName } from '../generation-queue.constants';
 import { GenerationUnrecoverableError } from '../unrecoverable.error';
-import { ContentSafetyError, MinorSafetyBlockError } from '../../errors/content-safety.error';
+import { ConsentRequiredSafetyError, ContentSafetyError, MinorSafetyBlockError } from '../../errors/content-safety.error';
 
 /**
  * Orquestração do fallback (dispatchWithFallback): provedores e banco
@@ -89,7 +89,13 @@ function setup(record: GenerationRecord | null, config: Record<string, string> =
     configService,
     contentSafety,
   );
-  return { processor, prisma, creditsService, plansService, configService, contentSafety };
+  // conferência "foto = geração limpa da própria conta" (own-media): padrão = não reconhecida, sem rede
+  const ownMedia = {
+    allOwnClean: jest.fn(async () => false),
+    recordGeneration: jest.fn(async () => undefined),
+  };
+  (processor as unknown as { ownMediaInstance: unknown }).ownMediaInstance = ownMedia;
+  return { processor, prisma, creditsService, plansService, configService, contentSafety, ownMedia };
 }
 
 /** primário falha com `primaryError`; alternativa entrega (ou falha com `fallbackError`). */
@@ -438,6 +444,70 @@ describe('GenerationProcessor — fallback automático de modelo', () => {
 
       expect(calls).toEqual([GenerationJobName.IMAGE_TO_VIDEO_KIE, GenerationJobName.MINIMAX_H3_IMAGE_TO_VIDEO]);
       expect(record.parameters).toMatchObject({ fallbackTo: 'wavespeed-minimax-h3', fallbackKind: kind });
+    });
+
+    it('bloqueio de conteúdo com foto que é geração limpa da própria conta: desvia para o MiniMax com a foto, sem atestado', async () => {
+      const record = makeRecord({ type: 'IMAGE_TO_VIDEO' });
+      const { processor, ownMedia } = setup(record);
+      ownMedia.allOwnClean.mockResolvedValue(true);
+      const blocked = new ContentSafetyError('Veo generation failed: public error unsafe image upload.');
+      const { calls } = scriptDispatch(processor, record, GenerationJobName.IMAGE_TO_VIDEO_KIE, blocked);
+
+      await processor.dispatchWithFallback(GenerationJobName.IMAGE_TO_VIDEO_KIE, veoImageJob() as any, { queued: true });
+
+      expect(ownMedia.allOwnClean).toHaveBeenCalledWith('user-1', ['https://cdn/in.jpg']);
+      expect(calls).toEqual([GenerationJobName.IMAGE_TO_VIDEO_KIE, GenerationJobName.MINIMAX_H3_IMAGE_TO_VIDEO]);
+      expect(record.parameters).toMatchObject({ fallbackTo: 'wavespeed-minimax-h3', fallbackKind: 'safety' });
+      expect(record.parameters).not.toHaveProperty('fallbackBlocked');
+    });
+
+    it('foto não reconhecida como geração da própria conta: segue barrado (e confere a origem só uma vez)', async () => {
+      const record = makeRecord({ type: 'IMAGE_TO_VIDEO' });
+      const { processor, ownMedia } = setup(record);
+      const blocked = new ContentSafetyError('Veo generation failed: public error unsafe image upload.');
+      const { calls } = scriptDispatch(processor, record, GenerationJobName.IMAGE_TO_VIDEO_KIE, blocked);
+
+      await expect(
+        processor.dispatchWithFallback(GenerationJobName.IMAGE_TO_VIDEO_KIE, veoImageJob() as any, { queued: true }),
+      ).rejects.toBeInstanceOf(GenerationUnrecoverableError);
+
+      expect(ownMedia.allOwnClean).toHaveBeenCalledTimes(1);
+      expect(calls).toHaveLength(1);
+      expect(record.parameters).toMatchObject({ fallbackBlocked: { kind: 'safety', reason: 'UNCENSORED_WITH_USER_MEDIA' } });
+    });
+
+    it('vídeo de referência no pedido: nem confere a origem como foto (vídeo nunca é liberado)', async () => {
+      const record = makeRecord({ type: 'IMAGE_TO_VIDEO' });
+      const { processor, ownMedia } = setup(record);
+      const blocked = new ContentSafetyError('Veo generation failed: public error unsafe image upload.');
+      scriptDispatch(processor, record, GenerationJobName.IMAGE_TO_VIDEO_KIE, blocked);
+
+      await expect(
+        processor.dispatchWithFallback(
+          GenerationJobName.IMAGE_TO_VIDEO_KIE,
+          { ...veoImageJob(), referenceVideoUrls: ['https://cdn/ref.mp4'] } as any,
+          { queued: true },
+        ),
+      ).rejects.toBeInstanceOf(GenerationUnrecoverableError);
+
+      expect(ownMedia.allOwnClean).toHaveBeenCalledWith('user-1', null);
+    });
+
+    it('env liberado, bloqueio de conteúdo, sem atestado e foto de fora: a guarda de atestado confere a mídia do pedido e barra', async () => {
+      const record = makeRecord({ type: 'IMAGE_TO_VIDEO' });
+      const { processor, ownMedia } = setup(record, { GENERATION_FALLBACK_UNCENSORED_WITH_MEDIA: 'true' });
+      const blocked = new ContentSafetyError('Veo generation failed: public error unsafe image upload.');
+      const { calls } = scriptDispatch(processor, record, GenerationJobName.IMAGE_TO_VIDEO_KIE, blocked);
+
+      const error = await processor
+        .dispatchWithFallback(GenerationJobName.IMAGE_TO_VIDEO_KIE, veoImageJob() as any, { queued: true })
+        .catch((e: Error) => e);
+
+      expect(ownMedia.allOwnClean).toHaveBeenCalledWith('user-1', ['https://cdn/in.jpg']);
+      expect(calls).toHaveLength(1);
+      // o fallback embrulha o bloqueio terminal; o process() desembrulha antes de encerrar
+      expect(error).toBeInstanceOf(GenerationUnrecoverableError);
+      expect((error as GenerationUnrecoverableError).original).toBeInstanceOf(ConsentRequiredSafetyError);
     });
 
     it('valor diferente de "true" no env mantém a guarda', async () => {

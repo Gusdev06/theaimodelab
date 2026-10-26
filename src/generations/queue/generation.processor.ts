@@ -43,6 +43,12 @@ import {
   planFallback,
 } from './generation-fallback';
 import {
+  Fingerprint,
+  fingerprintImage,
+  inputImageUrlsOfJob,
+  OwnMediaProvenance,
+} from '../provenance/own-media';
+import {
   GenerationUnrecoverableError,
   isUnrecoverableJobError,
   unwrapJobError,
@@ -137,6 +143,11 @@ interface SafetyFallbackRequest {
    * a guarda olha as imagens guardadas da geração (é o que o fallbackToSeedream manda ao Unlocked).
    */
   userMedia?: boolean;
+  /**
+   * Já conferido por quem chama (tryFallback): todas as fotos do pedido são gerações limpas da própria conta
+   * (src/generations/provenance/own-media.ts). Ausente, a guarda confere as fotos guardadas da geração.
+   */
+  ownCleanMedia?: boolean;
 }
 
 /** O que o encerramento de uma geração precisa do job (handleFailure). */
@@ -329,6 +340,14 @@ export class GenerationProcessor extends WorkerHost {
 
   /** Depois disso a geração está perto da janela do cron: não vale começar outra chamada. */
   private static readonly FALLBACK_DEADLINE_MS = 20 * 60 * 1000;
+
+  private ownMediaInstance?: OwnMediaProvenance;
+
+  /** Conferência "a foto é uma geração limpa da própria conta" (src/generations/provenance/own-media.ts). */
+  private get ownMedia(): OwnMediaProvenance {
+    this.ownMediaInstance ??= new OwnMediaProvenance(this.prisma);
+    return this.ownMediaInstance;
+  }
 
   /** Erros que não mudam 30 s depois: sem retry cego do BullMQ (TKT-107). */
   private static readonly NO_RETRY_CODES = new Set<string>([
@@ -586,7 +605,7 @@ export class GenerationProcessor extends WorkerHost {
         .filter((url): url is string => !!url);
     }
 
-    const decision = evaluateFallback(jobName, data, {
+    const fallbackContext = {
       kind,
       originalModel: generation.modelUsed,
       generationType: generation.type,
@@ -594,7 +613,26 @@ export class GenerationProcessor extends WorkerHost {
       aspectRatio: generation.aspectRatio,
       inputImageUrls,
       allowUncensoredWithMedia: this.uncensoredWithMediaAllowed(),
-    });
+    };
+    let decision = evaluateFallback(jobName, data, fallbackContext);
+    // A guarda barrou porque o pedido leva foto. Se todas as fotos são gerações limpas da própria conta (a modelo
+    // de IA que ela criou aqui, não uma foto de fora), o desvio roda com elas (pedido do dono, 26/10/2026).
+    // fotos do pedido (null = há vídeo/áudio ou formato que não dá para conferir)
+    const jobImages = inputImageUrlsOfJob(data, inputImageUrls);
+    const jobHasMedia = jobImages === null || jobImages.length > 0;
+    let ownCleanMedia: boolean | undefined;
+    if (decision.blocked?.reason === 'UNCENSORED_WITH_USER_MEDIA') {
+      ownCleanMedia = await this.ownMedia.allOwnClean(generation.userId, jobImages);
+      if (ownCleanMedia) {
+        decision = evaluateFallback(jobName, data, {
+          ...fallbackContext,
+          allowUncensoredWithMedia: true,
+        });
+        this.logger.log(
+          `[FALLBACK] gen=${generation.id}: fotos reconhecidas como gerações limpas da própria conta — desvio liberado`,
+        );
+      }
+    }
     const errorCode = classifyGenerationFailure(
       rawFailureText(originalError),
       safety,
@@ -637,9 +675,16 @@ export class GenerationProcessor extends WorkerHost {
     // Desvio por bloqueio de conteúdo leva prompt e fotos a modelo sem filtro (MiniMax H3):
     // mesma guarda da PR #4 (lança bloqueio terminal se for menor ou foto sem atestado).
     if (kind === 'safety') {
+      // Desvio liberado pelo env com mídia no pedido: a guarda de atestado confere a MESMA mídia do pedido (não
+      // só as fotos guardadas da geração, que podem não incluir um vídeo de referência).
+      if (ownCleanMedia === undefined && jobHasMedia) {
+        ownCleanMedia = await this.ownMedia.allOwnClean(generation.userId, jobImages);
+      }
       await this.assertSafetyFallbackAllowed(generation.id, originalError, {
         model: generation.modelUsed,
         target: 'uncensored',
+        userMedia: jobHasMedia,
+        ownCleanMedia,
       });
     }
 
@@ -649,6 +694,7 @@ export class GenerationProcessor extends WorkerHost {
       kind,
       reason: errorCode,
       originalError: originalError.message.slice(0, 300),
+      ...(ownCleanMedia ? { media: 'own_clean' } : {}),
     };
     await this.prisma.generation.update({
       where: { id: generation.id },
@@ -2281,10 +2327,18 @@ export class GenerationProcessor extends WorkerHost {
         (await this.hasStoredInputImages(generationId)));
     const hasConsent =
       hasUserImages && (await this.hasConsentForGeneration(generationId));
+    // Sem atestado, mas as fotos são gerações limpas da própria conta (a modelo de IA dela): não é foto de pessoa
+    // real, o atestado não se aplica. Recusa por menor nunca chega aqui (isMinor decide antes).
+    const ownClean =
+      hasUserImages &&
+      !hasConsent &&
+      (request.ownCleanMedia === true ||
+        (request.ownCleanMedia === undefined &&
+          (await this.storedImagesAreOwnClean(generationId))));
     const decision = decideSafetyFallback({
       target: request.target,
       isMinor,
-      hasUserImages,
+      hasUserImages: hasUserImages && !ownClean,
       hasConsent,
     });
 
@@ -2406,6 +2460,25 @@ export class GenerationProcessor extends WorkerHost {
         `[SAFETY_GUARD] gen=${generationId}: falha ao ler as imagens de entrada (${(error as Error).message}) — tratando como foto do usuário`,
       );
       return true;
+    }
+  }
+
+  /** Todas as fotos guardadas da geração são gerações limpas da própria conta? Falha = não. */
+  private async storedImagesAreOwnClean(generationId: string): Promise<boolean> {
+    try {
+      const generation = await this.prisma.generation.findUnique({
+        where: { id: generationId },
+        select: { userId: true, inputImages: { select: { url: true } } },
+      });
+      if (!generation || generation.inputImages.length === 0) return false;
+      const urls = generation.inputImages.map((image) => image.url);
+      if (urls.some((url) => !url)) return false;
+      return await this.ownMedia.allOwnClean(generation.userId, urls as string[]);
+    } catch (error) {
+      this.logger.warn(
+        `[SAFETY_GUARD] gen=${generationId}: origem das fotos não conferida (${(error as Error).message})`,
+      );
+      return false;
     }
   }
 
@@ -2761,6 +2834,7 @@ export class GenerationProcessor extends WorkerHost {
     // For videos: skip thumbnails now, generate them async after delivery.
     let thumbnailUrls: (string | null)[] = result.outputUrls.map(() => null);
     let blurDataUrls: (string | null)[] = result.outputUrls.map(() => null);
+    const outputFingerprints: (Fingerprint | null)[] = result.outputUrls.map(() => null);
 
     if (isImage) {
       try {
@@ -2780,11 +2854,13 @@ export class GenerationProcessor extends WorkerHost {
         );
 
         blurDataUrls = await Promise.all(
-          result.outputUrls.map(async (url) => {
+          result.outputUrls.map(async (url, index) => {
             try {
               const res = await fetch(url);
               if (!res.ok) return null;
               const buf = Buffer.from(await res.arrayBuffer());
+              // impressão visual da saída (own-media), do mesmo download: falha aqui não afeta a miniatura
+              outputFingerprints[index] = await fingerprintImage(buf).catch(() => null);
               return this.uploadsService.generateBlurDataUrl(buf);
             } catch {
               return null;
@@ -2848,8 +2924,15 @@ export class GenerationProcessor extends WorkerHost {
       );
     }
 
-    // Fire-and-forget: delete input files from S3 to save storage
-    this.cleanupInputFiles(generationId);
+    // Fire-and-forget: delete input files from S3 to save storage. Imagem: antes, a impressão visual das saídas
+    // (a linhagem confere as fotos de entrada, que a limpeza apaga).
+    if (isImage) {
+      void this.ownMedia
+        .recordGeneration(generationId, outputFingerprints)
+        .finally(() => this.cleanupInputFiles(generationId));
+    } else {
+      this.cleanupInputFiles(generationId);
+    }
   }
 
   @OnWorkerEvent('failed')

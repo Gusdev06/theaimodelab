@@ -394,6 +394,55 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
       expect(failedUpdateOf(prisma)).toBeUndefined();
     });
 
+    it("alvo 'uncensored' sem atestado, mas a foto é geração limpa da própria conta: segue para o Unlocked com a foto", async () => {
+      const ownMedia = { allOwnClean: jest.fn(async () => true), recordGeneration: jest.fn() };
+      (processor as unknown as { ownMediaInstance: unknown }).ownMediaInstance = ownMedia;
+      prisma.generation.findUnique.mockResolvedValue({
+        status: GenerationStatus.PROCESSING,
+        modelUsed: 'modelo-da-geracao',
+        prompt: 'prompt gravado',
+        parameters: {},
+        userId: USER_ID,
+        inputImages: [{ url: 'https://cdn.test/foto.png' }],
+      });
+      seedream.generateImage.mockResolvedValue({
+        outputUrls: ['https://cdn.test/saida.png'],
+        modelUsed: 'seedream',
+      });
+
+      await expect(
+        processor.process(imageJob({ hasInputImages: true })),
+      ).resolves.toBeUndefined();
+
+      expect(ownMedia.allOwnClean).toHaveBeenCalledWith(USER_ID, ['https://cdn.test/foto.png']);
+      expect(seedream.generateImage).toHaveBeenCalledWith(
+        expect.objectContaining({ imageUrls: ['https://cdn.test/foto.png'] }),
+      );
+      expect(failedUpdateOf(prisma)).toBeUndefined();
+    });
+
+    it("alvo 'uncensored' sem atestado e foto de fora: continua pedindo o atestado", async () => {
+      const ownMedia = { allOwnClean: jest.fn(async () => false), recordGeneration: jest.fn() };
+      (processor as unknown as { ownMediaInstance: unknown }).ownMediaInstance = ownMedia;
+      prisma.generation.findUnique.mockResolvedValue({
+        status: GenerationStatus.PROCESSING,
+        modelUsed: 'modelo-da-geracao',
+        prompt: 'prompt gravado',
+        parameters: {},
+        userId: USER_ID,
+        inputImages: [{ url: 'https://cdn.test/foto.png' }],
+      });
+
+      await expect(
+        processor.process(imageJob({ hasInputImages: true })),
+      ).resolves.toBeUndefined();
+
+      expect(seedream.generateImage).not.toHaveBeenCalled();
+      expect(failedUpdateOf(prisma)?.data).toMatchObject({
+        errorCode: GenerationFailureCode.CONTENT_BLOCKED_NEEDS_CONSENT,
+      });
+    });
+
     it("alvo 'same_provider' sem atestado: refaz com o prompt reescrito no mesmo provedor (nem consulta o atestado)", async () => {
       grok.generateImageToVideo
         .mockRejectedValueOnce(
