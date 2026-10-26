@@ -493,11 +493,11 @@ model Generation {
   @@map("generations")
 }
 
-/// Impressão visual (dHash de 64 bits) das imagens que a plataforma GEROU para a conta. Serve para reconhecer, num
+/// Impressão visual (dHash de 64 bits + miniatura 16x16) das imagens que a plataforma GEROU para a conta. Serve para reconhecer, num
 /// pedido novo, que a foto enviada é uma geração da própria cliente (o site manda a imagem recomprimida, então o hash
 /// exato não serve). `cleanLineage` = a geração nasceu só de texto, ou de fotos que também eram gerações limpas dela;
 /// foto vinda de fora (ou derivada dela: troca de rosto, provador, prompt clonado) nunca é limpa. Usado pelo desvio
-/// automático para modelo sem censura: só leva foto quando todas as fotos do pedido são limpas.
+/// automático para modelo sem censura: só leva foto quando todas as fotos do pedido batem, e aí leva a NOSSA cópia.
 model MediaFingerprint {
   id           String     @id @default(cuid())
   userId       String     @map("user_id")
@@ -506,6 +506,8 @@ model MediaFingerprint {
   outputOrder  Int        @map("output_order")
   /// dHash 9x8 em hexadecimal (16 caracteres)
   dhash        String
+  /// miniatura 16x16 em cinza, hexadecimal (512 caracteres): segunda conferência, mais estrita que o dHash
+  thumb        String
   /// largura ÷ altura da imagem
   aspect       Float
   cleanLineage Boolean    @map("clean_lineage")

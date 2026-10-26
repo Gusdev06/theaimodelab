@@ -8,6 +8,7 @@ CREATE TABLE "media_fingerprints" (
     "generation_id" TEXT NOT NULL,
     "output_order" INTEGER NOT NULL,
     "dhash" TEXT NOT NULL,
+    "thumb" TEXT NOT NULL,
     "aspect" DOUBLE PRECISION NOT NULL,
     "clean_lineage" BOOLEAN NOT NULL,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,

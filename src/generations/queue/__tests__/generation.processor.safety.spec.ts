@@ -395,7 +395,19 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
     });
 
     it("alvo 'uncensored' sem atestado, mas a foto é geração limpa da própria conta: segue para o Unlocked com a foto", async () => {
-      const ownMedia = { allOwnClean: jest.fn(async () => true), recordGeneration: jest.fn() };
+      const ownMedia = {
+        matchOwnClean: jest.fn(async () => [
+          {
+            inputUrl: 'https://cdn.test/foto.png',
+            generationId: 'gen-modelo',
+            outputOrder: 0,
+            outputUrl: 'https://s3.test/gen-modelo/0.png',
+            distance: 1,
+            thumbDiff: 2,
+          },
+        ]),
+        recordGeneration: jest.fn(),
+      };
       (processor as unknown as { ownMediaInstance: unknown }).ownMediaInstance = ownMedia;
       prisma.generation.findUnique.mockResolvedValue({
         status: GenerationStatus.PROCESSING,
@@ -414,15 +426,16 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
         processor.process(imageJob({ hasInputImages: true })),
       ).resolves.toBeUndefined();
 
-      expect(ownMedia.allOwnClean).toHaveBeenCalledWith(USER_ID, ['https://cdn.test/foto.png']);
+      expect(ownMedia.matchOwnClean).toHaveBeenCalledWith(USER_ID, ['https://cdn.test/foto.png']);
+      // ao Unlocked vai a NOSSA cópia da geração que bateu, nunca a foto do pedido
       expect(seedream.generateImage).toHaveBeenCalledWith(
-        expect.objectContaining({ imageUrls: ['https://cdn.test/foto.png'] }),
+        expect.objectContaining({ imageUrls: ['https://s3.test/gen-modelo/0.png'] }),
       );
       expect(failedUpdateOf(prisma)).toBeUndefined();
     });
 
     it("alvo 'uncensored' sem atestado e foto de fora: continua pedindo o atestado", async () => {
-      const ownMedia = { allOwnClean: jest.fn(async () => false), recordGeneration: jest.fn() };
+      const ownMedia = { matchOwnClean: jest.fn(async () => null), recordGeneration: jest.fn() };
       (processor as unknown as { ownMediaInstance: unknown }).ownMediaInstance = ownMedia;
       prisma.generation.findUnique.mockResolvedValue({
         status: GenerationStatus.PROCESSING,

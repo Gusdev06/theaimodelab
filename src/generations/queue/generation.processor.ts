@@ -40,13 +40,16 @@ import {
   FallbackKind,
   fallbackKindOf,
   FallbackPlan,
+  isUncensoredFallbackModel,
   planFallback,
 } from './generation-fallback';
 import {
   Fingerprint,
   fingerprintImage,
   inputImageUrlsOfJob,
+  OwnMatch,
   OwnMediaProvenance,
+  substituteImageUrls,
 } from '../provenance/own-media';
 import {
   GenerationUnrecoverableError,
@@ -615,23 +618,60 @@ export class GenerationProcessor extends WorkerHost {
       allowUncensoredWithMedia: this.uncensoredWithMediaAllowed(),
     };
     let decision = evaluateFallback(jobName, data, fallbackContext);
-    // A guarda barrou porque o pedido leva foto. Se todas as fotos são gerações limpas da própria conta (a modelo
-    // de IA que ela criou aqui, não uma foto de fora), o desvio roda com elas (pedido do dono, 26/10/2026).
     // fotos do pedido (null = há vídeo/áudio ou formato que não dá para conferir)
     const jobImages = inputImageUrlsOfJob(data, inputImageUrls);
     const jobHasMedia = jobImages === null || jobImages.length > 0;
-    let ownCleanMedia: boolean | undefined;
+    // Foto que é geração limpa da própria conta (a modelo de IA que ela criou aqui) pode ir ao modelo sem censura
+    // (pedido do dono, 26/10/2026). Vai a NOSSA cópia da geração que bateu, nunca os bytes do pedido: uma foto forjada
+    // para bater com a impressão não chega ao modelo.
+    let ownMatches: OwnMatch[] | null = null;
+    const liberate = async (): Promise<void> => {
+      const matches = await this.ownMedia.matchOwnClean(generation.userId, jobImages);
+      if (!matches) return;
+      const liberated = evaluateFallback(jobName, data, {
+        ...fallbackContext,
+        allowUncensoredWithMedia: true,
+      });
+      const swapped = liberated.plan
+        ? substituteImageUrls(
+            liberated.plan.data,
+            new Map(matches.map((match) => [match.inputUrl, match.outputUrl])),
+          )
+        : null;
+      if (!liberated.plan || !swapped) return;
+      decision = { plan: { ...liberated.plan, data: swapped } };
+      ownMatches = matches;
+    };
     if (decision.blocked?.reason === 'UNCENSORED_WITH_USER_MEDIA') {
-      ownCleanMedia = await this.ownMedia.allOwnClean(generation.userId, jobImages);
-      if (ownCleanMedia) {
-        decision = evaluateFallback(jobName, data, {
-          ...fallbackContext,
-          allowUncensoredWithMedia: true,
-        });
-        this.logger.log(
-          `[FALLBACK] gen=${generation.id}: fotos reconhecidas como gerações limpas da própria conta — desvio liberado`,
-        );
-      }
+      await liberate();
+    } else if (
+      kind === 'safety' &&
+      jobHasMedia &&
+      decision.plan &&
+      isUncensoredFallbackModel(decision.plan.model)
+    ) {
+      // o env liberou a mídia: sem atestado, a foto própria ainda pode ir, mas pela nossa cópia
+      await liberate();
+    }
+    const fallbackMedia = ownMatches
+      ? {
+          source: 'own_generation',
+          matches: (ownMatches as OwnMatch[]).map(
+            ({ generationId, outputOrder, distance, thumbDiff }) => ({
+              generationId,
+              outputOrder,
+              distance,
+              thumbDiff,
+            }),
+          ),
+        }
+      : undefined;
+    if (fallbackMedia) {
+      this.logger.log(
+        `[FALLBACK] gen=${generation.id}: fotos = gerações limpas da própria conta (${fallbackMedia.matches
+          .map((match) => `${match.generationId}#${match.outputOrder} d=${match.distance}`)
+          .join(', ')}) — desvio com a cópia guardada`,
+      );
     }
     const errorCode = classifyGenerationFailure(
       rawFailureText(originalError),
@@ -672,19 +712,15 @@ export class GenerationProcessor extends WorkerHost {
       `[FALLBACK] gen=${generation.id} ${generation.modelUsed} → ${plan.model} (${kind}: ${errorCode}) motivo="${originalError.message}"`,
     );
 
-    // Desvio por bloqueio de conteúdo leva prompt e fotos a modelo sem filtro (MiniMax H3):
-    // mesma guarda da PR #4 (lança bloqueio terminal se for menor ou foto sem atestado).
-    if (kind === 'safety') {
-      // Desvio liberado pelo env com mídia no pedido: a guarda de atestado confere a MESMA mídia do pedido (não
-      // só as fotos guardadas da geração, que podem não incluir um vídeo de referência).
-      if (ownCleanMedia === undefined && jobHasMedia) {
-        ownCleanMedia = await this.ownMedia.allOwnClean(generation.userId, jobImages);
-      }
+    // Desvio por bloqueio de conteúdo leva prompt e fotos a modelo sem filtro (MiniMax H3): mesma guarda da PR #4
+    // (lança bloqueio terminal se for menor ou foto sem atestado). Com foto própria, a guarda roda em QUALQUER motivo:
+    // antes a foto nem saía, e uma recusa por menor sem vocabulário de segurança chega como falha técnica.
+    if (kind === 'safety' || fallbackMedia) {
       await this.assertSafetyFallbackAllowed(generation.id, originalError, {
         model: generation.modelUsed,
         target: 'uncensored',
         userMedia: jobHasMedia,
-        ownCleanMedia,
+        ownCleanMedia: !!fallbackMedia,
       });
     }
 
@@ -694,7 +730,7 @@ export class GenerationProcessor extends WorkerHost {
       kind,
       reason: errorCode,
       originalError: originalError.message.slice(0, 300),
-      ...(ownCleanMedia ? { media: 'own_clean' } : {}),
+      ...(fallbackMedia ? { media: fallbackMedia } : {}),
     };
     await this.prisma.generation.update({
       where: { id: generation.id },
@@ -761,6 +797,8 @@ export class GenerationProcessor extends WorkerHost {
             fallbackKind: kind,
             fallbackReason: errorCode,
             fallbackOriginalError: attempt.originalError,
+            // trilha: quais gerações da conta foram no lugar das fotos do pedido
+            ...(fallbackMedia ? { fallbackMedia } : {}),
           },
         },
       });
@@ -2334,7 +2372,7 @@ export class GenerationProcessor extends WorkerHost {
       !hasConsent &&
       (request.ownCleanMedia === true ||
         (request.ownCleanMedia === undefined &&
-          (await this.storedImagesAreOwnClean(generationId))));
+          (await this.prepareOwnImagesForUnlocked(generationId))));
     const decision = decideSafetyFallback({
       target: request.target,
       isMinor,
@@ -2463,17 +2501,63 @@ export class GenerationProcessor extends WorkerHost {
     }
   }
 
-  /** Todas as fotos guardadas da geração são gerações limpas da própria conta? Falha = não. */
-  private async storedImagesAreOwnClean(generationId: string): Promise<boolean> {
+  /** Cópias guardadas que o fallbackToSeedream manda no lugar das fotos do pedido (gerações limpas da conta). */
+  private readonly ownImageOverrides = new Map<string, string[]>();
+
+  /**
+   * Todas as fotos guardadas da geração (as que o fallbackToSeedream manda ao Unlocked) batem com gerações limpas da
+   * própria conta? Se sim, deixa as NOSSAS cópias prontas para o Unlocked e grava a trilha. Falha = não.
+   */
+  private async prepareOwnImagesForUnlocked(generationId: string): Promise<boolean> {
     try {
       const generation = await this.prisma.generation.findUnique({
         where: { id: generationId },
-        select: { userId: true, inputImages: { select: { url: true } } },
+        select: {
+          userId: true,
+          parameters: true,
+          inputImages: { select: { url: true }, orderBy: { order: 'asc' } },
+        },
       });
       if (!generation || generation.inputImages.length === 0) return false;
       const urls = generation.inputImages.map((image) => image.url);
       if (urls.some((url) => !url)) return false;
-      return await this.ownMedia.allOwnClean(generation.userId, urls as string[]);
+      const matches = await this.ownMedia.matchOwnClean(generation.userId, urls as string[]);
+      if (!matches || matches.length !== urls.length) return false;
+
+      if (this.ownImageOverrides.size > 1_000) this.ownImageOverrides.clear();
+      this.ownImageOverrides.set(
+        generationId,
+        matches.map((match) => match.outputUrl),
+      );
+      const fallbackMedia = {
+        source: 'own_generation',
+        matches: matches.map(({ generationId: id, outputOrder, distance, thumbDiff }) => ({
+          generationId: id,
+          outputOrder,
+          distance,
+          thumbDiff,
+        })),
+      };
+      this.logger.log(
+        `[SAFETY_GUARD] gen=${generationId}: fotos = gerações limpas da própria conta (${fallbackMedia.matches
+          .map((match) => `${match.generationId}#${match.outputOrder} d=${match.distance}`)
+          .join(', ')}) — Unlocked com a cópia guardada, sem atestado`,
+      );
+      const params =
+        generation.parameters && typeof generation.parameters === 'object'
+          ? (generation.parameters as Record<string, unknown>)
+          : {};
+      await this.prisma.generation
+        .update({
+          where: { id: generationId },
+          data: { parameters: { ...params, fallbackMedia } },
+        })
+        .catch((auditError: Error) =>
+          this.logger.warn(
+            `[SAFETY_GUARD] gen=${generationId}: trilha da foto própria não gravada (${auditError.message})`,
+          ),
+        );
+      return true;
     } catch (error) {
       this.logger.warn(
         `[SAFETY_GUARD] gen=${generationId}: origem das fotos não conferida (${(error as Error).message})`,
@@ -2593,9 +2677,14 @@ export class GenerationProcessor extends WorkerHost {
       where: { generationId },
       orderBy: { order: 'asc' },
     });
-    const imageUrls = inputImages
+    const storedUrls = inputImages
       .map((img) => img.url)
       .filter((url): url is string => !!url);
+    // foto própria conferida pela guarda: vão as NOSSAS cópias das gerações que bateram, não os bytes do pedido
+    const ownCopies = this.ownImageOverrides.get(generationId);
+    this.ownImageOverrides.delete(generationId);
+    const imageUrls =
+      ownCopies && ownCopies.length === storedUrls.length ? ownCopies : storedUrls;
 
     let result: { outputUrls: string[]; modelUsed: string };
     try {
@@ -2927,9 +3016,11 @@ export class GenerationProcessor extends WorkerHost {
     // Fire-and-forget: delete input files from S3 to save storage. Imagem: antes, a impressão visual das saídas
     // (a linhagem confere as fotos de entrada, que a limpeza apaga).
     if (isImage) {
-      void this.ownMedia
-        .recordGeneration(generationId, outputFingerprints)
-        .finally(() => this.cleanupInputFiles(generationId));
+      // com teto de tempo: se a impressão travar, a limpeza das fotos da cliente acontece mesmo assim
+      void Promise.race([
+        this.ownMedia.recordGeneration(generationId, outputFingerprints),
+        new Promise<void>((resolve) => setTimeout(resolve, 90_000).unref()),
+      ]).finally(() => this.cleanupInputFiles(generationId));
     } else {
       this.cleanupInputFiles(generationId);
     }

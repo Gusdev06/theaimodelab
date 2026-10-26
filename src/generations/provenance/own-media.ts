@@ -10,63 +10,95 @@ import { PrismaService } from '../../prisma/prisma.service';
  * foto da cliente, porque ela pode ser de uma pessoa real. Só que a foto, muitas vezes, é a modelo de IA que a própria
  * cliente criou aqui. Este módulo reconhece esse caso:
  *
- *  - Toda imagem que a plataforma entrega ganha uma impressão visual (dHash 9x8, 64 bits) e a proporção, guardadas em
- *    `media_fingerprints`. O site recomprime a foto antes de mandar (canvas → JPEG), então o hash exato dos bytes não
- *    serviria; o dHash sobrevive a redimensionar e recomprimir.
- *  - `cleanLineage`: a geração nasceu só de texto (sem foto de entrada e sem prompt clonado de foto), ou todas as
- *    fotos de entrada eram, elas mesmas, gerações limpas da mesma conta. Troca de rosto, provador e afins nunca entram
- *    (não são TEXT_TO_IMAGE/IMAGE_TO_IMAGE). Foto vinda de fora, ou derivada dela, nunca fica limpa.
- *  - No desvio, cada foto do pedido é comparada com as impressões limpas da MESMA conta. Só libera quando todas batem
- *    (distância ≤ 6 de 64 e proporção quase igual). Vídeo ou áudio de entrada nunca libera.
+ *  - Toda imagem que a plataforma entrega ganha uma impressão visual: dHash 9x8 (64 bits), miniatura 16x16 em cinza e
+ *    a proporção, em `media_fingerprints`. O site recomprime a foto antes de mandar (canvas → JPEG), então o hash
+ *    exato dos bytes não serviria.
+ *  - `cleanLineage`: a geração nasceu só de texto (sem foto de entrada, sem busca de imagem na web e sem prompt clonado
+ *    de foto), ou todas as fotos de entrada bateram, no critério ESTRITO, com gerações limpas da mesma conta. Troca de
+ *    rosto, provador e afins nunca entram (não são TEXT_TO_IMAGE/IMAGE_TO_IMAGE).
+ *  - No desvio, cada foto do pedido é comparada com as impressões limpas da MESMA conta. Quando todas batem, quem vai
+ *    ao modelo sem censura é a NOSSA cópia guardada da geração que bateu, nunca os bytes que vieram no pedido: uma foto
+ *    forjada para bater com a impressão não chega ao modelo, e um falso positivo só troca a foto por uma da própria
+ *    modelo da cliente.
+ *  - Imagem com transparência, com várias páginas ou gigante não é conferida (não reconhecida).
  *
  * Falha de leitura, rede ou banco = "não reconhecida": o desvio segue barrado como antes. Nada aqui lança.
  */
 
-/** Distância máxima (bits diferentes de 64) para considerar a mesma imagem depois de recomprimida/redimensionada. */
-export const MAX_DHASH_DISTANCE = 6;
-/** Diferença máxima de proporção (largura ÷ altura), relativa. */
-export const MAX_ASPECT_DIFF = 0.03;
+/** Critério do desvio: a foto enviada vira a nossa cópia, então um falso positivo não leva foto de fora. */
+export const DETOUR_MATCH = { maxDistance: 6, maxThumbDiff: 14, maxAspectDiff: 0.03 } as const;
+/**
+ * Critério da linhagem (uma imagem nova feita a partir de foto vira "limpa"): aqui a foto que o provedor recebeu é a
+ * do pedido, então o critério é bem mais apertado.
+ */
+export const LINEAGE_MATCH = { maxDistance: 4, maxThumbDiff: 8, maxAspectDiff: 0.02 } as const;
+export type MatchRule = { maxDistance: number; maxThumbDiff: number; maxAspectDiff: number };
+
 /** Marca que o "Clonar prompt" põe em todo prompt tirado de uma foto (PR #4): prompt assim descreve uma foto real. */
 const CLONED_FROM_PHOTO = /reference_override/i;
 /** Maior arquivo baixado para conferir (imagem de entrada ou saída). */
 const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+/** Maior imagem decodificada (largura × altura): acima disso não confere (bomba de descompressão). */
+const MAX_INPUT_PIXELS = 40_000_000;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
 /** Quantas impressões limpas da conta entram na comparação (as mais novas). */
 const MAX_FINGERPRINTS = 5_000;
 /** Gerações antigas (antes desta tabela) que ganham impressão na hora, quando a foto não bateu com nenhuma. */
-const BACKFILL_LIMIT = 40;
+const BACKFILL_LIMIT = 30;
 const BACKFILL_WINDOW_DAYS = 120;
-const BACKFILL_CONCURRENCY = 6;
+const BACKFILL_CONCURRENCY = 4;
 const BACKFILL_COOLDOWN_MS = 30 * 60 * 1000;
 
 export interface Fingerprint {
+  /** dHash 9x8 em hexadecimal (16 caracteres) */
   dhash: string;
+  /** miniatura 16x16 em cinza, hexadecimal (512 caracteres) */
+  thumb: string;
+  /** largura ÷ altura */
   aspect: number;
 }
 
-/** dHash 9x8 (64 bits, hexadecimal) e proporção de uma imagem. Lança se o arquivo não for imagem. */
+/**
+ * Impressão de uma imagem. Lança para arquivo que não é imagem, com transparência (o que a conferência vê pode não
+ * ser o que o provedor vê), com várias páginas ou grande demais.
+ */
 export async function fingerprintImage(buffer: Buffer): Promise<Fingerprint> {
-  const meta = await sharp(buffer, { failOn: 'none' }).metadata();
+  const options = { failOn: 'none' as const, limitInputPixels: MAX_INPUT_PIXELS };
+  const meta = await sharp(buffer, options).metadata();
   if (!meta.width || !meta.height) throw new Error('imagem sem dimensões');
+  if (meta.width * meta.height > MAX_INPUT_PIXELS) throw new Error('imagem grande demais');
+  if ((meta.pages ?? 1) > 1) throw new Error('imagem com várias páginas');
+  if (meta.hasAlpha) {
+    const stats = await sharp(buffer, options).stats();
+    const alpha = stats.channels[stats.channels.length - 1];
+    if (!alpha || alpha.min < 255) throw new Error('imagem com transparência');
+  }
   // a orientação EXIF 5–8 troca largura e altura
   const aspect = (meta.orientation ?? 1) >= 5 ? meta.height / meta.width : meta.width / meta.height;
 
-  const { data, info } = await sharp(buffer, { failOn: 'none' })
-    .rotate()
-    .flatten({ background: '#ffffff' })
-    .greyscale()
-    .resize(9, 8, { fit: 'fill' })
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-  const stride = info.channels;
-  const luma = (x: number, y: number) => data[(y * 9 + x) * stride];
+  const grey = (width: number, height: number) =>
+    sharp(buffer, options)
+      .rotate()
+      .removeAlpha()
+      .greyscale()
+      .resize(width, height, { fit: 'fill' })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+  const small = await grey(9, 8);
+  const luma = (x: number, y: number) => small.data[(y * 9 + x) * small.info.channels];
   let bits = 0n;
   for (let y = 0; y < 8; y++) {
     for (let x = 0; x < 8; x++) {
       bits = (bits << 1n) | (luma(x, y) < luma(x + 1, y) ? 1n : 0n);
     }
   }
-  return { dhash: bits.toString(16).padStart(16, '0'), aspect };
+
+  const thumbnail = await grey(16, 16);
+  const thumbBytes = Buffer.alloc(256);
+  for (let i = 0; i < 256; i++) thumbBytes[i] = thumbnail.data[i * thumbnail.info.channels];
+
+  return { dhash: bits.toString(16).padStart(16, '0'), thumb: thumbBytes.toString('hex'), aspect };
 }
 
 /** Bits diferentes entre dois dHash. Hash inválido = 64 (nunca bate). */
@@ -81,28 +113,64 @@ export function hammingDistance(a: string, b: string): number {
   return count;
 }
 
-/** A imagem é a mesma de alguma das impressões (recomprimida ou redimensionada)? */
-export function matchesAny(candidate: Fingerprint, known: readonly Fingerprint[]): boolean {
-  return known.some(
-    (item) =>
-      hammingDistance(candidate.dhash, item.dhash) <= MAX_DHASH_DISTANCE &&
-      Math.abs(candidate.aspect - item.aspect) / Math.max(item.aspect, 1e-6) <= MAX_ASPECT_DIFF,
-  );
+/** Diferença média (0–255) entre duas miniaturas 16x16. Miniatura inválida = 255 (nunca bate). */
+export function thumbDifference(a: string, b: string): number {
+  if (!/^[0-9a-f]{512}$/i.test(a) || !/^[0-9a-f]{512}$/i.test(b)) return 255;
+  const left = Buffer.from(a, 'hex');
+  const right = Buffer.from(b, 'hex');
+  let total = 0;
+  for (let i = 0; i < 256; i++) total += Math.abs(left[i] - right[i]);
+  return total / 256;
+}
+
+export interface Comparison {
+  distance: number;
+  thumbDiff: number;
+}
+
+/** Compara duas impressões; null = não é a mesma imagem pelo critério. */
+export function compare(candidate: Fingerprint, known: Fingerprint, rule: MatchRule): Comparison | null {
+  if (Math.abs(candidate.aspect - known.aspect) / Math.max(known.aspect, 1e-6) > rule.maxAspectDiff) return null;
+  const distance = hammingDistance(candidate.dhash, known.dhash);
+  if (distance > rule.maxDistance) return null;
+  const thumbDiff = thumbDifference(candidate.thumb, known.thumb);
+  if (thumbDiff > rule.maxThumbDiff) return null;
+  return { distance, thumbDiff };
+}
+
+/** A impressão mais parecida que passa no critério (ou null). */
+export function bestMatch<T extends Fingerprint>(
+  candidate: Fingerprint,
+  known: readonly T[],
+  rule: MatchRule,
+): (Comparison & { item: T }) | null {
+  let best: (Comparison & { item: T }) | null = null;
+  for (const item of known) {
+    const result = compare(candidate, item, rule);
+    if (!result) continue;
+    if (!best || result.distance + result.thumbDiff / 4 < best.distance + best.thumbDiff / 4) {
+      best = { ...result, item };
+    }
+  }
+  return best;
 }
 
 export type LineageByOrigin = 'clean' | 'check_inputs' | 'not_clean';
 
 /**
  * Linhagem pela origem da geração: só texto = limpa; com fotos de entrada = depende de as fotos serem limpas;
- * qualquer outro tipo (troca de rosto, provador, upscale, vídeo…) ou imagem a partir de foto sem registro da foto =
- * não limpa.
+ * qualquer outro tipo (troca de rosto, provador, upscale, vídeo…), imagem a partir de foto sem registro da foto,
+ * busca de imagem na web (Nano Banana `google_search`) ou prompt clonado de foto = não limpa.
  */
 export function lineageByOrigin(input: {
   type: GenerationType;
   inputImageCount: number;
   prompt: string | null;
+  parameters?: unknown;
 }): LineageByOrigin {
   if (input.prompt && CLONED_FROM_PHOTO.test(input.prompt)) return 'not_clean';
+  const params = (input.parameters ?? {}) as Record<string, unknown>;
+  if (params.google_search === true || params.googleSearch === true) return 'not_clean';
   if (input.type === GenerationType.TEXT_TO_IMAGE) {
     return input.inputImageCount === 0 ? 'clean' : 'check_inputs';
   }
@@ -132,6 +200,12 @@ const OTHER_MEDIA_FIELDS = [
   'audioUrl',
 ] as const;
 
+function isPresent(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'string') return value.trim().length > 0;
+  return value != null && value !== false;
+}
+
 /**
  * Fotos de entrada de um job, para conferir a origem. `null` = há mídia que não dá para conferir (vídeo, áudio,
  * formato desconhecido): a origem não é reconhecida.
@@ -142,12 +216,7 @@ export function inputImageUrlsOfJob(
 ): string[] | null {
   const fields = (data ?? {}) as Record<string, unknown>;
   if (fields.hasVideoInput === true) return null;
-  for (const field of OTHER_MEDIA_FIELDS) {
-    const value = fields[field];
-    if (Array.isArray(value) ? value.length > 0 : typeof value === 'string' ? value.trim().length > 0 : value != null) {
-      return null;
-    }
-  }
+  if (OTHER_MEDIA_FIELDS.some((field) => isPresent(fields[field]))) return null;
   const urls: string[] = [];
   for (const field of IMAGE_FIELDS) {
     const value = fields[field];
@@ -160,6 +229,37 @@ export function inputImageUrlsOfJob(
   }
   if (fields.hasInputImages === true) urls.push(...storedInputImageUrls);
   return [...new Set(urls)];
+}
+
+/**
+ * Troca, nos campos de imagem do job, cada foto do pedido pela nossa cópia da geração que bateu. Devolve null se
+ * sobrar alguma foto sem troca ou houver vídeo/áudio (aí nada vai ao modelo sem censura).
+ */
+export function substituteImageUrls<T>(data: T, replacements: ReadonlyMap<string, string>): T | null {
+  const fields = { ...(data as Record<string, unknown>) };
+  if (fields.hasVideoInput === true) return null;
+  if (OTHER_MEDIA_FIELDS.some((field) => isPresent(fields[field]))) return null;
+  for (const field of IMAGE_FIELDS) {
+    const value = fields[field];
+    if (value == null) continue;
+    if (Array.isArray(value)) {
+      const swapped: string[] = [];
+      for (const item of value) {
+        const replacement = typeof item === 'string' ? replacements.get(item.trim()) : undefined;
+        if (!replacement) return null;
+        swapped.push(replacement);
+      }
+      fields[field] = swapped;
+    } else if (typeof value === 'string') {
+      if (!value.trim()) continue;
+      const replacement = replacements.get(value.trim());
+      if (!replacement) return null;
+      fields[field] = replacement;
+    } else {
+      return null;
+    }
+  }
+  return fields as T;
 }
 
 async function download(url: string): Promise<Buffer | null> {
@@ -186,35 +286,81 @@ async function fingerprintUrl(url: string): Promise<Fingerprint | null> {
   }
 }
 
+/** Uma foto do pedido e a geração limpa da conta com que ela bateu. */
+export interface OwnMatch {
+  inputUrl: string;
+  generationId: string;
+  outputOrder: number;
+  /** nossa cópia (link público permanente do armazenamento): é ela que vai ao modelo sem censura */
+  outputUrl: string;
+  distance: number;
+  thumbDiff: number;
+}
+
+interface KnownFingerprint extends Fingerprint {
+  generationId: string;
+  outputOrder: number;
+}
+
 export class OwnMediaProvenance {
   private readonly logger = new Logger(OwnMediaProvenance.name);
+  private readonly lastBackfill = new Map<string, number>();
 
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Todas as fotos são gerações limpas desta conta? Lista vazia = false (sem foto não há o que liberar).
-   * Nunca lança.
+   * Cada foto bate com uma geração limpa desta conta? Devolve a lista de casamentos (na ordem das fotos) ou null
+   * quando alguma não bate, a lista está vazia ou há mídia que não dá para conferir. Nunca lança.
    */
-  async allOwnClean(userId: string, imageUrls: readonly string[] | null): Promise<boolean> {
-    if (!imageUrls || imageUrls.length === 0) return false;
+  async matchOwnClean(
+    userId: string,
+    imageUrls: readonly string[] | null,
+    rule: MatchRule = DETOUR_MATCH,
+  ): Promise<OwnMatch[] | null> {
+    if (!imageUrls || imageUrls.length === 0) return null;
     try {
-      const candidates = await Promise.all(imageUrls.map((url) => fingerprintUrl(url)));
-      if (candidates.some((item) => item === null)) return false;
-      const inputs = candidates as Fingerprint[];
+      // uma por vez: cada uma é decodificada em memória
+      const inputs: Fingerprint[] = [];
+      for (const url of imageUrls) {
+        const fingerprint = await fingerprintUrl(url);
+        if (!fingerprint) return null;
+        inputs.push(fingerprint);
+      }
 
       let known = await this.cleanFingerprints(userId);
-      if (inputs.every((item) => matchesAny(item, known))) return true;
+      let found = inputs.map((input) => bestMatch(input, known, rule));
+      if (found.some((item) => !item)) {
+        // gerações de antes desta tabela: impressão feita agora, só das que nasceram de texto (no máximo 1x a cada
+        // 30 min por conta neste processo, para quem sempre manda foto de fora não baixar a galeria toda hora)
+        if (!this.backfillDue(userId)) return null;
+        const added = await this.backfillTextOnly(userId);
+        if (added === 0) return null;
+        known = await this.cleanFingerprints(userId);
+        found = inputs.map((input) => bestMatch(input, known, rule));
+        if (found.some((item) => !item)) return null;
+      }
 
-      // gerações de antes desta tabela: impressão feita agora, só das que nasceram de texto (no máximo 1x a cada
-      // 30 min por conta neste processo, para uma conta que sempre manda foto de fora não baixar a galeria toda hora)
-      if (!this.backfillDue(userId)) return false;
-      const added = await this.backfillTextOnly(userId);
-      if (added === 0) return false;
-      known = await this.cleanFingerprints(userId);
-      return inputs.every((item) => matchesAny(item, known));
+      const matches: OwnMatch[] = [];
+      for (let i = 0; i < imageUrls.length; i++) {
+        const hit = found[i]!;
+        const output = await this.prisma.generationOutput.findFirst({
+          where: { generationId: hit.item.generationId, order: hit.item.outputOrder },
+          select: { url: true },
+        });
+        if (!output?.url || !/^https:\/\//i.test(output.url)) return null;
+        matches.push({
+          inputUrl: imageUrls[i],
+          generationId: hit.item.generationId,
+          outputOrder: hit.item.outputOrder,
+          outputUrl: output.url,
+          distance: hit.distance,
+          thumbDiff: Math.round(hit.thumbDiff * 10) / 10,
+        });
+      }
+      return matches;
     } catch (error) {
       this.logger.warn(`[OWN_MEDIA] user=${userId}: conferência da origem falhou (${(error as Error).message})`);
-      return false;
+      return null;
     }
   }
 
@@ -234,6 +380,7 @@ export class OwnMediaProvenance {
           type: true,
           prompt: true,
           status: true,
+          parameters: true,
           inputImages: { select: { url: true }, orderBy: { order: 'asc' } },
           outputs: { select: { url: true, order: true }, orderBy: { order: 'asc' } },
         },
@@ -253,12 +400,13 @@ export class OwnMediaProvenance {
         type: generation.type,
         inputImageCount: generation.inputImages.length,
         prompt: generation.prompt,
+        parameters: generation.parameters,
       });
       let clean = origin === 'clean';
       if (origin === 'check_inputs') {
         clean =
           inputUrls.length === generation.inputImages.length &&
-          (await this.allOwnClean(generation.userId, inputUrls));
+          (await this.matchOwnClean(generation.userId, inputUrls, LINEAGE_MATCH)) !== null;
       }
 
       for (const output of generation.outputs) {
@@ -272,18 +420,22 @@ export class OwnMediaProvenance {
             generationId,
             outputOrder: output.order,
             dhash: fingerprint.dhash,
+            thumb: fingerprint.thumb,
             aspect: fingerprint.aspect,
             cleanLineage: clean,
           },
-          update: { dhash: fingerprint.dhash, aspect: fingerprint.aspect, cleanLineage: clean },
+          update: {
+            dhash: fingerprint.dhash,
+            thumb: fingerprint.thumb,
+            aspect: fingerprint.aspect,
+            cleanLineage: clean,
+          },
         });
       }
     } catch (error) {
       this.logger.warn(`[OWN_MEDIA] gen=${generationId}: impressão não gravada (${(error as Error).message})`);
     }
   }
-
-  private readonly lastBackfill = new Map<string, number>();
 
   private backfillDue(userId: string): boolean {
     const now = Date.now();
@@ -294,16 +446,21 @@ export class OwnMediaProvenance {
     return true;
   }
 
-  private async cleanFingerprints(userId: string): Promise<Fingerprint[]> {
+  /** Impressões limpas da conta cujas saídas ainda estão no armazenamento (sem prazo vencido). */
+  private async cleanFingerprints(userId: string): Promise<KnownFingerprint[]> {
     return this.prisma.mediaFingerprint.findMany({
-      where: { userId, cleanLineage: true },
+      where: {
+        userId,
+        cleanLineage: true,
+        generation: { OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
+      },
       orderBy: { createdAt: 'desc' },
       take: MAX_FINGERPRINTS,
-      select: { dhash: true, aspect: true },
+      select: { generationId: true, outputOrder: true, dhash: true, thumb: true, aspect: true },
     });
   }
 
-  /** Impressão das gerações só de texto mais novas que ainda não têm. Devolve quantas gravou. */
+  /** Impressão das gerações só de texto mais novas que ainda não têm. Devolve quantas limpas gravou. */
   private async backfillTextOnly(userId: string): Promise<number> {
     const since = new Date(Date.now() - BACKFILL_WINDOW_DAYS * 24 * 60 * 60 * 1000);
     const generations = await this.prisma.generation.findMany({
@@ -320,6 +477,7 @@ export class OwnMediaProvenance {
       select: {
         id: true,
         prompt: true,
+        parameters: true,
         outputs: { select: { url: true, order: true }, orderBy: { order: 'asc' } },
       },
     });
@@ -330,8 +488,12 @@ export class OwnMediaProvenance {
         outputOrder: output.order,
         url: output.url,
         clean:
-          lineageByOrigin({ type: GenerationType.TEXT_TO_IMAGE, inputImageCount: 0, prompt: generation.prompt }) ===
-          'clean',
+          lineageByOrigin({
+            type: GenerationType.TEXT_TO_IMAGE,
+            inputImageCount: 0,
+            prompt: generation.prompt,
+            parameters: generation.parameters,
+          }) === 'clean',
       })),
     );
 
@@ -350,6 +512,7 @@ export class OwnMediaProvenance {
             generationId: job.generationId,
             outputOrder: job.outputOrder,
             dhash: fingerprint.dhash,
+            thumb: fingerprint.thumb,
             aspect: fingerprint.aspect,
             cleanLineage: job.clean,
           },
