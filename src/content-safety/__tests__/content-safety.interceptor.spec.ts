@@ -230,6 +230,7 @@ describe('ContentSafetyInterceptor', () => {
       ['minimax-h3-reference-to-video', { prompt: 'walks', reference_images: [{ base64: FOTO }] }],
       ['minimax-h3-reference-to-video', { prompt: 'walks', reference_videos: [{ base64: 'AAAA' }] }],
       ['motion-control', { video: 'AAAA', image: FOTO }],
+      ['talking-avatar', { text: 'oi, tudo bem?', image: FOTO }],
     ])('rota que manda a foto a provedor sem filtro exige: %s', async (name, body) => {
       await expect(run(ctx('POST', `/api/v1/generations/${name}`, body))).rejects.toMatchObject({
         response: expect.objectContaining({ code: 'CONSENT_REQUIRED' }),
@@ -282,6 +283,7 @@ describe('requiresConsent', () => {
     ['/API/V1/Generations/Face-Swap', {}, true],
     ['/api/v1/generations/virtual-try-on', {}, true],
     ['/api/v1/generations/motion-control', {}, true],
+    ['/api/v1/generations/talking-avatar', {}, true],
     ['/api/v1/generations/generate-image', { model: 'deepdeep' }, true],
     ['/api/v1/generations/generate-image-auto', { model: 'deepdeep' }, true],
     ['/api/v1/generations/generate-image', { model: 'sem-censura', images: [{ base64: 'x' }] }, true],

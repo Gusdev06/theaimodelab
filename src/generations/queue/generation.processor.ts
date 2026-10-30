@@ -100,6 +100,7 @@ import {
   MinimaxH3TextToVideoJobData,
   MinimaxH3ImageToVideoJobData,
   MinimaxH3ReferenceToVideoJobData,
+  TalkingAvatarJobData,
   TextToSpeechJobData,
   VoiceCloneJobData,
   GenerationJobData,
@@ -827,6 +828,21 @@ export class GenerationProcessor extends WorkerHost {
   async runTextToSpeechDirectly(data: TextToSpeechJobData): Promise<void> {
     try {
       await this.processTextToSpeech(data);
+    } catch (error) {
+      await this.handleFailure(
+        data.generationId,
+        data.userId,
+        data.creditsConsumed,
+        error as Error,
+        data.usedFreeGeneration,
+      );
+    }
+  }
+
+  /** Avatar falante: TTS da plataforma → OmniHuman 1.5. Falhou em qualquer etapa = estorno pelo handleFailure. */
+  async runTalkingAvatarDirectly(data: TalkingAvatarJobData): Promise<void> {
+    try {
+      await this.processTalkingAvatar(data);
     } catch (error) {
       await this.handleFailure(
         data.generationId,
@@ -2184,6 +2200,35 @@ export class GenerationProcessor extends WorkerHost {
         referenceVideoUrls: data.referenceVideoUrls,
         referenceAudioUrls: data.referenceAudioUrls,
       });
+    await this.completeGeneration(data.generationId, result, startTime);
+  }
+
+  private async processTalkingAvatar(data: TalkingAvatarJobData): Promise<void> {
+    const startTime = Date.now();
+    await this.markProcessingStarted(data.generationId);
+
+    this.logger.log(
+      `[TALKING_AVATAR] ${data.generationId} voice=${data.voiceId} language=${data.language ?? 'auto'} text="${data.text.slice(0, 80)}"`,
+    );
+
+    // 1) a fala: o mesmo TTS do /text-to-speech, guardado no nosso armazenamento (o OmniHuman lê por URL)
+    const speech = await this.wavespeedAudioProvider.generateTextToSpeech({
+      id: `${data.generationId}-voz`,
+      text: data.text,
+      voiceId: data.voiceId,
+      language: data.language,
+      speed: data.speed,
+    });
+    const audioUrl = speech.outputUrls[0];
+    if (!audioUrl) throw new Error('A voz não foi gerada. Tente de novo.');
+
+    // 2) a pessoa da foto fala o áudio
+    const result = await this.wavespeedVideoProvider.generateTalkingAvatar({
+      id: data.generationId,
+      imageUrl: data.imageUrl,
+      audioUrl,
+    });
+
     await this.completeGeneration(data.generationId, result, startTime);
   }
 
