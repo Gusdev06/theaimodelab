@@ -83,7 +83,8 @@ export function resolveFreeGenerationType(
 ): FreeGenerationType | null {
   if (type === GenerationType.FACE_SWAP) return FreeGenerationType.FACE_SWAP;
   if (type === GenerationType.VIRTUAL_TRY_ON) return FreeGenerationType.VIRTUAL_TRY_ON;
-  if (type === GenerationType.MOTION_CONTROL) return FreeGenerationType.MOTION_CONTROL;
+  // o Wan 2.2 Animate (troca de pessoa) é pago sempre; a grátis do Motion Control segue valendo só no Kling
+  if (type === GenerationType.MOTION_CONTROL) return modelVariant === 'WAN_ANIMATE' ? null : FreeGenerationType.MOTION_CONTROL;
   if (modelVariant && VARIANT_TO_FREE_TYPE[modelVariant]) {
     return VARIANT_TO_FREE_TYPE[modelVariant];
   }

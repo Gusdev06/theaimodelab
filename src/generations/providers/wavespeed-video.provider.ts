@@ -25,6 +25,7 @@ const SEEDANCE_MODEL = 'bytedance/seedance-2.0-fast/image-to-video-spicy';
 const MINIMAX_H3_T2V_MODEL = 'wavespeed-ai/minimax-h3/text-to-video';
 const MINIMAX_H3_I2V_MODEL = 'wavespeed-ai/minimax-h3/image-to-video';
 const MINIMAX_H3_REF_MODEL = 'wavespeed-ai/minimax-h3/reference-to-video';
+const WAN_ANIMATE_MODEL = 'wavespeed-ai/wan-2.2/animate';
 
 const POLL_MAX_ATTEMPTS = 180; // ~9 min a 3s
 const POLL_INTERVAL_MS = 3_000;
@@ -83,6 +84,17 @@ export interface MinimaxH3ImageToVideoInput {
   lastImageUrl?: string;
   durationSeconds: number;
   resolution: MinimaxH3Resolution;
+}
+
+/** Wan 2.2 Animate: URLs públicas da foto (quem entra) e do vídeo (movimento/cena). */
+export interface WanAnimateInput {
+  id: string;
+  imageUrl: string;
+  videoUrl: string;
+  mode: 'replace' | 'animate';
+  resolution: '480p' | '720p';
+  /** orientação curta opcional */
+  prompt?: string;
 }
 
 export interface MinimaxH3ReferenceToVideoInput {
@@ -283,6 +295,42 @@ export class WavespeedVideoProvider {
     const outputUrl = await this.downloadAndUpload(resultUrl, input.id, 0);
 
     return { outputUrls: [outputUrl], modelUsed: MINIMAX_H3_I2V_MODEL };
+  }
+
+  // ─── Wan 2.2 Animate — troca de pessoa (replace) ou movimento (animate) ────────────
+  /**
+   * `replace`: a pessoa do vídeo vira a da foto, com o movimento, o cenário e a câmera do vídeo.
+   * `animate`: a foto faz o movimento e as expressões do vídeo.
+   * A WaveSpeed cobra por segundo do vídeo de entrada (mínimo 3 s): o submit não é repetido (um 2º envio cobraria de
+   * novo); só a consulta do resultado é refeita.
+   */
+  async generateWanAnimate(input: WanAnimateInput): Promise<GenerationResult> {
+    if (!this.apiKey) {
+      throw new Error(
+        'Não foi possível gerar o vídeo agora. Entre em contato com o suporte.',
+      );
+    }
+
+    this.logger.log(
+      `[WAN_ANIMATE] gen=${input.id} mode=${input.mode} resolution=${input.resolution} prompt="${(input.prompt ?? '').slice(0, 80)}"`,
+    );
+
+    const body: Record<string, unknown> = {
+      image: input.imageUrl,
+      video: input.videoUrl,
+      mode: input.mode,
+      resolution: input.resolution,
+      seed: -1,
+    };
+    if (input.prompt) body.prompt = input.prompt;
+
+    const predictionId = await this.createPrediction(WAN_ANIMATE_MODEL, body);
+    this.logger.log(`[WAN_ANIMATE] prediction created: ${predictionId}`);
+
+    const resultUrl = await this.pollPrediction(predictionId);
+    const outputUrl = await this.downloadAndUpload(resultUrl, input.id, 0);
+
+    return { outputUrls: [outputUrl], modelUsed: WAN_ANIMATE_MODEL };
   }
 
   // ─── MiniMax H3 — reference-to-video (multimodal) ────────────

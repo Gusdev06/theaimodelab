@@ -1526,8 +1526,22 @@ export class GenerationProcessor extends WorkerHost {
     await this.markProcessingStarted(data.generationId);
 
     this.logger.log(
-      `[MOTION_CONTROL] ${data.generationId} resolution=${data.resolution} videoUrl=${data.videoUrl} imageUrl=${data.imageUrl}`,
+      `[MOTION_CONTROL] ${data.generationId} engine=${data.engine ?? 'kling'} resolution=${data.resolution} videoUrl=${data.videoUrl} imageUrl=${data.imageUrl}`,
     );
+
+    // Wan 2.2 Animate (WaveSpeed): troca de pessoa no vídeo ou movimento da foto
+    if (data.engine === 'wan-replace' || data.engine === 'wan-animate') {
+      const wanResult = await this.wavespeedVideoProvider.generateWanAnimate({
+        id: data.generationId,
+        videoUrl: data.videoUrl,
+        imageUrl: data.imageUrl,
+        mode: data.engine === 'wan-replace' ? 'replace' : 'animate',
+        resolution: data.resolution === '480p' ? '480p' : '720p',
+        prompt: data.prompt ?? undefined,
+      });
+      await this.completeGeneration(data.generationId, wanResult, startTime);
+      return;
+    }
 
     const result = await this.wanProvider.generateAnimateReplace({
       id: data.generationId,

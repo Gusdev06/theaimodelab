@@ -76,6 +76,10 @@ export interface MotionControlJobData extends BaseJobData {
   videoUrl: string;
   imageUrl: string;
   resolution: string;
+  /** ausente = 'kling' (jobs enfileirados antes do Wan) */
+  engine?: 'kling' | 'wan-replace' | 'wan-animate';
+  /** só no Wan */
+  prompt?: string | null;
 }
 
 export interface VirtualTryOnJobData extends BaseJobData {

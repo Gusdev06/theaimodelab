@@ -96,6 +96,32 @@ export class ModelsService implements OnModuleInit {
         }`,
       );
     }
+
+    // Wan 2.2 Animate (POST /generations/motion-control com engine wan-*): interruptor próprio. O site só mostra
+    // "Trocar a pessoa do vídeo" quando GET /models/videos traz este slug ativo.
+    try {
+      await this.prisma.aiModel.upsert({
+        where: { slug: 'wan-animate' },
+        update: {},
+        create: {
+          slug: 'wan-animate',
+          label: 'Trocar pessoa no vídeo (Wan 2.2 Animate)',
+          description:
+            'Motor do Motion Control que troca a pessoa do vídeo pela da foto (replace) ou anima a foto com o movimento do vídeo (animate). WaveSpeed, por segundo do vídeo, sem geração grátis. Desativar esconde a opção no site.',
+          provider: AiModelProvider.WAVESPEED,
+          modelVariant: 'wavespeed-ai/wan-2.2/animate',
+          sortOrder: 104,
+          type: AiModelType.VIDEO,
+          isActive: true,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to ensure 'wan-animate' AiModel row: ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
+    }
   }
 
   async deactivateTheaimodelabVideoModels(statusMessage: string): Promise<number> {
