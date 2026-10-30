@@ -42,3 +42,27 @@ export function talkingAvatarVoiceFor(language: string | undefined, voiceId: str
   const lang = (language ?? 'pt').toLowerCase().slice(0, 2) as TalkingAvatarLanguage;
   return TALKING_AVATAR_DEFAULT_VOICE[lang] ?? TALKING_AVATAR_DEFAULT_VOICE.pt;
 }
+
+/**
+ * Planos que podem usar o avatar falante (decisão do dono, 30/10/2026): nasce só para Studio e Agency, porque o
+ * vídeo custa 3,5× o Veo pelo mesmo tempo de fala. Env `TALKING_AVATAR_PLANS` troca a lista sem deploy
+ * (slugs separados por vírgula; `all` libera qualquer conta). O plano anual conta como o mensal irmão (`studio-anual`).
+ */
+export const TALKING_AVATAR_DEFAULT_PLANS: readonly string[] = ['studio', 'agency'];
+
+export function talkingAvatarPlansFrom(envValue: string | undefined): string[] {
+  const raw = (envValue ?? '').trim();
+  if (!raw) return [...TALKING_AVATAR_DEFAULT_PLANS];
+  return raw
+    .split(',')
+    .map((slug) => slug.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/** `all` (ou `*`) na lista libera todo mundo, inclusive sem assinatura. */
+export function talkingAvatarPlanAllowed(planSlug: string | null | undefined, plans: readonly string[]): boolean {
+  if (plans.some((slug) => slug === 'all' || slug === '*')) return true;
+  if (!planSlug) return false;
+  const base = planSlug.toLowerCase().replace(/-anual$/, '');
+  return plans.includes(base) || plans.includes(planSlug.toLowerCase());
+}

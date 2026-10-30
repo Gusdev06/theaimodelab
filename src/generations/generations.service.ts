@@ -26,6 +26,7 @@ import {
   CreditTransactionType,
   Resolution,
   GenerationImageRole,
+  SubscriptionStatus,
 } from '@prisma/client';
 import { GenerationFiltersDto } from './dto/generation-filters.dto';
 import {
@@ -67,7 +68,15 @@ import { GenerateMinimaxH3ImageToVideoDto } from './dto/videos/generate-minimax-
 import { GenerateMinimaxH3ReferenceToVideoDto } from './dto/videos/generate-minimax-h3-reference-to-video.dto';
 import { GenerateTextToSpeechDto } from './dto/generate-text-to-speech.dto';
 import { GenerateTalkingAvatarDto } from './dto/generate-talking-avatar.dto';
-import { TALKING_AVATAR_MODEL, TALKING_AVATAR_SLUG, estimateTalkingAvatarCost, talkingAvatarSeconds, talkingAvatarVoiceFor } from './talking-avatar.constants';
+import {
+  TALKING_AVATAR_MODEL,
+  TALKING_AVATAR_SLUG,
+  estimateTalkingAvatarCost,
+  talkingAvatarPlanAllowed,
+  talkingAvatarPlansFrom,
+  talkingAvatarSeconds,
+  talkingAvatarVoiceFor,
+} from './talking-avatar.constants';
 import { GenerateVoiceCloneDto } from './dto/generate-voice-clone.dto';
 import { getModelVariant, resolveModelVariant } from './model-variant';
 
@@ -3391,6 +3400,21 @@ CRITICAL REQUIREMENTS:
    * Avatar falante (OmniHuman 1.5): a pessoa da foto diz o texto. Cobrado no envio pela estimativa de duração do
    * texto (talking-avatar.constants.ts); sem geração grátis. O slug `talking-avatar` é o interruptor do admin.
    */
+  /**
+   * Quem pode usar o avatar falante: o plano ativo da conta contra a lista de planos liberados
+   * (`TALKING_AVATAR_PLANS`, padrão Studio e Agency). O site lê isto para mostrar a opção com o aviso de plano.
+   */
+  async getTalkingAvatarAccess(userId: string): Promise<{ allowed: boolean; planSlug: string | null; plans: string[] }> {
+    const plans = talkingAvatarPlansFrom(process.env.TALKING_AVATAR_PLANS);
+    const subscription = await this.prisma.subscription.findFirst({
+      where: { userId, status: SubscriptionStatus.ACTIVE },
+      orderBy: { currentPeriodEnd: 'desc' },
+      select: { plan: { select: { slug: true } } },
+    });
+    const planSlug = subscription?.plan.slug ?? null;
+    return { allowed: talkingAvatarPlanAllowed(planSlug, plans), planSlug, plans };
+  }
+
   async generateTalkingAvatar(
     userId: string,
     dto: GenerateTalkingAvatarDto,
@@ -3401,6 +3425,14 @@ CRITICAL REQUIREMENTS:
     const voiceId = talkingAvatarVoiceFor(dto.language, dto.voice_id);
 
     await this.modelsService.assertActiveBySlug(TALKING_AVATAR_SLUG, AiModelType.VIDEO);
+    const access = await this.getTalkingAvatarAccess(userId);
+    if (!access.allowed) {
+      throw new ForbiddenException({
+        code: 'PLAN_UPGRADE_REQUIRED',
+        message: `Avatar falante disponível nos planos ${access.plans.join(', ')}. Faça upgrade para usar.`,
+        requiredPlans: access.plans,
+      });
+    }
     await this.checkConcurrentLimit(userId);
     await this.ensureSufficientBalance(userId, creditsRequired);
 

@@ -6,7 +6,10 @@ import {
   TALKING_AVATAR_CREDITS_PER_SECOND,
   TALKING_AVATAR_MAX_CHARS,
   TALKING_AVATAR_MIN_SECONDS,
+  TALKING_AVATAR_DEFAULT_PLANS,
   estimateTalkingAvatarCost,
+  talkingAvatarPlanAllowed,
+  talkingAvatarPlansFrom,
   talkingAvatarSeconds,
   talkingAvatarVoiceFor,
 } from '../talking-avatar.constants';
@@ -35,6 +38,31 @@ describe('avatar falante (OmniHuman 1.5)', () => {
       expect(talkingAvatarVoiceFor('pt-BR', undefined)).toBe('inworld:Maitê');
       expect(talkingAvatarVoiceFor(undefined, undefined)).toBe('inworld:Maitê');
       expect(talkingAvatarVoiceFor('xx', undefined)).toBe('inworld:Maitê');
+    });
+  });
+
+  describe('planos liberados', () => {
+    it('sem env, só Studio e Agency (mensal ou anual); grátis e os outros planos ficam fora', () => {
+      const plans = talkingAvatarPlansFrom(undefined);
+      expect(plans).toEqual([...TALKING_AVATAR_DEFAULT_PLANS]);
+      expect(talkingAvatarPlanAllowed('studio', plans)).toBe(true);
+      expect(talkingAvatarPlanAllowed('agency-anual', plans)).toBe(true);
+      expect(talkingAvatarPlanAllowed('Studio', plans)).toBe(true);
+      expect(talkingAvatarPlanAllowed('pro', plans)).toBe(false);
+      expect(talkingAvatarPlanAllowed('advanced-anual', plans)).toBe(false);
+      expect(talkingAvatarPlanAllowed(null, plans)).toBe(false);
+    });
+
+    it('a env troca a lista; `all` libera todo mundo; lista vazia ou só vírgulas volta ao padrão', () => {
+      const custom = talkingAvatarPlansFrom(' pro, Advanced ,,');
+      expect(custom).toEqual(['pro', 'advanced']);
+      expect(talkingAvatarPlanAllowed('pro', custom)).toBe(true);
+      expect(talkingAvatarPlanAllowed('studio', custom)).toBe(false);
+      expect(talkingAvatarPlanAllowed(null, talkingAvatarPlansFrom('all'))).toBe(true);
+      expect(talkingAvatarPlanAllowed('creator', talkingAvatarPlansFrom('*'))).toBe(true);
+      expect(talkingAvatarPlansFrom('   ')).toEqual([...TALKING_AVATAR_DEFAULT_PLANS]);
+      expect(talkingAvatarPlansFrom(' , ')).toEqual([]);
+      expect(talkingAvatarPlanAllowed('studio', talkingAvatarPlansFrom(' , '))).toBe(false);
     });
   });
 

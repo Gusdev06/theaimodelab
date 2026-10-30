@@ -55,7 +55,7 @@ import { GenerateMinimaxH3TextToVideoDto } from './dto/videos/generate-minimax-h
 import { GenerateMinimaxH3ImageToVideoDto } from './dto/videos/generate-minimax-h3-image-to-video.dto';
 import { GenerateMinimaxH3ReferenceToVideoDto } from './dto/videos/generate-minimax-h3-reference-to-video.dto';
 import { GenerateTextToSpeechDto } from './dto/generate-text-to-speech.dto';
-import { GenerateTalkingAvatarDto } from './dto/generate-talking-avatar.dto';
+import { GenerateTalkingAvatarDto, TalkingAvatarAccessResponseDto } from './dto/generate-talking-avatar.dto';
 import { GenerateVoiceCloneDto } from './dto/generate-voice-clone.dto';
 import { UnlimitedStatusResponseDto } from './dto/unlimited-status.dto';
 import { UseInterceptors } from '@nestjs/common';
@@ -401,6 +401,13 @@ export class GenerationsController {
     @Body() dto: GenerateMinimaxH3ReferenceToVideoDto,
   ): Promise<CreateGenerationResponseDto> {
     return this.generationsService.generateMinimaxH3ReferenceToVideo(userId, dto);
+  }
+
+  @Get('talking-avatar/access')
+  @ApiOperation({ summary: 'Avatar falante: se a conta pode usar (plano ativo contra TALKING_AVATAR_PLANS, padrão Studio e Agency)' })
+  @ApiResponse({ status: 200, type: TalkingAvatarAccessResponseDto })
+  async talkingAvatarAccess(@CurrentUser('sub') userId: string): Promise<TalkingAvatarAccessResponseDto> {
+    return this.generationsService.getTalkingAvatarAccess(userId);
   }
 
   @Post('talking-avatar')

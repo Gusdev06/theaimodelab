@@ -58,3 +58,14 @@ export class GenerateTalkingAvatarDto {
   @IsBoolean()
   consent_confirmed?: boolean;
 }
+
+export class TalkingAvatarAccessResponseDto {
+  @ApiProperty({ description: 'Se a conta pode gerar avatar falante no plano atual' })
+  allowed: boolean;
+
+  @ApiProperty({ description: 'Slug do plano ativo (null sem assinatura)', nullable: true })
+  planSlug: string | null;
+
+  @ApiProperty({ description: 'Slugs dos planos liberados (TALKING_AVATAR_PLANS; padrão studio e agency)', type: [String] })
+  plans: string[];
+}
