@@ -3,9 +3,12 @@ import { ConfigService } from '@nestjs/config';
 import { FreeGenerationType, GenerationType, Resolution } from '@prisma/client';
 import {
   resolveMotionControlRequest,
+  wan3BilledSeconds,
+  wan3ReferenceCredits,
   wanAnimateCredits,
   WAN_ANIMATE_MODEL_VARIANT,
   WAN_ANIMATE_PROMPT_MAX_LENGTH,
+  WAN3_REFERENCE_MODEL_VARIANT,
 } from '../motion-control-engine';
 import { WavespeedVideoProvider } from '../providers/wavespeed-video.provider';
 import { resolveFreeGenerationType } from '../../credits/credits.service';
@@ -66,6 +69,62 @@ describe('Motion Control · motor Wan 2.2 Animate (troca de pessoa no vídeo)', 
       expect(wanAnimateCredits(Resolution.RES_720P, 1.4)).toBe(3 * 270);
       expect(wanAnimateCredits(Resolution.RES_480P, 0)).toBe(3 * 135);
       expect(wanAnimateCredits(Resolution.RES_480P, Number.NaN)).toBe(3 * 135);
+    });
+  });
+
+  describe('Wan 3.0 por referência (engine wan3-reference)', () => {
+    it('aceita 480p/720p/1080p e leva o texto; 1080p no Kling continua, 4K não existe', () => {
+      const request = resolveMotionControlRequest({ engine: 'wan3-reference', resolution: '1080p', prompt: 'Image 1 is the woman.' });
+      expect(request).toEqual({ engine: 'wan3-reference', mode: null, resolution: '1080p', dbResolution: Resolution.RES_1080P, prompt: 'Image 1 is the woman.' });
+      expect(resolveMotionControlRequest({ engine: 'wan3-reference' }).dbResolution).toBe(Resolution.RES_720P);
+      expect(() => resolveMotionControlRequest({ engine: 'wan3-reference', resolution: '4k' })).toThrow(BadRequestException);
+    });
+
+    it('cobra referência (teto 15 s) + saída, por segundo: 5 s em 720p = 10 × 335', () => {
+      expect(wan3BilledSeconds(5)).toEqual({ input: 5, output: 5 });
+      expect(wan3BilledSeconds(0.4)).toEqual({ input: 1, output: 2 });
+      expect(wan3BilledSeconds(22)).toEqual({ input: 15, output: 15 });
+      expect(wan3ReferenceCredits(Resolution.RES_720P, 5)).toBe(10 * 335);
+      expect(wan3ReferenceCredits(Resolution.RES_480P, 5.2)).toBe(12 * 170);
+      expect(wan3ReferenceCredits(Resolution.RES_1080P, 3)).toBe(6 * 670);
+    });
+
+    it('sem geração grátis e sem desvio', () => {
+      expect(resolveFreeGenerationType(GenerationType.MOTION_CONTROL, WAN3_REFERENCE_MODEL_VARIANT)).toBeNull();
+      const base = { generationId: 'g1', userId: 'u1', creditsConsumed: 1, usedFreeGeneration: false, videoUrl: 'v', imageUrl: 'i', resolution: '720p', engine: 'wan3-reference' } as MotionControlJobData;
+      const ctx = { durationSeconds: 5, aspectRatio: null } as unknown as Parameters<typeof planFallback>[2];
+      expect(planFallback(GenerationJobName.MOTION_CONTROL, base, ctx)).toBeNull();
+    });
+
+    it('manda Image 1 + Video 1 ao alibaba/wan-3.0/reference-to-video em 9:16 com áudio', async () => {
+      const config = { get: (key: string, fallback?: string) => (key === 'WAVESPEED_API_KEY' ? 'chave-de-teste' : fallback) } as unknown as ConfigService;
+      const provider = new WavespeedVideoProvider(config, {} as never);
+      const create = jest.spyOn(provider as never, 'createPrediction' as never).mockResolvedValue('pred-3' as never);
+      jest.spyOn(provider as never, 'pollPrediction' as never).mockResolvedValue('https://wavespeed.example/out.mp4' as never);
+      jest.spyOn(provider as never, 'downloadAndUpload' as never).mockResolvedValue('https://s3.example/out.mp4' as never);
+      const result = await provider.generateWan3Reference({
+        id: 'g1',
+        prompt: 'Image 1 is the woman. Recreate Video 1.',
+        imageUrls: ['https://s3.example/her.jpg'],
+        videoUrls: ['https://s3.example/example.mp4'],
+        resolution: '720p',
+        aspectRatio: '9:16',
+        durationSeconds: 5,
+      });
+      const [model, body] = create.mock.calls[0] as unknown as [string, Record<string, unknown>];
+      expect(model).toBe('alibaba/wan-3.0/reference-to-video');
+      expect(body).toEqual({
+        prompt: 'Image 1 is the woman. Recreate Video 1.',
+        resolution: '720p',
+        aspect_ratio: '9:16',
+        duration: 5,
+        generate_audio: true,
+        enable_prompt_expansion: false,
+        seed: -1,
+        reference_images: ['https://s3.example/her.jpg'],
+        reference_videos: ['https://s3.example/example.mp4'],
+      });
+      expect(result.modelUsed).toBe('alibaba/wan-3.0/reference-to-video');
     });
   });
 

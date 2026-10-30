@@ -42,13 +42,13 @@ export class GenerateMotionControlDto {
 
   @ApiPropertyOptional({
     description:
-      "Motor. 'kling' (padrão): a pessoa da foto faz o movimento do vídeo (Kling 2.6, com filtro). 'wan-replace': troca a pessoa do vídeo pela da foto, mantendo movimento, cenário, câmera e luz (Wan 2.2 Animate na WaveSpeed). 'wan-animate': a foto ganha o movimento do vídeo (Wan 2.2 Animate). O Wan cobra por segundo do vídeo (mínimo 3 s) e não usa geração grátis.",
-    enum: ['kling', 'wan-replace', 'wan-animate'],
+      "Motor. 'kling' (padrão): a pessoa da foto faz o movimento do vídeo (Kling 2.6, com filtro). 'wan-replace': troca a pessoa do vídeo pela da foto, mantendo movimento, cenário, câmera e luz (Wan 2.2 Animate na WaveSpeed). 'wan-animate': a foto ganha o movimento do vídeo (Wan 2.2 Animate). 'wan3-reference': gera a cena do vídeo de novo com a pessoa da foto (Wan 3.0 reference-to-video, 'Image 1' = quem, 'Video 1' = cena; cobra referência + saída). Os Wan cobram por segundo e não usam geração grátis.",
+    enum: ['kling', 'wan-replace', 'wan-animate', 'wan3-reference'],
     default: 'kling',
   })
   @IsOptional()
   @IsString()
-  @IsIn(['kling', 'wan-replace', 'wan-animate'])
+  @IsIn(['kling', 'wan-replace', 'wan-animate', 'wan3-reference'])
   engine?: string;
 
   @ApiPropertyOptional({

@@ -716,7 +716,7 @@ function planAlternative(
       const d = data as MotionControlJobData;
       // Wan 2.2 Animate (troca de pessoa): o MiniMax por referência não troca a pessoa do vídeo, então não há
       // alternativa honesta; a falha estorna os créditos como qualquer outra
-      if (d.engine === 'wan-replace' || d.engine === 'wan-animate') return null;
+      if (d.engine === 'wan-replace' || d.engine === 'wan-animate' || d.engine === 'wan3-reference') return null;
       // MiniMax aceita até 15 s; vídeo de referência mais longo não tem alternativa.
       if (!ctx.durationSeconds || ctx.durationSeconds > 15) return null;
       return minimaxReference(

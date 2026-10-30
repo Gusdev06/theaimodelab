@@ -26,6 +26,7 @@ const MINIMAX_H3_T2V_MODEL = 'wavespeed-ai/minimax-h3/text-to-video';
 const MINIMAX_H3_I2V_MODEL = 'wavespeed-ai/minimax-h3/image-to-video';
 const MINIMAX_H3_REF_MODEL = 'wavespeed-ai/minimax-h3/reference-to-video';
 const WAN_ANIMATE_MODEL = 'wavespeed-ai/wan-2.2/animate';
+const WAN3_REFERENCE_MODEL = 'alibaba/wan-3.0/reference-to-video';
 
 const POLL_MAX_ATTEMPTS = 180; // ~9 min a 3s
 const POLL_INTERVAL_MS = 3_000;
@@ -84,6 +85,18 @@ export interface MinimaxH3ImageToVideoInput {
   lastImageUrl?: string;
   durationSeconds: number;
   resolution: MinimaxH3Resolution;
+}
+
+/** Wan 3.0 reference-to-video: "Image 1" = a foto (quem), "Video 1" = o vídeo (movimento e cena); gera a cena de novo. */
+export interface Wan3ReferenceInput {
+  id: string;
+  prompt: string;
+  imageUrls: string[];
+  videoUrls: string[];
+  resolution: '480p' | '720p' | '1080p';
+  aspectRatio: '16:9' | '9:16' | '1:1' | '4:3' | '3:4';
+  durationSeconds: number;
+  generateAudio?: boolean;
 }
 
 /** Wan 2.2 Animate: URLs públicas da foto (quem entra) e do vídeo (movimento/cena). */
@@ -331,6 +344,36 @@ export class WavespeedVideoProvider {
     const outputUrl = await this.downloadAndUpload(resultUrl, input.id, 0);
 
     return { outputUrls: [outputUrl], modelUsed: WAN_ANIMATE_MODEL };
+  }
+
+  // ─── Wan 3.0 — reference-to-video (o motor dos templates do Genspicy) ────────────
+  async generateWan3Reference(input: Wan3ReferenceInput): Promise<GenerationResult> {
+    if (!this.apiKey) {
+      throw new Error(
+        'Não foi possível gerar o vídeo agora. Entre em contato com o suporte.',
+      );
+    }
+    const duration = Math.min(30, Math.max(2, Math.round(input.durationSeconds)));
+    this.logger.log(
+      `[WAN3_REF] gen=${input.id} resolution=${input.resolution} aspect=${input.aspectRatio} duration=${duration}s images=${input.imageUrls.length} videos=${input.videoUrls.length} prompt="${input.prompt.slice(0, 80)}"`,
+    );
+    const body: Record<string, unknown> = {
+      prompt: input.prompt,
+      resolution: input.resolution,
+      aspect_ratio: input.aspectRatio,
+      duration,
+      generate_audio: input.generateAudio ?? true,
+      enable_prompt_expansion: false,
+      seed: -1,
+    };
+    if (input.imageUrls.length) body.reference_images = input.imageUrls.slice(0, 10);
+    if (input.videoUrls.length) body.reference_videos = input.videoUrls.slice(0, 5);
+
+    const predictionId = await this.createPrediction(WAN3_REFERENCE_MODEL, body);
+    this.logger.log(`[WAN3_REF] prediction created: ${predictionId}`);
+    const resultUrl = await this.pollPrediction(predictionId);
+    const outputUrl = await this.downloadAndUpload(resultUrl, input.id, 0);
+    return { outputUrls: [outputUrl], modelUsed: WAN3_REFERENCE_MODEL };
   }
 
   // ─── MiniMax H3 — reference-to-video (multimodal) ────────────

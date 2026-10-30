@@ -1529,6 +1529,24 @@ export class GenerationProcessor extends WorkerHost {
       `[MOTION_CONTROL] ${data.generationId} engine=${data.engine ?? 'kling'} resolution=${data.resolution} videoUrl=${data.videoUrl} imageUrl=${data.imageUrl}`,
     );
 
+    // Wan 3.0 por referência (WaveSpeed): a cena do vídeo gerada de novo com a pessoa da foto, em 9:16 (celular)
+    if (data.engine === 'wan3-reference') {
+      const seconds = data.durationSeconds ?? 5;
+      const wan3Result = await this.wavespeedVideoProvider.generateWan3Reference({
+        id: data.generationId,
+        prompt:
+          data.prompt ??
+          'Image 1 is the woman: keep her exact face, hair, skin tone and body. Recreate Video 1 shot for shot with her as the only person: the same motion, timing, camera, framing, background and lighting.',
+        imageUrls: [data.imageUrl],
+        videoUrls: [data.videoUrl],
+        resolution: data.resolution === '480p' ? '480p' : data.resolution === '1080p' ? '1080p' : '720p',
+        aspectRatio: '9:16',
+        durationSeconds: Math.min(15, Math.max(2, Math.ceil(seconds))),
+      });
+      await this.completeGeneration(data.generationId, wan3Result, startTime);
+      return;
+    }
+
     // Wan 2.2 Animate (WaveSpeed): troca de pessoa no vídeo ou movimento da foto
     if (data.engine === 'wan-replace' || data.engine === 'wan-animate') {
       const wanResult = await this.wavespeedVideoProvider.generateWanAnimate({

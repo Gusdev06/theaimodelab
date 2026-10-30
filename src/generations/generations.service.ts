@@ -39,11 +39,15 @@ import { GenerateVideoImageToVideoDto } from './dto/videos/generate-video-image-
 import { GenerateVideoWithReferencesDto } from './dto/videos/generate-video-with-references.dto';
 import { GenerateMotionControlDto } from './dto/videos/generate-motion-control.dto';
 import {
+  isWan3Engine,
   isWanEngine,
   resolveMotionControlRequest,
   WAN_ANIMATE_MODEL,
   WAN_ANIMATE_MODEL_VARIANT,
   WAN_ANIMATE_SLUG,
+  WAN3_REFERENCE_MODEL,
+  WAN3_REFERENCE_MODEL_VARIANT,
+  WAN3_REFERENCE_SLUG,
 } from './motion-control-engine';
 import { getVideoDurationSeconds } from './utils/video-duration.util';
 import { trimVideoBuffer } from './utils/trim-video.util';
@@ -1349,10 +1353,11 @@ export class GenerationsService {
     // motor (Kling ou Wan 2.2 Animate), resolução e texto: combinação errada é recusada antes de cobrar
     const request = resolveMotionControlRequest(dto);
     const wan = isWanEngine(request.engine);
+    const wan3 = isWan3Engine(request.engine);
 
-    // Feature gate — admin can disable motion control via /admin/modelos (o Wan tem interruptor próprio).
+    // Feature gate — admin can disable motion control via /admin/modelos (cada Wan tem interruptor próprio).
     await this.modelsService.assertActiveBySlug(
-      wan ? WAN_ANIMATE_SLUG : 'motion-control',
+      wan3 ? WAN3_REFERENCE_SLUG : wan ? WAN_ANIMATE_SLUG : 'motion-control',
       AiModelType.VIDEO,
     );
 
@@ -1390,8 +1395,8 @@ export class GenerationsService {
       MOTION_CONTROL_MAX_SECONDS,
     );
 
-    // o Wan é pago sempre (variante própria); o Kling segue com a grátis do Motion Control
-    const modelVariant = wan ? WAN_ANIMATE_MODEL_VARIANT : null;
+    // os Wan são pagos sempre (variante própria); o Kling segue com a grátis do Motion Control
+    const modelVariant = wan3 ? WAN3_REFERENCE_MODEL_VARIANT : wan ? WAN_ANIMATE_MODEL_VARIANT : null;
     const freeGenType = await this.resolveFreeGenForRequest(
       userId,
       type,
@@ -1420,16 +1425,17 @@ export class GenerationsService {
         userId,
         type,
         status: GenerationStatus.PROCESSING,
-        modelUsed: wan ? WAN_ANIMATE_MODEL : 'kling-2.6/motion-control',
+        modelUsed: wan3 ? WAN3_REFERENCE_MODEL : wan ? WAN_ANIMATE_MODEL : 'kling-2.6/motion-control',
         resolution: dbResolution,
         durationSeconds,
-        // a troca de pessoa mantém o som do vídeo de referência
-        hasAudio: request.mode === 'replace',
+        // a troca de pessoa mantém o som do vídeo de referência; o Wan 3.0 gera áudio próprio
+        hasAudio: request.mode === 'replace' || wan3,
         creditsConsumed: creditsRequired,
         usedFreeGeneration: isFreeGeneration,
-        parameters: wan
-          ? { resolution, engine: request.engine, mode: request.mode, model_variant: WAN_ANIMATE_MODEL_VARIANT, ...(request.prompt ? { prompt: request.prompt } : {}) }
-          : { resolution },
+        parameters:
+          wan || wan3
+            ? { resolution, engine: request.engine, mode: request.mode, model_variant: modelVariant, ...(request.prompt ? { prompt: request.prompt } : {}) }
+            : { resolution },
         ...(request.prompt ? { prompt: request.prompt } : {}),
       },
     });
@@ -1506,6 +1512,7 @@ export class GenerationsService {
       resolution,
       engine: request.engine,
       prompt: request.prompt,
+      durationSeconds,
     } satisfies MotionControlJobData);
 
     return {
