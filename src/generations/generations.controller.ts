@@ -186,7 +186,7 @@ export class GenerationsController {
 
   @Post('motion-control')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
-  @ApiOperation({ summary: 'Motion Control — Wan Animate Replace (vídeo + imagem → vídeo)' })
+  @ApiOperation({ summary: 'Motion Control: Kling 2.6 (padrão) ou Wan 2.2 Animate (engine wan-replace = troca a pessoa do vídeo pela da foto; wan-animate = a foto faz o movimento do vídeo)' })
   @ApiResponse({ status: 201, type: CreateGenerationResponseDto })
   async motionControl(
     @CurrentUser('sub') userId: string,

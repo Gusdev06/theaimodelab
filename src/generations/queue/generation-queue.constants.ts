@@ -76,6 +76,12 @@ export interface MotionControlJobData extends BaseJobData {
   videoUrl: string;
   imageUrl: string;
   resolution: string;
+  /** ausente = 'kling' (jobs enfileirados antes do Wan) */
+  engine?: 'kling' | 'wan-replace' | 'wan-animate' | 'wan3-reference';
+  /** só no Wan 3.0: duração do vídeo de referência, para a saída ter o mesmo tamanho */
+  durationSeconds?: number;
+  /** só no Wan */
+  prompt?: string | null;
 }
 
 export interface VirtualTryOnJobData extends BaseJobData {

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { GenerationType, Resolution } from '@prisma/client';
 import { PlanResponseDto } from './dto/plan-response.dto';
+import { WAN_ANIMATE_MODEL_VARIANT, wanAnimateCredits, WAN3_REFERENCE_MODEL_VARIANT, wan3ReferenceCredits } from '../generations/motion-control-engine';
 
 /**
  * Maps plan slugs to env var names for Stripe price IDs.
@@ -186,6 +187,14 @@ export class PlansService {
     }
     if (modelVariant === 'SEEDANCE_2_5') {
       return PlansService.calculateSeedance25Cost(resolution, durationSeconds, hasVideoInput);
+    }
+    // Wan 2.2 Animate (troca de pessoa no vídeo): por segundo do vídeo de entrada, mínimo 3 s, fora da tabela
+    if (modelVariant === WAN_ANIMATE_MODEL_VARIANT) {
+      return wanAnimateCredits(resolution, durationSeconds ?? 0);
+    }
+    // Wan 3.0 por referência: referência (teto 15 s) + saída, por segundo
+    if (modelVariant === WAN3_REFERENCE_MODEL_VARIANT) {
+      return wan3ReferenceCredits(resolution, durationSeconds ?? 0);
     }
 
     const cost = await this.getCreditCost(generationType, resolution, hasAudio, modelVariant);
