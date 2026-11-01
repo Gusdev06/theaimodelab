@@ -17,6 +17,7 @@ import { MetaConversionsService, MetaRequestContext } from '../meta/meta-convers
 import { WelcomeCreditsService } from './welcome-credits.service';
 import { accountDisabledException } from './strategies/jwt.strategy';
 import { ReferralsService } from '../referrals/referrals.service';
+import { accessTokenAllowed, googleAudiences } from './google-clients';
 
 const SIGNUP_BONUS_CREDITS = 50;
 
@@ -405,13 +406,18 @@ export class AuthService {
   ): Promise<{ googleId: string; email: string; name: string; avatarUrl?: string }> {
     try {
       const { OAuth2Client } = await import('google-auth-library');
+      // cliente desta API + os extras (GOOGLE_EXTRA_CLIENT_IDS), ex.: o site da Funvmake com o próprio cliente Google
+      const audiences = googleAudiences(
+        this.configService.get<string>('GOOGLE_CLIENT_ID'),
+        this.configService.get<string>('GOOGLE_EXTRA_CLIENT_IDS'),
+      );
       const client = new OAuth2Client(this.configService.get('GOOGLE_CLIENT_ID'));
 
       // Tenta verificar como ID token primeiro
       try {
         const ticket = await client.verifyIdToken({
           idToken: googleToken,
-          audience: this.configService.get('GOOGLE_CLIENT_ID'),
+          audience: audiences,
         });
 
         const payload = ticket.getPayload();
@@ -427,7 +433,20 @@ export class AuthService {
           avatarUrl: payload.picture,
         };
       } catch {
-        // Se falhar como ID token, tenta como access token
+        // Se falhar como ID token, tenta como access token.
+        // Trava opcional (GOOGLE_ACCESS_TOKEN_AUD_CHECK=true): o token precisa ter sido emitido para um dos clientes
+        // aceitos. Sem ela, um token de qualquer app Google em que a pessoa entrou serve para entrar aqui.
+        if (this.configService.get('GOOGLE_ACCESS_TOKEN_AUD_CHECK') === 'true') {
+          const infoRes = await fetch('https://oauth2.googleapis.com/tokeninfo', {
+            method: 'POST',
+            body: new URLSearchParams({ access_token: googleToken }),
+          });
+          const info = infoRes.ok ? await infoRes.json() : null;
+          if (!accessTokenAllowed(info, audiences)) {
+            throw new UnauthorizedException('Token Google inválido');
+          }
+        }
+
         const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
           headers: { Authorization: `Bearer ${googleToken}` },
         });
