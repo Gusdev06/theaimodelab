@@ -758,6 +758,13 @@ async function main() {
       modelVariant: 'kling-2.6/motion-control',
       sortOrder: 102,
     },
+    {
+      slug: 'talking-avatar',
+      label: 'Avatar falante (OmniHuman 1.5)',
+      provider: 'WAVESPEED' as const,
+      modelVariant: 'bytedance/avatar-omni-human-1.5',
+      sortOrder: 103,
+    },
   ];
 
   for (const model of videoModels) {

@@ -25,6 +25,8 @@ const SEEDANCE_MODEL = 'bytedance/seedance-2.0-fast/image-to-video-spicy';
 const MINIMAX_H3_T2V_MODEL = 'wavespeed-ai/minimax-h3/text-to-video';
 const MINIMAX_H3_I2V_MODEL = 'wavespeed-ai/minimax-h3/image-to-video';
 const MINIMAX_H3_REF_MODEL = 'wavespeed-ai/minimax-h3/reference-to-video';
+/** Avatar falante: foto + áudio → vídeo com boca sincronizada (docs: image e audio, URL ou base64; US$ 0,25/s de áudio) */
+const OMNIHUMAN_MODEL = 'bytedance/avatar-omni-human-1.5';
 
 const POLL_MAX_ATTEMPTS = 180; // ~9 min a 3s
 const POLL_INTERVAL_MS = 3_000;
@@ -117,6 +119,12 @@ interface PredictionResultResponse {
   };
 }
 
+export interface WavespeedTalkingAvatarInput {
+  id: string;
+  imageUrl: string;
+  audioUrl: string;
+}
+
 @Injectable()
 export class WavespeedVideoProvider {
   private readonly logger = new Logger(WavespeedVideoProvider.name);
@@ -139,6 +147,29 @@ export class WavespeedVideoProvider {
         'WAVESPEED_API_KEY is not set. LTX Spicy video generation will fail with a 401 from the provider.',
       );
     }
+  }
+
+  /**
+   * Avatar falante (OmniHuman 1.5): a pessoa da foto fala o áudio. A foto e o áudio já estão no nosso armazenamento
+   * (URLs públicas: a foto subida no pedido e o áudio do TTS da própria plataforma). O vídeo sai no formato do retrato.
+   */
+  async generateTalkingAvatar(input: WavespeedTalkingAvatarInput): Promise<GenerationResult> {
+    if (!this.apiKey) {
+      throw new Error('Não foi possível gerar o vídeo agora. Entre em contato com o suporte.');
+    }
+    if (!input.imageUrl) throw new Error('WaveSpeed OmniHuman: foto ausente.');
+    if (!input.audioUrl) throw new Error('WaveSpeed OmniHuman: áudio ausente.');
+
+    this.logger.log(`[WAVESPEED_OMNIHUMAN] gen=${input.id} image=${input.imageUrl.slice(0, 60)} audio=${input.audioUrl.slice(0, 60)}`);
+
+    const predictionId = await this.createPrediction(OMNIHUMAN_MODEL, {
+      image: input.imageUrl,
+      audio: input.audioUrl,
+      enable_base64_output: false,
+    });
+    const videoUrl = await this.pollPrediction(predictionId);
+    const outputUrl = await this.downloadAndUpload(videoUrl, input.id, 0);
+    return { outputUrls: [outputUrl], modelUsed: OMNIHUMAN_MODEL };
   }
 
   async generateImageToVideo(

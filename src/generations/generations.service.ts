@@ -26,6 +26,7 @@ import {
   CreditTransactionType,
   Resolution,
   GenerationImageRole,
+  SubscriptionStatus,
 } from '@prisma/client';
 import { GenerationFiltersDto } from './dto/generation-filters.dto';
 import {
@@ -66,6 +67,16 @@ import { GenerateMinimaxH3TextToVideoDto } from './dto/videos/generate-minimax-h
 import { GenerateMinimaxH3ImageToVideoDto } from './dto/videos/generate-minimax-h3-image-to-video.dto';
 import { GenerateMinimaxH3ReferenceToVideoDto } from './dto/videos/generate-minimax-h3-reference-to-video.dto';
 import { GenerateTextToSpeechDto } from './dto/generate-text-to-speech.dto';
+import { GenerateTalkingAvatarDto } from './dto/generate-talking-avatar.dto';
+import {
+  TALKING_AVATAR_MODEL,
+  TALKING_AVATAR_SLUG,
+  estimateTalkingAvatarCost,
+  talkingAvatarPlanAllowed,
+  talkingAvatarPlansFrom,
+  talkingAvatarSeconds,
+  talkingAvatarVoiceFor,
+} from './talking-avatar.constants';
 import { GenerateVoiceCloneDto } from './dto/generate-voice-clone.dto';
 import { getModelVariant, resolveModelVariant } from './model-variant';
 
@@ -127,6 +138,7 @@ import {
   OmniVideoJobData,
   OmniVideoClipData,
   SeedanceVideoJobData,
+  TalkingAvatarJobData,
   TextToSpeechJobData,
   VoiceCloneJobData,
 } from './queue/generation-queue.constants';
@@ -189,6 +201,17 @@ export class GenerationsService {
       .catch((err) =>
         this.logger.error(
           `Seedream direct run failed for ${data.generationId}: ${(err as Error).message}`,
+          (err as Error).stack,
+        ),
+      );
+  }
+
+  private runTalkingAvatarDirectly(data: TalkingAvatarJobData): void {
+    this.generationProcessor
+      .runTalkingAvatarDirectly(data)
+      .catch((err) =>
+        this.logger.error(
+          `Talking avatar direct run failed for ${data.generationId}: ${(err as Error).message}`,
           (err as Error).stack,
         ),
       );
@@ -3371,6 +3394,95 @@ CRITICAL REQUIREMENTS:
     return textLength >= GenerationsService.AUDIO_TIER_THRESHOLD
       ? GenerationsService.CLONE_CREDIT_COST_LONG
       : GenerationsService.CLONE_CREDIT_COST_SHORT;
+  }
+
+  /**
+   * Avatar falante (OmniHuman 1.5): a pessoa da foto diz o texto. Cobrado no envio pela estimativa de duração do
+   * texto (talking-avatar.constants.ts); sem geração grátis. O slug `talking-avatar` é o interruptor do admin.
+   */
+  /**
+   * Quem pode usar o avatar falante: o plano ativo da conta contra a lista de planos liberados
+   * (`TALKING_AVATAR_PLANS`, padrão Studio e Agency). O site lê isto para mostrar a opção com o aviso de plano.
+   */
+  async getTalkingAvatarAccess(userId: string): Promise<{ allowed: boolean; planSlug: string | null; plans: string[] }> {
+    const plans = talkingAvatarPlansFrom(process.env.TALKING_AVATAR_PLANS);
+    const subscription = await this.prisma.subscription.findFirst({
+      where: { userId, status: SubscriptionStatus.ACTIVE },
+      orderBy: { currentPeriodEnd: 'desc' },
+      select: { plan: { select: { slug: true } } },
+    });
+    const planSlug = subscription?.plan.slug ?? null;
+    return { allowed: talkingAvatarPlanAllowed(planSlug, plans), planSlug, plans };
+  }
+
+  async generateTalkingAvatar(
+    userId: string,
+    dto: GenerateTalkingAvatarDto,
+  ): Promise<CreateGenerationResponseDto> {
+    const type = GenerationType.IMAGE_TO_VIDEO;
+    const text = dto.text.trim();
+    const creditsRequired = estimateTalkingAvatarCost(text.length);
+    const voiceId = talkingAvatarVoiceFor(dto.language, dto.voice_id);
+
+    await this.modelsService.assertActiveBySlug(TALKING_AVATAR_SLUG, AiModelType.VIDEO);
+    const access = await this.getTalkingAvatarAccess(userId);
+    if (!access.allowed) {
+      throw new ForbiddenException({
+        code: 'PLAN_UPGRADE_REQUIRED',
+        message: `Avatar falante disponível nos planos ${access.plans.join(', ')}. Faça upgrade para usar.`,
+        requiredPlans: access.plans,
+      });
+    }
+    await this.checkConcurrentLimit(userId);
+    await this.ensureSufficientBalance(userId, creditsRequired);
+
+    const generation = await this.prisma.generation.create({
+      data: {
+        userId,
+        type,
+        status: GenerationStatus.PROCESSING,
+        prompt: text,
+        modelUsed: TALKING_AVATAR_MODEL,
+        resolution: Resolution.RES_720P,
+        hasAudio: true,
+        aspectRatio: dto.aspect_ratio,
+        creditsConsumed: creditsRequired,
+        usedFreeGeneration: false,
+        parameters: {
+          provider: 'wavespeed',
+          mode: 'talking_avatar',
+          voiceId,
+          language: dto.language,
+          speed: dto.speed,
+          estimatedSeconds: talkingAvatarSeconds(text.length),
+        },
+      },
+    });
+
+    const imageMime = dto.image_mime_type ?? 'image/jpeg';
+    const imageUrl = await this.uploadBase64ImagePublic(dto.image, imageMime, generation.id);
+    await this.prisma.generationInputImage.createMany({
+      data: [{ generationId: generation.id, role: GenerationImageRole.FIRST_FRAME, mimeType: imageMime, order: 0, url: imageUrl }],
+    });
+
+    await this.debitCredits(userId, creditsRequired, generation.id, type, Resolution.RES_720P);
+
+    this.runTalkingAvatarDirectly({
+      generationId: generation.id,
+      userId,
+      creditsConsumed: creditsRequired,
+      imageUrl,
+      text,
+      voiceId,
+      language: dto.language,
+      speed: dto.speed,
+    });
+
+    return {
+      id: generation.id,
+      status: GenerationStatus.PROCESSING,
+      creditsConsumed: creditsRequired,
+    };
   }
 
   async generateTextToSpeech(
