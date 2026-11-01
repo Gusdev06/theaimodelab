@@ -31,7 +31,7 @@ function perfectpay(extraTarget: unknown) {
     config as any,
     pendingGrantsService as any,
     { create: jest.fn(async () => ({})) } as any,
-    { sendPendingGrantsEmailEs: jest.fn(async () => undefined) } as any,
+    { sendPendingGrantsEmail: jest.fn(async () => undefined), sendPendingGrantsEmailEs: jest.fn(async () => undefined) } as any,
     prisma as any,
     paymentsService as any,
     checkoutCodes as any,
