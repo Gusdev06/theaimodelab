@@ -96,6 +96,58 @@ export class ModelsService implements OnModuleInit {
         }`,
       );
     }
+
+    // Wan 2.2 Animate (POST /generations/motion-control com engine wan-*): interruptor próprio. O site só mostra
+    // "Trocar a pessoa do vídeo" quando GET /models/videos traz este slug ativo.
+    try {
+      await this.prisma.aiModel.upsert({
+        where: { slug: 'wan-animate' },
+        update: {},
+        create: {
+          slug: 'wan-animate',
+          label: 'Trocar pessoa no vídeo (Wan 2.2 Animate)',
+          description:
+            'Motor do Motion Control que troca a pessoa do vídeo pela da foto (replace) ou anima a foto com o movimento do vídeo (animate). WaveSpeed, por segundo do vídeo, sem geração grátis. Desativar esconde a opção no site.',
+          provider: AiModelProvider.WAVESPEED,
+          modelVariant: 'wavespeed-ai/wan-2.2/animate',
+          sortOrder: 104,
+          type: AiModelType.VIDEO,
+          isActive: true,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to ensure 'wan-animate' AiModel row: ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
+    }
+
+    // Wan 3.0 reference-to-video (engine wan3-reference): a cena do vídeo gerada de novo com a pessoa da foto.
+    // Nasce DESLIGADO: o dono liga em /admin/modelos depois de conferir que o conteúdo 18+ passa no provedor.
+    try {
+      await this.prisma.aiModel.upsert({
+        where: { slug: 'wan3-reference' },
+        update: {},
+        create: {
+          slug: 'wan3-reference',
+          label: 'Cena com a sua modelo (Wan 3.0 por referência)',
+          description:
+            'Motor do Motion Control que gera a cena do vídeo de novo com a pessoa da foto (Image 1 = quem, Video 1 = cena), como os templates do Genspicy. WaveSpeed, cobra referência + saída por segundo, sem geração grátis. Ligar só depois de testar o 18+ no provedor.',
+          provider: AiModelProvider.WAVESPEED,
+          modelVariant: 'alibaba/wan-3.0/reference-to-video',
+          sortOrder: 105,
+          type: AiModelType.VIDEO,
+          isActive: false,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to ensure 'wan3-reference' AiModel row: ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
+    }
   }
 
   async deactivateTheaimodelabVideoModels(statusMessage: string): Promise<number> {

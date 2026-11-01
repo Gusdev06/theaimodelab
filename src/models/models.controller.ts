@@ -11,7 +11,7 @@ import { Public } from '../common/decorators/public.decorator';
  * gating components (AvatarsDialog, MotionControlPanel, etc.) still look them
  * up by slug to read the on/off state + statusMessage.
  */
-const GATEWAY_SLUGS = new Set(['avatar-video', 'motion-control', 'audio-generation']);
+const GATEWAY_SLUGS = new Set(['avatar-video', 'motion-control', 'audio-generation', 'wan-animate', 'wan3-reference']);
 
 function toDto(m: AiModel): AiModelResponseDto {
   return {
