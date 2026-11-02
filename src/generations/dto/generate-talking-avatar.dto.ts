@@ -4,7 +4,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { TALKING_AVATAR_MAX_CHARS } from '../talking-avatar.constants';
 
 /**
- * Avatar falante (OmniHuman 1.5): a pessoa da foto diz o texto, com voz do TTS da plataforma e boca sincronizada.
+ * Avatar falante (OmniHuman 2.0): a pessoa da foto diz o texto, com voz do TTS da plataforma e boca sincronizada.
  * Rota POST /generations/talking-avatar. Exige o atestado de imagem (ContentSafetyInterceptor, regra 'always').
  */
 export class GenerateTalkingAvatarDto {

@@ -760,9 +760,9 @@ async function main() {
     },
     {
       slug: 'talking-avatar',
-      label: 'Avatar falante (OmniHuman 1.5)',
+      label: 'Avatar falante (OmniHuman 2.0)',
       provider: 'WAVESPEED' as const,
-      modelVariant: 'bytedance/avatar-omni-human-1.5',
+      modelVariant: 'bytedance/omni-human-2.0',
       sortOrder: 103,
     },
   ];

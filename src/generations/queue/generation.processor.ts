@@ -839,7 +839,7 @@ export class GenerationProcessor extends WorkerHost {
     }
   }
 
-  /** Avatar falante: TTS da plataforma → OmniHuman 1.5. Falhou em qualquer etapa = estorno pelo handleFailure. */
+  /** Avatar falante: TTS da plataforma → OmniHuman 2.0. Falhou em qualquer etapa = estorno pelo handleFailure. */
   async runTalkingAvatarDirectly(data: TalkingAvatarJobData): Promise<void> {
     try {
       await this.processTalkingAvatar(data);

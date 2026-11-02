@@ -413,7 +413,7 @@ export class GenerationsController {
   @Post('talking-avatar')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
   @ApiOperation({
-    summary: 'Avatar falante: a pessoa da foto diz o texto (TTS da plataforma + OmniHuman 1.5 na WaveSpeed), boca sincronizada; cobrado por segundo estimado do texto',
+    summary: 'Avatar falante: a pessoa da foto diz o texto (TTS da plataforma + OmniHuman 2.0 na WaveSpeed), boca sincronizada; cobrado por segundo estimado do texto',
   })
   @ApiResponse({ status: 201, type: CreateGenerationResponseDto })
   async talkingAvatar(
