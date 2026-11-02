@@ -1,9 +1,13 @@
-import { CallHandler, ExecutionContext, Injectable, Logger, NestInterceptor } from '@nestjs/common';
+import { CallHandler, ExecutionContext, Injectable, Logger, NestInterceptor, Optional } from '@nestjs/common';
 import { ContentSafetyEventKind } from '@prisma/client';
 import { Observable, tap } from 'rxjs';
 import { BusinessException } from '../common/exceptions/business.exception';
 import { ContentSafetyService } from './content-safety.service';
 import { assessBody, collectTexts } from './minor-guard';
+import { PromptJudgeService } from './prompt-judge/prompt-judge.service';
+
+/** Marca do juiz na trilha (campo `match` do evento): distingue do termo da trava de palavras. */
+export const JUDGE_MATCH_MINOR = 'judge:minor';
 
 type Fields = Record<string, unknown>;
 
@@ -254,7 +258,10 @@ const INSPECTED_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH'])
 export class ContentSafetyInterceptor implements NestInterceptor {
   private readonly logger = new Logger(ContentSafetyInterceptor.name);
 
-  constructor(private readonly safety: ContentSafetyService) {}
+  constructor(
+    private readonly safety: ContentSafetyService,
+    @Optional() private readonly judge?: PromptJudgeService,
+  ) {}
 
   async intercept(context: ExecutionContext, next: CallHandler): Promise<Observable<unknown>> {
     const req = context.switchToHttp().getRequest<SafetyRequest>();
@@ -290,6 +297,10 @@ export class ContentSafetyInterceptor implements NestInterceptor {
       throw new BusinessException('CONTENT_POLICY_MINOR');
     }
 
+    // 2b. leitor de sentido (juiz de prompt): a trava pegou a palavra; o juiz pega o sentido. Só bloqueia menor com
+    // confiança alta e só no modo enforce; o resto (shadow, pessoa real, indisponível) vai para o log e o pedido segue.
+    await this.judgePrompt(body, route, userId);
+
     const decision = consentDecision(path, body);
     if (decision === 'none') return next.handle();
     if (!hasConsent(body)) {
@@ -301,6 +312,49 @@ export class ContentSafetyInterceptor implements NestInterceptor {
     // fail closed: sem o atestado gravado, o pedido não segue (o service responde 503)
     const eventId = await this.safety.recordOrThrow({ userId, kind: ContentSafetyEventKind.CONSENT_ATTESTED, route });
     return next.handle().pipe(tap((response) => this.linkInBackground(eventId, response)));
+  }
+
+  /**
+   * Pede o veredito do juiz para os textos livres do pedido. Menor com confiança alta: no modo enforce vira evento
+   * MINOR_BLOCKED (com a marca do juiz, contando para a guarda legal e a suspensão) e 422; no modo shadow só log.
+   * Pessoa real: log (bloqueio só com PROMPT_JUDGE_REAL_PERSON=enforce, que ainda não tem código de erro próprio e
+   * por isso fica como log aqui). Juiz desligado, sem chave ou indisponível: o pedido segue.
+   */
+  private async judgePrompt(body: unknown, route: string, userId: string | null): Promise<void> {
+    if (!this.judge?.enabled()) return;
+    let texts: string[];
+    try {
+      texts = collectTexts(body);
+    } catch {
+      return; // o tamanho já foi tratado pela trava; aqui não há o que ler
+    }
+    if (!texts.some((text) => text.trim())) return;
+
+    // o juiz sabe se o alvo é sem filtro: aí menor sem palavra sexual também conta (a ferramenta em si é sexual)
+    const model = body && typeof body === 'object' ? (body as { model?: unknown }).model : undefined;
+    const outcome = await this.judge.review(texts, { uncensored: isUncensoredModel(model) });
+    const verdict = outcome.verdict;
+    if (!verdict || verdict.category === 'none') return;
+
+    const mode = this.judge.mode();
+    const who = `rota=${route} usuário=${userId ?? '-'} modelo=${outcome.model} ${outcome.latencyMs} ms`;
+    if (verdict.category === 'minor' && verdict.confidence === 'high') {
+      if (mode === 'enforce') {
+        await this.safety.record({
+          userId,
+          kind: ContentSafetyEventKind.MINOR_BLOCKED,
+          route,
+          match: JUDGE_MATCH_MINOR,
+          excerpt: safetyExcerpt(body),
+        });
+        this.logger.warn(`[PROMPT_JUDGE] bloqueado: menor (${verdict.reason}) ${who}`);
+        throw new BusinessException('CONTENT_POLICY_MINOR');
+      }
+      this.logger.warn(`[PROMPT_JUDGE] shadow: menor/high (${verdict.reason}) ${who}`);
+      return;
+    }
+    // menor em confiança média/baixa e pessoa real em qualquer confiança: só sinal, para calibrar antes de bloquear
+    this.logger.warn(`[PROMPT_JUDGE] ${mode}: ${verdict.category}/${verdict.confidence} (${verdict.reason}) ${who}`);
   }
 
   /** Liga o atestado à geração criada, sem segurar a resposta e sem derrubá-la se a ligação falhar. */

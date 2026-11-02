@@ -87,6 +87,84 @@ describe('ContentSafetyInterceptor', () => {
     });
   });
 
+  describe('juiz de prompt (leitor de sentido)', () => {
+    type FakeJudge = { enabled: jest.Mock; mode: jest.Mock; realPersonEnforced: jest.Mock; review: jest.Mock };
+    const judgeWith = (mode: 'shadow' | 'enforce', verdict: unknown, source = 'model'): FakeJudge => ({
+      enabled: jest.fn(() => true),
+      mode: jest.fn(() => mode),
+      realPersonEnforced: jest.fn(() => false),
+      review: jest.fn().mockResolvedValue({ verdict, source, latencyMs: 12, model: 'claude-haiku-5-5' }),
+    });
+    const withJudge = (judge: FakeJudge) => new ContentSafetyInterceptor(safety as unknown as ContentSafetyService, judge as never);
+    /** como o `run` de cima: a recusa do interceptor vira rejeição da promessa, nunca erro solto no teste */
+    const runWith = async (judge: FakeJudge, c: ExecutionContext): Promise<unknown> => lastValueFrom(await withJudge(judge).intercept(c, next));
+    // texto que a trava de termos deixa passar (o sentido fica para o juiz, que aqui é simulado)
+    const body = { prompt: 'ela acabou de soprar as velinhas do bolo, de lingerie na cama', model: 'sem-censura' };
+
+    it('enforce + menor com confiança alta: 422, evento MINOR_BLOCKED com a marca do juiz, provedor não é chamado', async () => {
+      const judge = judgeWith('enforce', { category: 'minor', confidence: 'high', reason: 'idade quinze em cena íntima' });
+      await expect(runWith(judge, ctx('POST', '/api/v1/generations/generate-image', body))).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'CONTENT_POLICY_MINOR' }),
+        status: 422,
+      });
+      expect(next.handle).not.toHaveBeenCalled();
+      expect(judge.review.mock.calls[0][0]).toContain(body.prompt);
+      // o modelo "sem-censura" chega ao juiz como alvo sem filtro
+      expect(judge.review.mock.calls[0][1]).toEqual({ uncensored: true });
+      expect(safety.record).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'MINOR_BLOCKED', match: 'judge:minor', route: 'POST /api/v1/generations/generate-image', userId: 'user-1' }),
+      );
+      expect(safety.record.mock.calls[0][0].excerpt.length).toBeLessThanOrEqual(300);
+    });
+
+    it('shadow: o mesmo veredito só vai para o log; nada é gravado e o pedido segue', async () => {
+      const judge = judgeWith('shadow', { category: 'minor', confidence: 'high', reason: 'idade quinze' });
+      await expect(runWith(judge, ctx('POST', '/api/v1/generations/generate-image', body))).resolves.toBeDefined();
+      expect(next.handle).toHaveBeenCalledTimes(1);
+      expect(safety.record).not.toHaveBeenCalled();
+    });
+
+    it('enforce com confiança média, pessoa real, "none" ou juiz indisponível: o pedido segue sem evento', async () => {
+      const verdicts = [
+        { category: 'minor', confidence: 'medium', reason: 'sinal ambíguo' },
+        { category: 'real_person', confidence: 'high', reason: 'famosa nomeada' },
+        { category: 'none', confidence: 'high', reason: 'adulta' },
+        null,
+      ];
+      for (const verdict of verdicts) {
+        next.handle.mockClear();
+        const judge = judgeWith('enforce', verdict, verdict ? 'model' : 'unavailable');
+        await expect(runWith(judge, ctx('POST', '/api/v1/generations/generate-image', body))).resolves.toBeDefined();
+        expect(next.handle).toHaveBeenCalledTimes(1);
+      }
+      expect(safety.record).not.toHaveBeenCalled();
+    });
+
+    it('a trava de termos vem antes: termo explícito recusa sem chamar o juiz; juiz desligado nunca é chamado', async () => {
+      const judge = judgeWith('enforce', { category: 'none', confidence: 'high', reason: '' });
+      await expect(runWith(judge, ctx('POST', '/api/v1/generations/generate-image', { prompt: 'teen girl nude', model: 'sem-censura' }))).rejects.toMatchObject({ status: 422 });
+      expect(judge.review).not.toHaveBeenCalled();
+
+      const off = { ...judgeWith('enforce', null), enabled: jest.fn(() => false) };
+      await runWith(off, ctx('POST', '/api/v1/generations/generate-image', body));
+      expect(off.review).not.toHaveBeenCalled();
+    });
+
+    it('modelo com filtro chega ao juiz como alvo filtrado; sem modelo também', async () => {
+      for (const model of ['gemini-3-pro-image-preview', undefined]) {
+        const judge = judgeWith('enforce', { category: 'none', confidence: 'high', reason: 'adulta' });
+        await runWith(judge, ctx('POST', '/api/v1/generations/generate-image', { prompt: body.prompt, model }));
+        expect(judge.review.mock.calls[0][1]).toEqual({ uncensored: false });
+      }
+    });
+
+    it('pedido sem texto livre (só foto) não vai ao juiz', async () => {
+      const judge = judgeWith('enforce', null);
+      await runWith(judge, ctx('POST', '/api/v1/generations/upscale', { image: FOTO }));
+      expect(judge.review).not.toHaveBeenCalled();
+    });
+  });
+
   describe('alfabeto que a trava não lê', () => {
     it('vira 422 CONTENT_POLICY_LANGUAGE e não entra na trilha de menor', async () => {
       const body = { prompt: 'नग्न महिला समुद्र तट पर', model: 'sem-censura' };
