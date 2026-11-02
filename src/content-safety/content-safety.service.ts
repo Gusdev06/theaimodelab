@@ -5,9 +5,26 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { ContentSafetyEvent, ContentSafetyEventKind } from '@prisma/client';
+import { ContentSafetyEvent, ContentSafetyEventKind, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { countMinorBlocks, MINOR_BLOCKED_HOLD_THRESHOLD, MinorBlockTally } from '../users/account-erasure.service';
 import { CURRENT_TERMS_VERSION } from '../users/terms.constants';
+
+/**
+ * Suspensão automática por menor de idade: ligada por padrão; MINOR_AUTO_SUSPEND_ENABLED=false desliga
+ * (a trava de texto e do provedor continua recusando os pedidos, só a conta não é suspensa sozinha).
+ */
+export function minorAutoSuspendEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.MINOR_AUTO_SUSPEND_ENABLED ?? 'true').trim().toLowerCase() !== 'false';
+}
+
+/**
+ * A conta entrou na guarda legal por menor? Mesma regra da exclusão (guarda `safety_events` e `provider_minor`):
+ * 3+ tentativas distintas bloqueadas em 90 dias, ou 1 recusa do provedor por menor em pedido com foto/vídeo da conta.
+ */
+export function minorHoldReached(tally: MinorBlockTally): boolean {
+  return tally.recentAttempts >= MINOR_BLOCKED_HOLD_THRESHOLD || tally.provider > 0;
+}
 
 /** Nota da liberação de um bloqueio por menor: o jurídico explica por quê (fica na trilha). */
 export const SAFETY_RELEASE_NOTE_MIN_LENGTH = 10;
@@ -79,12 +96,52 @@ export class ContentSafetyService {
    * decidiu recusar; o erro do banco só vira log, para a recusa nunca depender do registro.
    */
   async record(event: SafetyEventInput): Promise<string | null> {
+    let eventId: string | null;
     try {
-      return await this.create(event);
+      eventId = await this.create(event);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`content-safety: falha ao registrar ${event.kind} (${event.route}): ${message}`);
       return null;
+    }
+    if (event.kind === ContentSafetyEventKind.MINOR_BLOCKED && event.userId) {
+      await this.suspendIfMinorHold(event.userId);
+    }
+    return eventId;
+  }
+
+  /**
+   * Conta que chega na guarda legal por menor é suspensa na hora: a trava recusa o pedido, mas sem isso a pessoa
+   * continua tentando com outras palavras e com fotos. Desativa e revoga as
+   * sessões, como o "Desativar" do admin; o JWT confere a conta ativa (cache de 60 s), então o acesso cai em até 1 min.
+   * Nada é apagado. Falso positivo: liberar os bloqueios em Denúncias e só então reativar (senão o próximo bloqueio
+   * suspende de novo). Admin nunca é suspenso. Nunca lança: quem chama já recusou o pedido.
+   */
+  private async suspendIfMinorHold(userId: string): Promise<void> {
+    if (!minorAutoSuspendEnabled()) return;
+    try {
+      const tally = await countMinorBlocks(this.prisma, userId, new Date());
+      if (!minorHoldReached(tally)) return;
+      const suspended = await this.prisma.$transaction(async (tx) => {
+        // a condição isActive: true é a trava: dois bloqueios juntos suspendem e registram uma vez só
+        const { count } = await tx.user.updateMany({
+          where: { id: userId, isActive: true, role: { not: UserRole.ADMIN } },
+          data: { isActive: false },
+        });
+        if (count === 0) return false;
+        await tx.refreshToken.updateMany({ where: { userId, revoked: false }, data: { revoked: true } });
+        return true;
+      });
+      if (suspended) {
+        this.logger.warn(
+          `[SAFETY_GUARD] conta ${userId} suspensa automaticamente: ${tally.recentAttempts} tentativa(s) bloqueada(s) ` +
+            `por menor em 90 dias e ${tally.provider} recusa(s) do provedor com foto/vídeo da conta. Para reativar um ` +
+            'falso positivo, libere os bloqueios em Denúncias antes.',
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`[SAFETY_GUARD] suspensão automática da conta ${userId} falhou: ${message}`);
     }
   }
 
