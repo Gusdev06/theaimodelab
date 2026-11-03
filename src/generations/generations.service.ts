@@ -3424,7 +3424,7 @@ CRITICAL REQUIREMENTS:
   }
 
   /**
-   * Avatar falante (OmniHuman 1.5): a pessoa da foto diz o texto. Cobrado no envio pela estimativa de duração do
+   * Avatar falante (OmniHuman 2.0): a pessoa da foto diz o texto. Cobrado no envio pela estimativa de duração do
    * texto (talking-avatar.constants.ts); sem geração grátis. O slug `talking-avatar` é o interruptor do admin.
    */
   /**

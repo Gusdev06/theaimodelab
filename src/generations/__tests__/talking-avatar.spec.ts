@@ -15,18 +15,21 @@ import {
 } from '../talking-avatar.constants';
 import { WavespeedVideoProvider } from '../providers/wavespeed-video.provider';
 
-describe('avatar falante (OmniHuman 1.5)', () => {
+describe('avatar falante (OmniHuman 2.0)', () => {
   describe('cobrança por estimativa do texto', () => {
-    it('piso de 3 s e ~11 caracteres por segundo, sempre arredondando para cima', () => {
+    it('piso de 4 s (mínimo cobrado pela WaveSpeed) e ~11 caracteres por segundo, sempre arredondando para cima', () => {
+      expect(TALKING_AVATAR_MIN_SECONDS).toBe(4);
       expect(talkingAvatarSeconds(0)).toBe(TALKING_AVATAR_MIN_SECONDS);
-      expect(talkingAvatarSeconds(33)).toBe(3);
-      expect(talkingAvatarSeconds(34)).toBe(4);
+      expect(talkingAvatarSeconds(33)).toBe(4);
+      expect(talkingAvatarSeconds(44)).toBe(4);
+      expect(talkingAvatarSeconds(45)).toBe(5);
       expect(talkingAvatarSeconds(150)).toBe(14);
       expect(talkingAvatarSeconds(TALKING_AVATAR_MAX_CHARS)).toBe(28);
     });
 
-    it('custo = segundos × créditos por segundo (inteiro)', () => {
-      expect(estimateTalkingAvatarCost(10)).toBe(3 * TALKING_AVATAR_CREDITS_PER_SECOND);
+    it('custo = segundos × créditos por segundo (inteiro), a 350 créditos/s (US$ 0,10 × 3.333 + TTS)', () => {
+      expect(TALKING_AVATAR_CREDITS_PER_SECOND).toBe(350);
+      expect(estimateTalkingAvatarCost(10)).toBe(4 * TALKING_AVATAR_CREDITS_PER_SECOND);
       expect(estimateTalkingAvatarCost(150)).toBe(14 * TALKING_AVATAR_CREDITS_PER_SECOND);
       expect(Number.isInteger(estimateTalkingAvatarCost(77))).toBe(true);
     });
@@ -95,12 +98,12 @@ describe('avatar falante (OmniHuman 1.5)', () => {
       return { instance: new WavespeedVideoProvider(config as never, uploads as never), uploads };
     }
 
-    it('manda foto e áudio ao avatar-omni-human-1.5, espera a predição e guarda o vídeo', async () => {
+    it('manda foto e áudio ao omni-human-2.0, espera a predição e guarda o vídeo', async () => {
       const calls: Array<{ url: string; body?: unknown }> = [];
       const fetchImpl = jest.fn(async (url: string | URL, init?: RequestInit) => {
         const href = String(url);
         calls.push({ url: href, body: init?.body ? JSON.parse(String(init.body)) : undefined });
-        if (href.endsWith('/api/v3/bytedance/avatar-omni-human-1.5')) {
+        if (href.endsWith('/api/v3/bytedance/omni-human-2.0')) {
           return new Response(JSON.stringify({ data: { id: 'pred-1' } }), { status: 200 });
         }
         if (href.endsWith('/api/v3/predictions/pred-1/result')) {
@@ -111,7 +114,7 @@ describe('avatar falante (OmniHuman 1.5)', () => {
       });
       const { instance, uploads } = provider(fetchImpl as unknown as typeof fetch);
       const result = await instance.generateTalkingAvatar({ id: 'g1', imageUrl: 'https://cdn.test/in/foto.jpg', audioUrl: 'https://cdn.test/in/voz.mp3' });
-      expect(result).toEqual({ outputUrls: ['https://cdn.test/generations/g1/output_0.mp4'], modelUsed: 'bytedance/avatar-omni-human-1.5' });
+      expect(result).toEqual({ outputUrls: ['https://cdn.test/generations/g1/output_0.mp4'], modelUsed: 'bytedance/omni-human-2.0' });
       expect(calls[0].body).toEqual({ image: 'https://cdn.test/in/foto.jpg', audio: 'https://cdn.test/in/voz.mp3', enable_base64_output: false });
       expect(uploads.uploadBuffer).toHaveBeenCalledWith(expect.any(Buffer), 'generations/g1', 'output_0.mp4', 'video/mp4');
     });

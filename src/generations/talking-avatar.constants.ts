@@ -1,18 +1,20 @@
 /**
- * Avatar falante (OmniHuman 1.5 na WaveSpeed): a pessoa da foto fala o texto com boca e gesto sincronizados.
+ * Avatar falante (OmniHuman 2.0 na WaveSpeed): a pessoa da foto fala o texto com boca e gesto sincronizados.
  * Cadeia: texto → voz (TTS Inworld 1.5 Max pela WaveSpeed, a mesma do /text-to-speech) → OmniHuman (foto + áudio).
  *
- * Preço do provedor (docs da WaveSpeed, 30/10/2026): US$ 0,25 por segundo de áudio gerado. Na regra de preço da
- * plataforma (créditos = custo em US$ × 3.333, ~70% de margem no Studio/Agency mensal) dá 833 créditos/s; fica 850
- * para cobrir o TTS (35 créditos) e a variação do áudio. A cobrança é por estimativa no envio, pelo tamanho do
- * texto (como o avatar da HeyGen, avatars.constants.ts): ~11 caracteres por segundo com folga para o estimado
- * ficar ACIMA do real. Piso de 3 s. O modelo não cobra por resolução.
+ * Preço do provedor (página do modelo na WaveSpeed, 02/11/2026): US$ 0,10 por segundo cobrado, com o áudio
+ * arredondado para o segundo inteiro seguinte, mínimo de 4 s e máximo de 300 s (o 1.5 custava US$ 0,25/s, por isso
+ * a troca). Na regra de preço da plataforma (créditos = custo em US$ × 3.333, ~70% de margem no Studio/Agency
+ * mensal) dá 333 créditos/s; fica 350 para cobrir o TTS (35 créditos) e a variação do áudio. A cobrança é por
+ * estimativa no envio, pelo tamanho do texto (como o avatar da HeyGen, avatars.constants.ts): ~11 caracteres por
+ * segundo com folga para o estimado ficar ACIMA do real. Piso de 4 s (o mínimo cobrado pelo provedor). O modelo
+ * não cobra por resolução.
  */
-export const TALKING_AVATAR_MODEL = 'bytedance/avatar-omni-human-1.5';
+export const TALKING_AVATAR_MODEL = 'bytedance/omni-human-2.0';
 export const TALKING_AVATAR_SLUG = 'talking-avatar';
-export const TALKING_AVATAR_CREDITS_PER_SECOND = 850;
+export const TALKING_AVATAR_CREDITS_PER_SECOND = 350;
 export const TALKING_AVATAR_CHARS_PER_SECOND = 11;
-export const TALKING_AVATAR_MIN_SECONDS = 3;
+export const TALKING_AVATAR_MIN_SECONDS = 4;
 /** 300 caracteres ≈ 27 s: teto do texto (o OmniHuman cobra por segundo, e 30 s já é o formato longo do TikTok) */
 export const TALKING_AVATAR_MAX_CHARS = 300;
 

@@ -114,7 +114,7 @@ export const CONSENT_RULES: Readonly<Record<string, ConsentRule>> = {
   'virtual-try-on': { require: 'always', media: ['influencer_image', 'clothing_image'] },
   // motion control (Kling 2.6): põe a pessoa da foto enviada no lugar de quem está no vídeo (troca de identidade em vídeo)
   'motion-control': { require: 'always', media: ['image', 'video'] },
-  // avatar falante (OmniHuman 1.5): põe fala e boca na pessoa da foto enviada (identidade em vídeo)
+  // avatar falante (OmniHuman 2.0): põe fala e boca na pessoa da foto enviada (identidade em vídeo)
   'talking-avatar': { require: 'always', media: ['image'] },
   // imagem: deepdeep (despir) sempre; "sem-censura" (Unlocked) com foto vai direto ao Seedream sem filtro
   'generate-image': { require: 'uncensored-model', media: ['images'] },

@@ -25,8 +25,8 @@ const SEEDANCE_MODEL = 'bytedance/seedance-2.0-fast/image-to-video-spicy';
 const MINIMAX_H3_T2V_MODEL = 'wavespeed-ai/minimax-h3/text-to-video';
 const MINIMAX_H3_I2V_MODEL = 'wavespeed-ai/minimax-h3/image-to-video';
 const MINIMAX_H3_REF_MODEL = 'wavespeed-ai/minimax-h3/reference-to-video';
-/** Avatar falante: foto + áudio → vídeo com boca sincronizada (docs: image e audio, URL ou base64; US$ 0,25/s de áudio) */
-const OMNIHUMAN_MODEL = 'bytedance/avatar-omni-human-1.5';
+/** Avatar falante: foto + áudio → vídeo com boca sincronizada (docs: image e audio, URL ou base64; US$ 0,10 por segundo cobrado, mínimo 4 s, máximo 300 s) */
+const OMNIHUMAN_MODEL = 'bytedance/omni-human-2.0';
 const WAN_ANIMATE_MODEL = 'wavespeed-ai/wan-2.2/animate';
 const WAN3_REFERENCE_MODEL = 'alibaba/wan-3.0/reference-to-video';
 
@@ -175,7 +175,7 @@ export class WavespeedVideoProvider {
   }
 
   /**
-   * Avatar falante (OmniHuman 1.5): a pessoa da foto fala o áudio. A foto e o áudio já estão no nosso armazenamento
+   * Avatar falante (OmniHuman 2.0): a pessoa da foto fala o áudio. A foto e o áudio já estão no nosso armazenamento
    * (URLs públicas: a foto subida no pedido e o áudio do TTS da própria plataforma). O vídeo sai no formato do retrato.
    */
   async generateTalkingAvatar(input: WavespeedTalkingAvatarInput): Promise<GenerationResult> {

@@ -243,7 +243,7 @@ export interface MinimaxH3ReferenceToVideoJobData extends BaseJobData {
 // types for the GenerationProcessor's runTextToSpeechDirectly /
 // runVoiceCloneDirectly methods, which are invoked synchronously
 // (fire-and-forget) from generations.service.
-/** Avatar falante: texto → TTS (voz da plataforma) → OmniHuman 1.5 com a foto; roda direto, sem fila (como o TTS). */
+/** Avatar falante: texto → TTS (voz da plataforma) → OmniHuman 2.0 com a foto; roda direto, sem fila (como o TTS). */
 export interface TalkingAvatarJobData extends BaseJobData {
   imageUrl: string;
   text: string;
