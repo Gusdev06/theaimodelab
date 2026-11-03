@@ -1186,6 +1186,7 @@ enum CreditTransactionType {
   FEEDBACK_REWARD
   AVATAR_TRAINING_DEBIT
   AVATAR_TRAINING_REFUND
+  WEEKLY_BONUS
 }
 
 enum PaymentStatus {
