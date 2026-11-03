@@ -67,6 +67,12 @@ export class GenerationContextDto {
   @IsOptional()
   @IsNumber()
   sampleCount?: number;
+
+  /** idioma da interface (pt-BR, en, es): a nota do melhorador 18+ volta nesse idioma */
+  @IsOptional()
+  @IsString()
+  @MaxLength(10)
+  locale?: string;
 }
 
 export class EnhancePromptDto {
