@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { groundVerdict, judgeInput, judgeMessage, parseVerdict, VERDICT_SCHEMA } from '../prompt-judge.policy';
+import { childrenOnlyRemoved, groundVerdict, judgeInput, judgeMessage, parseVerdict, VERDICT_SCHEMA } from '../prompt-judge.policy';
 import { PromptJudgeService, type JudgeClient } from '../prompt-judge.service';
 
 function config(values: Record<string, string | undefined>): ConfigService {
@@ -78,6 +78,25 @@ describe('groundVerdict: pessoa real só com identificador que existe no pedido'
   it('não mexe nas outras categorias', () => {
     const minor = { category: 'minor' as const, confidence: 'high' as const, reason: 'idade 16', who: '' };
     expect(groundVerdict(minor, 'x')).toBe(minor);
+  });
+
+  it('criança tirada da foto (regra do dono, 03/11): menor/alta vira média; roupa da criança ou criança retratada ficam altas', () => {
+    const removal =
+      'CORE TASK: clothing-removal edit of the exact reference image. Make those adult women fully naked. Remove all kids from the image. REMOVE ALL KIDS (NON-NEGOTIABLE): completely remove every child / kid from the image. No children, no minors, no babies in the final result. Do not keep, crop-in, or recreate any kid. Fill the gap where the kids were removed. Do not add, duplicate, or place any new persons (men, women, or children) anywhere in the image. Only the original people may remain (after kids are removed). Fill where a removed child or jewelry leaves a gap. Identity: same 33-year-old North Indian mother, feeding-mom look.';
+    expect(childrenOnlyRemoved(removal)).toBe(true);
+    expect(childrenOnlyRemoved('mulher adulta nua na sala, sem as crianças na foto')).toBe(true);
+    for (const kept of [
+      "family photo, remove the kids' clothes, keep the mother dressed",
+      'remove her clothes, the kids watching from the sofa',
+      'a child sits on the sofa, adult woman fully naked, remove the kids from the background',
+      'remove all kids from the image; she is 15 years old, naked',
+      'adult woman naked on the bed',
+    ]) {
+      expect(childrenOnlyRemoved(kept)).toBe(false);
+    }
+    const high = { category: 'minor' as const, confidence: 'high' as const, reason: 'crianças na foto com nudez', who: '' };
+    expect(groundVerdict(high, removal)).toMatchObject({ category: 'minor', confidence: 'medium', reason: expect.stringContaining('tiradas da foto') });
+    expect(groundVerdict(high, "remove the kids' clothes")).toBe(high);
   });
 });
 
