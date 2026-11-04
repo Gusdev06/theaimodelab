@@ -14,20 +14,7 @@ function config(values: Record<string, string | undefined>): ConfigService {
   return { get: (key: string) => values[key] } as unknown as ConfigService;
 }
 
-function reply(text: string, stopReason = 'end_turn') {
-  return {
-    id: 'msg_1',
-    type: 'message',
-    role: 'assistant',
-    model: 'claude-fable-5-1',
-    content: [{ type: 'text', text, citations: null }],
-    stop_reason: stopReason,
-    stop_sequence: null,
-    usage: { input_tokens: 10, output_tokens: 5 },
-  };
-}
-
-const ENABLED = { ANTHROPIC_API_KEY: 'sk-ant-teste' };
+const ENABLED = { OPENROUTER_API_KEY: 'sk-or-teste' };
 const IMAGE = { type: 'image' as const, model: 'sem-censura', hasReferenceImages: true, referenceCount: 1, locale: 'pt-BR' };
 const GOOD = JSON.stringify({
   prompt: 'Same person as in the reference image. Adult woman, 27 years old, lying on the bed in black lace lingerie, looking at the camera. Real skin texture with visible pores, soft window light from the left.',
@@ -83,19 +70,21 @@ describe('AdultPromptEnhancerService', () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
-  it('sem chave: desligado, e o enhance devolve o bloco fixo sem chamar o modelo', async () => {
-    const create = jest.fn();
-    const service = new AdultPromptEnhancerService(config({}), { messages: { create } } as unknown as EnhancerClient);
+  const client = (complete: jest.Mock) => ({ complete }) as unknown as EnhancerClient;
+
+  it('sem chave do OpenRouter: desligado, e o enhance devolve o bloco fixo sem chamar o modelo', async () => {
+    const complete = jest.fn();
+    const service = new AdultPromptEnhancerService(config({ ANTHROPIC_API_KEY: 'sk-ant-nao-serve-aqui' }), client(complete));
     expect(service.enabled()).toBe(false);
     const result = await service.enhance('ela na praia', IMAGE);
     expect(result.source).toBe('fallback');
     expect(result.enhancedPrompt).toContain('Adult woman, 27 years old. ela na praia');
-    expect(create).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
   });
 
-  it('modelo responde no contrato: prompt + "Avoid:" + nota; chamada com política em cache, esquema, sem thinking, Fable por padrão', async () => {
-    const create = jest.fn().mockResolvedValue(reply(GOOD));
-    const service = new AdultPromptEnhancerService(config(ENABLED), { messages: { create } } as unknown as EnhancerClient);
+  it('modelo responde no contrato: prompt + "Avoid:" + nota; chamada ao Grok 4.3 pelo OpenRouter com a política e o cabeçalho', async () => {
+    const complete = jest.fn().mockResolvedValue(GOOD);
+    const service = new AdultPromptEnhancerService(config(ENABLED), client(complete));
 
     const result = await service.enhance('ela de lingerie na cama', IMAGE);
 
@@ -104,25 +93,23 @@ describe('AdultPromptEnhancerService', () => {
     expect(result.enhancedPrompt).toMatch(/\n\nAvoid: different face from the reference/);
     expect(result.note).toContain('identidade');
     expect(result.negativePrompt).toBe('');
-    const [params, options] = create.mock.calls[0];
-    expect(params.model).toBe('claude-fable-5-1');
-    expect(params.max_tokens).toBe(2400);
-    expect(params.system[0].cache_control).toEqual({ type: 'ephemeral' });
-    expect(params.messages[0].content).toContain('[type: image] [model: sem-censura] [reference images: 1]');
-    expect(params.output_config).toEqual({ effort: 'low', format: { type: 'json_schema', schema: ENHANCEMENT_SCHEMA } });
-    expect(params).not.toHaveProperty('thinking');
-    expect(options).toMatchObject({ timeout: 60000, maxRetries: 1 });
+    const [params] = complete.mock.calls[0];
+    expect(params.model).toBe('x-ai/grok-4.3');
+    expect(params.maxTokens).toBe(2400);
+    expect(params.timeoutMs).toBe(60000);
+    expect(params.system).toContain('adults-only (18+)');
+    expect(params.user).toContain('[type: image] [model: sem-censura] [reference images: 1]');
   });
 
   it('recusa, erro de rede, resposta fora do contrato ou pedido devolvido intacto: bloco fixo, nunca erro', async () => {
     const cases: Array<() => Promise<unknown>> = [
-      () => Promise.resolve(reply('', 'refusal')),
+      () => Promise.resolve(''),
       () => Promise.reject(new Error('timeout')),
-      () => Promise.resolve(reply('Sorry, I cannot help with that request.')),
-      () => Promise.resolve(reply(JSON.stringify({ prompt: 'ela na praia', avoid: '', note: '' }))),
+      () => Promise.resolve('Sorry, I cannot help with that request.'),
+      () => Promise.resolve(JSON.stringify({ prompt: 'ela na praia', avoid: '', note: '' })),
     ];
     for (const fail of cases) {
-      const service = new AdultPromptEnhancerService(config(ENABLED), { messages: { create: jest.fn(fail) } } as unknown as EnhancerClient);
+      const service = new AdultPromptEnhancerService(config(ENABLED), client(jest.fn(fail)));
       const result = await service.enhance('ela na praia', IMAGE);
       expect(result.source).toBe('fallback');
       expect(result.enhancedPrompt).toContain('ela na praia');
@@ -130,25 +117,28 @@ describe('AdultPromptEnhancerService', () => {
     }
   });
 
+  it('o primeiro modelo falha e o segundo da lista responde: vale o segundo', async () => {
+    const complete = jest.fn().mockRejectedValueOnce(new Error('HTTP 503')).mockResolvedValueOnce(GOOD);
+    const service = new AdultPromptEnhancerService(config({ ...ENABLED, OPENROUTER_ENHANCER_MODELS: 'x-ai/grok-4.3, qwen/qwen3-235b-a22b' }), client(complete));
+    const result = await service.enhance('ela de lingerie na cama', IMAGE);
+    expect(result.source).toBe('model');
+    expect(complete.mock.calls.map((call) => call[0].model)).toEqual(['x-ai/grok-4.3', 'qwen/qwen3-235b-a22b']);
+  });
+
   it('texto do modelo que a trava de termos barraria nunca volta: cai no bloco fixo', async () => {
     const bad = JSON.stringify({ prompt: 'Adult woman, 27 years old, dressed as a schoolgirl in the classroom, lingerie', avoid: 'blur', note: 'x' });
-    const create = jest.fn().mockResolvedValue(reply(bad));
-    const service = new AdultPromptEnhancerService(config(ENABLED), { messages: { create } } as unknown as EnhancerClient);
+    const service = new AdultPromptEnhancerService(config(ENABLED), client(jest.fn().mockResolvedValue(bad)));
     const result = await service.enhance('ela de lingerie', IMAGE);
     expect(result.source).toBe('fallback');
     expect(result.enhancedPrompt).not.toMatch(/schoolgirl|classroom/);
     expect(result.enhancedPrompt).toContain('ela de lingerie');
   });
 
-  it('modelo e tempo vêm da configuração; prompt vazio é erro do chamador', async () => {
-    const create = jest.fn().mockResolvedValue(reply(GOOD));
-    const service = new AdultPromptEnhancerService(
-      config({ ...ENABLED, PROMPT_ENHANCER_MODEL: ' claude-opus-5-5 ', PROMPT_ENHANCER_TIMEOUT_MS: '30000' }),
-      { messages: { create } } as unknown as EnhancerClient,
-    );
+  it('modelos e tempo vêm da configuração; prompt vazio é erro do chamador', async () => {
+    const complete = jest.fn().mockResolvedValue(GOOD);
+    const service = new AdultPromptEnhancerService(config({ ...ENABLED, OPENROUTER_ENHANCER_MODELS: ' x-ai/grok-4.3-fast ', PROMPT_ENHANCER_TIMEOUT_MS: '30000' }), client(complete));
     await service.enhance('cena', { type: 'video' });
-    expect(create.mock.calls[0][0].model).toBe('claude-opus-5-5');
-    expect(create.mock.calls[0][1]).toMatchObject({ timeout: 30000 });
+    expect(complete.mock.calls[0][0]).toMatchObject({ model: 'x-ai/grok-4.3-fast', timeoutMs: 30000 });
     await expect(service.enhance('   ', { type: 'image' })).rejects.toThrow('prompt vazio');
   });
 });
