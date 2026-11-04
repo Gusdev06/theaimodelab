@@ -79,6 +79,15 @@ import { GenerateMinimaxH3ImageToVideoDto } from './dto/videos/generate-minimax-
 import { GenerateMinimaxH3ReferenceToVideoDto } from './dto/videos/generate-minimax-h3-reference-to-video.dto';
 import { GenerateTextToSpeechDto } from './dto/generate-text-to-speech.dto';
 import { GenerateTalkingAvatarDto } from './dto/generate-talking-avatar.dto';
+import { GenerateMultipleAnglesDto } from './dto/generate-multiple-angles.dto';
+import {
+  MULTIPLE_ANGLES_CREDITS,
+  MULTIPLE_ANGLES_MODEL,
+  MULTIPLE_ANGLES_SLUG,
+  MULTIPLE_ANGLES_SOURCE_MESSAGE,
+  multipleAnglesPrompt,
+  multipleAnglesSourceProblem,
+} from './multiple-angles.constants';
 import {
   TALKING_AVATAR_MODEL,
   TALKING_AVATAR_SLUG,
@@ -150,6 +159,7 @@ import {
   OmniVideoClipData,
   SeedanceVideoJobData,
   TalkingAvatarJobData,
+  MultipleAnglesJobData,
   TextToSpeechJobData,
   VoiceCloneJobData,
 } from './queue/generation-queue.constants';
@@ -223,6 +233,17 @@ export class GenerationsService {
       .catch((err) =>
         this.logger.error(
           `Talking avatar direct run failed for ${data.generationId}: ${(err as Error).message}`,
+          (err as Error).stack,
+        ),
+      );
+  }
+
+  private runMultipleAnglesDirectly(data: MultipleAnglesJobData): void {
+    this.generationProcessor
+      .runMultipleAnglesDirectly(data)
+      .catch((err) =>
+        this.logger.error(
+          `Multiple angles direct run failed for ${data.generationId}: ${(err as Error).message}`,
           (err as Error).stack,
         ),
       );
@@ -3503,6 +3524,118 @@ CRITICAL REQUIREMENTS:
       voiceId,
       language: dto.language,
       speed: dto.speed,
+    });
+
+    return {
+      id: generation.id,
+      status: GenerationStatus.PROCESSING,
+      creditsConsumed: creditsRequired,
+    };
+  }
+
+  /**
+   * Ângulos (Qwen Multiple Angles na WaveSpeed): uma foto pronta da conta vista de outro ângulo. A foto que vai ao
+   * provedor é a NOSSA cópia da geração de origem (nunca bytes do pedido) e a origem precisa ter linhagem limpa
+   * (multiple-angles.constants.ts). 100 créditos por foto, cobrados no envio; falhou = estorno pelo handleFailure.
+   */
+  async generateMultipleAngles(
+    userId: string,
+    dto: GenerateMultipleAnglesDto,
+  ): Promise<CreateGenerationResponseDto> {
+    const type = GenerationType.IMAGE_TO_IMAGE;
+    const resolution = Resolution.RES_1K;
+    const creditsRequired = MULTIPLE_ANGLES_CREDITS;
+    const outputOrder = dto.source_output ?? 0;
+    const horizontal = dto.horizontal_angle;
+    const vertical = dto.vertical_angle ?? 0;
+    const distance = dto.distance ?? 1;
+
+    await this.modelsService.assertActiveBySlug(MULTIPLE_ANGLES_SLUG, AiModelType.IMAGE);
+
+    const source = await this.prisma.generation.findFirst({
+      where: { id: dto.source_generation_id, userId },
+      select: {
+        status: true,
+        type: true,
+        isDeleted: true,
+        expiresAt: true,
+        prompt: true,
+        parameters: true,
+        aspectRatio: true,
+        _count: { select: { inputImages: true } },
+        outputs: { where: { order: outputOrder }, select: { url: true }, take: 1 },
+        mediaFingerprints: { where: { outputOrder }, select: { cleanLineage: true }, take: 1 },
+      },
+    });
+    const problem = multipleAnglesSourceProblem(
+      source
+        ? {
+            status: source.status,
+            type: source.type,
+            isDeleted: source.isDeleted,
+            expiresAt: source.expiresAt,
+            prompt: source.prompt,
+            parameters: source.parameters,
+            inputImageCount: source._count.inputImages,
+            outputUrl: source.outputs[0]?.url ?? null,
+            cleanLineage: source.mediaFingerprints[0]?.cleanLineage ?? null,
+          }
+        : null,
+    );
+    if (problem || !source) {
+      const code = problem ?? 'not_found';
+      if (code === 'not_found') {
+        throw new NotFoundException({ code: 'MULTIPLE_ANGLES_SOURCE_NOT_FOUND', message: MULTIPLE_ANGLES_SOURCE_MESSAGE.not_found });
+      }
+      throw new HttpException(
+        { code: `MULTIPLE_ANGLES_SOURCE_${code.toUpperCase()}`, message: MULTIPLE_ANGLES_SOURCE_MESSAGE[code] },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    const imageUrl = source.outputs[0]!.url;
+
+    await this.checkConcurrentLimit(userId);
+    await this.ensureSufficientBalance(userId, creditsRequired);
+
+    const generation = await this.prisma.generation.create({
+      data: {
+        userId,
+        type,
+        status: GenerationStatus.PROCESSING,
+        prompt: multipleAnglesPrompt(horizontal, vertical, distance),
+        modelUsed: MULTIPLE_ANGLES_MODEL,
+        resolution,
+        aspectRatio: source.aspectRatio,
+        quantity: 1,
+        creditsConsumed: creditsRequired,
+        usedFreeGeneration: false,
+        parameters: {
+          provider: 'wavespeed',
+          mode: 'multiple_angles',
+          sourceGenerationId: dto.source_generation_id,
+          sourceOutput: outputOrder,
+          horizontalAngle: horizontal,
+          verticalAngle: vertical,
+          distance,
+        },
+      },
+    });
+
+    // a foto de entrada é a saída guardada da geração de origem (fica no lugar dela: nada em inputs/ para apagar)
+    await this.prisma.generationInputImage.createMany({
+      data: [{ generationId: generation.id, role: GenerationImageRole.REFERENCE, order: 0, url: imageUrl }],
+    });
+
+    await this.debitCredits(userId, creditsRequired, generation.id, type, resolution);
+
+    this.runMultipleAnglesDirectly({
+      generationId: generation.id,
+      userId,
+      creditsConsumed: creditsRequired,
+      imageUrl,
+      horizontalAngle: horizontal,
+      verticalAngle: vertical,
+      distance,
     });
 
     return {

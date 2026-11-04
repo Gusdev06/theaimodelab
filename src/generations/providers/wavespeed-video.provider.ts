@@ -28,6 +28,8 @@ const MINIMAX_H3_REF_MODEL = 'wavespeed-ai/minimax-h3/reference-to-video';
 /** Avatar falante: foto + áudio → vídeo com boca sincronizada (docs: image e audio, URL ou base64; US$ 0,10 por segundo cobrado, mínimo 4 s, máximo 300 s) */
 const OMNIHUMAN_MODEL = 'bytedance/omni-human-2.0';
 const WAN_ANIMATE_MODEL = 'wavespeed-ai/wan-2.2/animate';
+/** Ângulos da mesma foto (imagem, não vídeo): docs `images` (até 3), horizontal_angle, vertical_angle, distance; US$ 0,025 por foto */
+const MULTIPLE_ANGLES_MODEL = 'wavespeed-ai/qwen-image/edit-multiple-angles';
 const WAN3_REFERENCE_MODEL = 'alibaba/wan-3.0/reference-to-video';
 
 const POLL_MAX_ATTEMPTS = 180; // ~9 min a 3s
@@ -144,6 +146,17 @@ interface PredictionResultResponse {
   };
 }
 
+export interface WavespeedMultipleAnglesInput {
+  id: string;
+  /** URL pública da foto (a nossa cópia guardada da geração de origem) */
+  imageUrl: string;
+  horizontalAngle: number;
+  verticalAngle: number;
+  distance: number;
+}
+
+const IMAGE_EXTENSIONS: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
+
 export interface WavespeedTalkingAvatarInput {
   id: string;
   imageUrl: string;
@@ -195,6 +208,35 @@ export class WavespeedVideoProvider {
     const videoUrl = await this.pollPrediction(predictionId);
     const outputUrl = await this.downloadAndUpload(videoUrl, input.id, 0);
     return { outputUrls: [outputUrl], modelUsed: OMNIHUMAN_MODEL };
+  }
+
+  /**
+   * Ângulos (Qwen Image Edit Multiple Angles): a mesma foto vista de outro ângulo de câmera. Imagem, não vídeo: mora
+   * aqui porque usa a mesma conta e o mesmo ciclo (criar → consultar → guardar). Sem prompt: o modelo monta o dele
+   * pelo ângulo. A saída vai para generations/<id>/ no nosso armazenamento.
+   */
+  async generateMultipleAngles(input: WavespeedMultipleAnglesInput): Promise<GenerationResult> {
+    if (!this.apiKey) {
+      throw new Error('Não foi possível gerar a foto agora. Entre em contato com o suporte.');
+    }
+    if (!/^https:\/\//i.test(input.imageUrl)) throw new Error('WaveSpeed Multiple Angles: foto de origem ausente.');
+
+    this.logger.log(
+      `[WAVESPEED_ANGLES] gen=${input.id} h=${input.horizontalAngle} v=${input.verticalAngle} d=${input.distance} image=${input.imageUrl.slice(0, 60)}`,
+    );
+
+    const predictionId = await this.createPrediction(MULTIPLE_ANGLES_MODEL, {
+      images: [input.imageUrl],
+      horizontal_angle: input.horizontalAngle,
+      vertical_angle: input.verticalAngle,
+      distance: input.distance,
+      output_format: 'jpeg',
+      enable_base64_output: false,
+      enable_sync_mode: false,
+    });
+    const resultUrl = await this.pollPrediction(predictionId);
+    const outputUrl = await this.downloadAndUploadImage(resultUrl, input.id, 0);
+    return { outputUrls: [outputUrl], modelUsed: MULTIPLE_ANGLES_MODEL };
   }
 
   async generateImageToVideo(
@@ -573,6 +615,31 @@ export class WavespeedVideoProvider {
       }
     }
 
+    throw lastError!;
+  }
+
+  /** Como o downloadAndUpload, mas para foto: o tipo vem da resposta (a WaveSpeed devolve jpeg, png ou webp). */
+  private async downloadAndUploadImage(sourceUrl: string, generationId: string, index: number): Promise<string> {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 2_000));
+        const response = await this.fetchWithTimeout(sourceUrl, {}, 60_000);
+        if (!response.ok) throw new Error(`Failed to download image from WaveSpeed (${response.status})`);
+        const declared = (response.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+        const mimeType = IMAGE_EXTENSIONS[declared] ? declared : 'image/jpeg';
+        const buffer = Buffer.from(await response.arrayBuffer());
+        if (buffer.length === 0) throw new Error('WaveSpeed devolveu uma foto vazia');
+        return await this.uploadsService.uploadBuffer(
+          buffer,
+          `generations/${generationId}`,
+          `output_${index}.${IMAGE_EXTENSIONS[mimeType]}`,
+          mimeType,
+        );
+      } catch (error) {
+        lastError = error as Error;
+      }
+    }
     throw lastError!;
   }
 
