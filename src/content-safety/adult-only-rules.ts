@@ -9,7 +9,14 @@
  *    contada não é idade ("2 women", "1 metro"), verbo vago ("only", "about", "face") só vale com o número fechando o
  *    trecho, número sozinho só com pessoa ou nome antes, pista infantil de corpo/estilo (petite, tiny, braces) só
  *    barra no desenhado ou com 3 pistas juntas e "early twenties" deixa de barrar (piso 18);
- *  - unidades de idade em francês, alemão, italiano e holandês ("15 ans", "15 Jahre", "15 anni", "15 jaar").
+ *  - unidades de idade em francês, alemão, italiano e holandês ("15 ans", "15 Jahre", "15 anni", "15 jaar");
+ *  - leitura de contexto no modo `free` (decisão do dono, 06/11, depois de conferir os bloqueios reais de 25/10 a 05/11:
+ *    6 em cada 10 eram pedido adulto legítimo): gíria de juventude usada para mulher adulta ("novinha", "ninfeta",
+ *    "colegial", "schoolgirl", "jovencita") não barra sozinha no realista (conta como uma pista infantil; no desenhado
+ *    segue barrando), "menina" é mulher, "babysitter" é profissão, "childbearing hips" é quadril, no desenhado uma pista
+ *    fraca só ("petite" num quadrinho) não barra, "between 1 and 9 images" e "rosto dos dois" são contagem e "2 18 years
+ *    old men" são dois homens de 18. Idade abaixo de 18, criança, série, lugar de escola e corpo ou rosto de criança
+ *    continuam barrando. Fora do modo `free` (construtor de modelo) nada muda.
  *
  * Original:
  * Trava dos textos livres do construtor de modelo (nome, nicho e detalhes): a modelo é sempre adulta (25+), nunca
@@ -32,6 +39,11 @@ export type SafetyVerdict = { ok: true } | { ok: false; reason: SafetyReason; te
 export interface SafetyOptions {
   /** estilo desenhado (anime, hentai, 3D, pin-up): palavras que puxam o traço para infantil também barram */
   drawn?: boolean;
+  /**
+   * pedido livre: o desenhado é anime, hentai, mangá ou chibi (traço que já puxa para o infantil). Aí uma pista fraca
+   * basta ("anime girl, petite, nude"); em quadrinho, 3D e pin-up ("petite woman, comic book style") são duas
+   */
+  anime?: boolean;
   /** objetivo 18+ (a TAML é sempre 18+): criança na cena e pistas infantis barram em qualquer estilo */
   adult?: boolean;
   /** false = não confere pedido de pessoa real (o nome da modelo, que não vai para o prompt) */
@@ -312,6 +324,9 @@ const MINOR_PERSONA = [
   'high ?school\\w*',
   'middle ?school\\w*',
   'elementary ?school\\w*',
+  'primary ?school\\w*',
+  'secondary ?school\\w*',
+  'nursery ?school\\w*',
   'grade ?school\\w*',
   'junior high',
   'jr high',
@@ -549,6 +564,83 @@ const SCHOOL_CLOTHING_FREE = new Set([
 ]);
 /** Do piso de 25 do construtor ("early twenties" = 20 a 23 anos): no pedido livre (piso 18) é idade adulta. */
 const FLOOR_25_TERMS = new Set(['early (?:20s|20 s|twenties)', 'veintipocos', '(?:20|vinte) e poucos']);
+/**
+ * Gíria de juventude que, em conteúdo adulto, quase sempre fala de MULHER ADULTA ("novinha", "ninfeta", "colegial" de
+ * fantasia, "schoolgirl", "jovencita"). Decisão do dono (06/11): no pedido livre a palavra sozinha não barra; no modelo
+ * sem censura o texto que vai ao provedor troca a gíria por "mulher adulta" e leva a âncora de adulto (adult-anchor.ts),
+ * então a imagem sai adulta mesmo com a gíria no pedido. Continua barrando com idade abaixo de 18, série ou lugar de
+ * escola, corpo ou rosto de criança, no estilo desenhado (personagem de anime de uniforme é colegial de verdade),
+ * escrita com ofuscação ("n0v1nh4": quem esconde a palavra não está usando gíria) e quando soma 3 pistas infantis.
+ */
+const YOUTH_SLANG = [
+  'novi+nh\\w*',
+  gapped('novinha'),
+  'novin',
+  'novynh\\w*',
+  'ninfet\\w*',
+  gapped('ninfeta'),
+  'nymph(?:et|ette)\\w*',
+  'colegia\\w*',
+  gapped('colegial'),
+  'kolegial\\w*',
+  'colejial\\w*',
+  'school ?girl\\w*',
+  gapped('schoolgirl'),
+  'skool ?girl\\w*',
+  'school ?gurl\\w*',
+  'jovencit\\w*',
+];
+const YOUTH_SLANG_SET: ReadonlySet<string> = new Set(YOUTH_SLANG);
+/** Papel que adulta faz ("papel de colegial", "roleplay as a student"): no pedido livre sai da lista de papel de criança. */
+const ROLE_FREE: ReadonlyArray<[string, string]> = [
+  ['|menina|garotinha|aluna|colegial|nina|', '|menina|garotinha|nina|'],
+  ['|menina|garotinha|aluna|student|estudante|colegial|schoolgirl|little girl)', '|menina|garotinha|little girl)'],
+  // "ela é uma menina linda": em português "menina" é mulher; "ela é uma criança/garotinha" continua barrando
+  ['(?:crianca|child|kid|menina|garotinha|', '(?:crianca|child|kid|garotinha|'],
+];
+/**
+ * Criança na cena, no pedido livre: "menina" é como o português chama mulher ("as meninas do escritório") e
+ * "babysitter" é profissão de adulta; "childbearing hips", "childfree" e "childless" não falam de criança. "menino",
+ * "menina pequena", "menininha" (lista de persona), "menina de 12" (leitura de idade) e "corpo de menina" (pista forte)
+ * continuam barrando.
+ */
+const CHILD_TERMS_FREE_OUT: ReadonlySet<string> = new Set(['child\\w*', 'menin\\w*', 'babysit\\w*']);
+const CHILD_TERMS_FREE_IN = [
+  'child(?!bearing|free|less)\\w*',
+  'meninos?',
+  'meninad\\w*',
+  'menin[ao]s? (?:bem |muito |tao )?(?:pequen\\w+|pequenin\\w+|crianc\\w+)',
+  '(?:pequen[ao]s?|pequenin[ao]s?) menin[ao]s?',
+];
+/**
+ * Estilo desenhado, pedido livre: estas pistas puxam o traço para criança sozinhas (maria-chiquinha, peito reto,
+ * kawaii, chibi). As outras ("petite", "tiny", "innocent", "braces", "cute") descrevem adulta em quadrinho e pin-up:
+ * só barram em dupla.
+ */
+const DRAWN_STRONG_FREE: ReadonlySet<string> = new Set([
+  'kawai+\\w*',
+  gapped('kawaii'),
+  'moe',
+  'chibi',
+  'twin ?tails?',
+  'pig ?tails?',
+  'two ponytails',
+  'dos coletas',
+  'coletas',
+  'coletitas',
+  'chiquinhas',
+  'marias? chiquinhas?',
+  'flat ?chest\\w*',
+  'flat as a board',
+  'pecho plano',
+  'plana como (?:una )?tabla',
+  'reta como uma tabua',
+  'peito reto',
+  'tiernit\\w*',
+  'cutesy',
+  'uwu',
+  'smol',
+]);
 
 /** Lado de vender: nada de conteúdo adulto (a modelo de vendas é sempre vestida). */
 const ADULT_TERMS = [
@@ -968,16 +1060,22 @@ const LISTS = {
   minorHard: compile(MINOR_HARD),
   // pedido livre: sem os termos do piso 25, "little space" só colado (o termo de ageplay; "a little space between" é
   // espaço) e "pedo" sem "pedonal/pedonale" (zona de pedestres em espanhol/italiano)
+  // (06/11) sem a gíria de juventude e sem os papéis que adulta faz
   minorHardFree: compile(
-    MINOR_HARD.filter((term) => !FLOOR_25_TERMS.has(term)).map((term) =>
-      term === 'little ?space' ? 'littlespace' : term === 'pedo(?!met)\\w*' ? 'pedo(?!met|n)\\w*' : term,
-    ),
+    MINOR_HARD.filter((term) => !FLOOR_25_TERMS.has(term) && !YOUTH_SLANG_SET.has(term)).map((term) => {
+      const mapped = term === 'little ?space' ? 'littlespace' : term === 'pedo(?!met)\\w*' ? 'pedo(?!met|n)\\w*' : term;
+      return ROLE_FREE.reduce((acc, [from, to]) => acc.replace(from, to), mapped);
+    }),
   ),
   minorPersona: compile(MINOR_PERSONA),
   // pedido livre (decisão do dono, 16/10): uniforme escolar como roupa de adulta não barra sozinho; escola, série e
   // colegial continuam barrando
-  minorPersonaFree: compile(MINOR_PERSONA.filter((term) => !SCHOOL_CLOTHING_FREE.has(term))),
+  minorPersonaFree: compile(MINOR_PERSONA.filter((term) => !SCHOOL_CLOTHING_FREE.has(term) && !YOUTH_SLANG_SET.has(term))),
   child: compile([...CHILD_TERMS, CHILD_COMPANION_PT_ES, CHILD_COMPANION_EN]),
+  childFree: compile([...CHILD_TERMS.filter((term) => !CHILD_TERMS_FREE_OUT.has(term)), ...CHILD_TERMS_FREE_IN, CHILD_COMPANION_PT_ES, CHILD_COMPANION_EN]),
+  youthSlang: compile(YOUTH_SLANG, 'g'),
+  drawnStrongFree: compile([...CHILDLIKE_CUES, ...DRAWN_CUES].filter((term) => DRAWN_STRONG_FREE.has(term))),
+  drawnAll: compile([...CHILDLIKE_CUES, ...DRAWN_CUES], 'g'),
   childlike: compile(CHILDLIKE_CUES),
   childlikeStrong: compile(CHILDLIKE_CUES.filter((term) => CHILDLIKE_STRONG.has(term))),
   childlikeWeak: compile(CHILDLIKE_CUES.filter((term) => !CHILDLIKE_STRONG.has(term)), 'g'),
@@ -1111,6 +1209,9 @@ const PERSON_NOUNS = new Set([
   'chick', 'model', 'modelo', 'influencer', 'influenciadora', 'personagem', 'personaje', 'character', 'aluna', 'aluno', 'estudante', 'estudiante', 'student',
   'vampira', 'elfa', 'deusa', 'goddess', 'elf', 'fada', 'fairy', 'princesa', 'princess', 'bruxa', 'witch', 'menino', 'garoto', 'chico', 'boy', 'guy', 'homem',
   'hombre', 'rapaz', 'moco', 'loira', 'morena', 'ruiva', 'blonde', 'brunette', 'redhead',
+  // gíria e profissão liberadas no pedido livre em 06/11: a idade escrita depois delas continua valendo
+  // ("ninfeta de 15", "colegial, 16", "the babysitter, 16")
+  'ninfeta', 'ninfetinha', 'novinho', 'colegial', 'colegiala', 'schoolgirl', 'nymphet', 'jovencita', 'babysitter', 'baba', 'nanny', 'ninera',
 ]);
 /** Festa e aniversário ("festa de 15", "aniversário de 17", "fiesta de quince"). */
 const EVENT_NOUNS = new Set(['festa', 'fiesta', 'aniversario', 'cumpleanos', 'birthday', 'bday', 'party', 'debut', 'baile']);
@@ -1173,6 +1274,11 @@ const COUNTED_SINGULAR = new Set([
   'take', 'shot', 'frame', 'step', 'passo', 'paso', 'd', 'piece', 'peca', 'pieza', 'item', 'unit', 'unidade', 'unidad', 'layer', 'camada', 'capa', 'color', 'cor',
   'point', 'ponto', 'punto', 'star', 'estrela', 'estrella', 'scene', 'cena', 'escena', 'image', 'imagem', 'imagen', 'photo', 'foto', 'picture', 'version', 'versao',
   'variation', 'variacao', 'option', 'opcao', 'opcion', 'line', 'linha', 'linea', 'row', 'column', 'coluna', 'side', 'lado', 'quarter', 'third', 'half',
+]);
+/** Adjetivo entre o número e a coisa contada ("between 1 and 9 DIFFERENT angles"). */
+const COUNT_ADJECTIVES = new Set([
+  'different', 'separate', 'distinct', 'unique', 'individual', 'total', 'more', 'extra', 'additional', 'reference', 'full', 'new', 'diferentes', 'distintas',
+  'distintos', 'novas', 'novos', 'nuevas', 'nuevos',
 ]);
 /** Plural sem "s" no fim (o resto do plural pt/es/en termina em "s"). */
 const PLURAL_PEOPLE = new Set(['women', 'men', 'people', 'feet', 'teeth', 'children', 'gente', 'folk', 'staff', 'crew']);
@@ -1241,6 +1347,9 @@ function ageTokens(text: string): string[] {
     .replace(/(\d)\s*[-.]?\s*y\s*[,./-]?\s*o(?![a-z])/g, '$1 yo')
     .replace(/(?<![a-z])y\s*[,./-]\s*o(?![a-z])/g, ' yo')
     .replace(/(\d)[.,](\d)/g, '$1d$2')
+    // pedido livre: o traço de faixa fica escrito ("16-18" vira "16 to 18"); sem ele, "2 18 years old men" (dois homens
+    // de 18) era lido como a faixa "2-18"
+    .replace(/(?<!\d)(\d{1,2})\s?[-–—]\s?(\d{1,2})(?!\d)/g, (all: string, low: string, high: string) => (freeMode ? `${low} to ${high}` : all))
     .replace(/[,;:!?|()[\]{}"<>\n/]+/g, ' , ')
     .replace(/[^a-z0-9,\s]+/g, ' ');
   const split: string[] = [];
@@ -1342,8 +1451,9 @@ function rangeLowBefore(tokens: readonly string[], high: FoundNumber): FoundNumb
   const joined = RANGE_JOINERS.has(tokens[end] ?? '');
   if (joined) end--;
   if (end < 0) return null;
-  // sem junção, só a faixa com traço entre algarismos ("16-18"); "two 22 yo" é contagem de gente
-  if (!joined && !/^\d{1,2}$/.test(tokens[end] ?? '')) return null;
+  // sem junção, só a faixa com traço entre algarismos ("16-18"); "two 22 yo" é contagem de gente. No pedido livre o
+  // traço já virou "to" (ageTokens): dois números seguidos sem junção são contagem + idade ("2 18 years old men")
+  if (!joined && (freeMode || !/^\d{1,2}$/.test(tokens[end] ?? ''))) return null;
   const low = numberBefore(tokens, end + 1);
   return low && !low.decimal && low.value >= 1 && low.value < high.value ? low : null;
 }
@@ -1495,7 +1605,9 @@ function underageNumber(text: string, strict: boolean, labelOnCommerce: boolean)
       if (low && !low.decimal && isUnderFloor(low.value) && ['and', 'e', 'y', 'a', 'to'].includes(at(low.end + 1))) {
         const high = numberAt(tokens, low.end + 2);
         const tail = high ? at(high.end + 1) : '';
-        if (high && !COUNT_NOUNS.has(tail)) return phrase(index, high.end);
+        // pedido livre: "between 1 and 9 images", "between 2 and 4 different angles" contam coisas, não são idade
+        const counted = freeMode && high !== null && (countsSomething(tail) || (COUNT_ADJECTIVES.has(tail) && countsSomething(at(high.end + 2))));
+        if (high && !COUNT_NOUNS.has(tail) && !counted) return phrase(index, high.end);
       }
     }
     // R5 prestes a fazer ("quase 18", "va a cumplir 16", "about to turn 18")
@@ -1539,18 +1651,24 @@ function underageNumber(text: string, strict: boolean, labelOnCommerce: boolean)
       let next = index + 1;
       while (next < index + 5 && SKIP.has(at(next))) next++;
       const found = numberAt(tokens, next);
-      if (found && !found.decimal && isUnderFloor(found.value)) {
+      // pedido livre: "o rosto dos dois", "o corpo das duas" é contagem de gente ("dos/das" + número por extenso)
+      const ofTheTwo = freeMode && ['dos', 'das'].includes(at(next - 1)) && !/^\d/.test(at(next));
+      if (found && !found.decimal && isUnderFloor(found.value) && !ofTheTwo) {
         const tail = at(found.end + 1);
         const durationAfter = UNITS.has(tail) && isDuration(tokens, found.start, found.end + 1);
         const fazQue = token === 'faz' && (tail === 'que' || at(found.end + 2) === 'que');
         // pedido livre: verbo vago só com o número fechando o trecho; verbo de idade, desde que o número não conte nada;
         // rótulo de idade seguido de faixa ("idade aparente 16-18", "aged 16-18") é idade, não medida
-        const labeledRange =
-          ['idade', 'edad', 'age', 'aged'].includes(token) &&
-          /^\d{1,2}$/.test(tail) &&
-          Number(tail) > found.value &&
-          !/^(?:months?|meses|mes|weeks?|semanas?|days?|dias|hours?|horas?|minutes?|minutos?)$/.test(at(found.end + 2));
-        const freeAge = !freeMode || labeledRange || (VAGUE_AGE_WORDS.has(token) ? closesAsAge(tokens, found.end) : !countsSomething(tail));
+        // a ponta de cima vem logo depois ("aged 16 18") ou depois da junção ("aged 16 to 18"; o traço vira "to")
+        const joinedHigh = RANGE_JOINERS.has(tail) && /^\d{1,2}$/.test(at(found.end + 2));
+        const high = joinedHigh ? at(found.end + 2) : tail;
+        const afterHigh = at(found.end + (joinedHigh ? 3 : 2));
+        const timeAfterHigh = /^(?:months?|meses|mes|weeks?|semanas?|days?|dias|hours?|horas?|minutes?|minutos?)$/.test(afterHigh);
+        const labeledRange = ['idade', 'edad', 'age', 'aged'].includes(token) && /^\d{1,2}$/.test(high) && Number(high) > found.value && !timeAfterHigh;
+        // "whiskey aged 12-18 months": faixa que mede tempo, não idade
+        const timedRange = joinedHigh && timeAfterHigh;
+        const freeAge =
+          !freeMode || labeledRange || (!timedRange && (VAGUE_AGE_WORDS.has(token) ? closesAsAge(tokens, found.end) : !countsSomething(tail)));
         if (freeAge && !COUNT_NOUNS.has(tail) && !durationAfter && !fazQue && !(tail === 'e' && at(found.end + 2) === 'vem')) return phrase(index, found.end);
       }
     }
@@ -1808,23 +1926,34 @@ export function checkAdultOnly(text: string, options: SafetyOptions = {}): Safet
           : ALLOW.adult,
     );
     // "babá" (≠ "baba") e "bebê/bebé" com acento (sem acento, "e bebe vinho" é o verbo)
-    const accentedChild = accented.match(/(?:^|[^\p{L}])(babás?|beb[êé]s?)(?=$|[^\p{L}])/u);
+    // pedido livre: "babá" é profissão de adulta (como "babysitter"); "bebê" continua
+    const accentedChild = accented.match(freeMode ? /(?:^|[^\p{L}])(beb[êé]s?)(?=$|[^\p{L}])/u : /(?:^|[^\p{L}])(babás?|beb[êé]s?)(?=$|[^\p{L}])/u);
     if (accentedChild) return { ok: false, reason: 'minor', term: accentedChild[1] };
-    const child = findIn(allowed, LISTS.child);
+    const child = findIn(allowed, freeMode ? LISTS.childFree : LISTS.child);
     if (child) return { ok: false, reason: 'minor', term: child };
     if (freeMode) {
       // pedido livre: rosto, corpo e objeto de criança barram sozinhos; petite, tiny, braces, pigtails, kawaii, cute… só
       // em pedido sexual, e aí no desenhado uma basta e no realista só 3 juntas ("kawaii mascot" de infográfico passa)
       const strongCue = findIn(allowed, LISTS.childlikeStrong);
       if (strongCue) return { ok: false, reason: 'childlike', term: strongCue };
+      // gíria de juventude ("novinha", "colegial"): no desenhado barra sempre (personagem de anime de uniforme é
+      // colegial de verdade); no realista vale como UMA pista infantil
+      const slang = youthSlangIn(texts);
+      if (options.drawn && slang) return { ok: false, reason: 'drawnTerm', term: slang };
       if (findIn(texts, LISTS.adult)) {
         if (options.drawn) {
-          const cue = findIn(without(texts, ALLOW.adultFree), LISTS.drawn);
-          if (cue) return { ok: false, reason: 'drawnTerm', term: cue };
+          // desenhado: pista forte barra sozinha; as outras ("petite" num quadrinho, "cute") só em dupla, menos no anime
+          const drawnTexts = without(texts, ALLOW.adultFree);
+          const strongDrawn = findIn(drawnTexts, LISTS.drawnStrongFree);
+          if (strongDrawn) return { ok: false, reason: 'drawnTerm', term: strongDrawn };
+          const cues = new Set<string>();
+          for (const match of (drawnTexts[0] ?? '').matchAll(LISTS.drawnAll)) cues.add(match[1].replace(/\s+/g, ''));
+          if (cues.size >= (options.anime ? 1 : 2)) return { ok: false, reason: 'drawnTerm', term: [...cues].slice(0, 2).join(' + ') };
         } else {
           // contadas só na forma com espaços (a forma colada junta "innocent looking" e contaria a mesma pista duas vezes)
           const weak = new Set<string>();
           for (const match of (allowed[0] ?? '').matchAll(LISTS.childlikeWeak)) weak.add(match[1].replace(/\s+/g, ''));
+          if (slang) weak.add(slang.replace(/\s+/g, ''));
           if (weak.size >= 3) return { ok: false, reason: 'childlike', term: [...weak].slice(0, 3).join(' + ') };
         }
       }
@@ -1848,6 +1977,26 @@ export function checkAdultOnly(text: string, options: SafetyOptions = {}): Safet
     if (lookalike) return { ok: false, reason: 'lookalike', term: lookalike };
   }
   return OK;
+}
+
+/** Primeira gíria de juventude achada em qualquer versão do texto (com ou sem ofuscação), ou null. */
+function youthSlangIn(texts: readonly string[]): string | null {
+  for (const text of texts) {
+    LISTS.youthSlang.lastIndex = 0;
+    const match = LISTS.youthSlang.exec(text);
+    if (match) return match[1].trim();
+  }
+  return null;
+}
+
+/**
+ * Gíria de juventude do pedido livre ("novinha", "ninfeta", "colegial", "schoolgirl", "jovencita"), em qualquer versão
+ * do texto (escrita normal ou ofuscada), ou null. Quem chama decide o que fazer: a guarda da API recusa a ofuscada, a
+ * âncora de adulto troca a escrita normal por "mulher adulta" e a aba Suspeitas mostra como sinal fraco.
+ */
+export function findYouthSlang(text: string): string | null {
+  if (!text || !text.trim()) return null;
+  return youthSlangIn(variants(text));
 }
 
 /**

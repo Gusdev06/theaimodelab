@@ -7,8 +7,10 @@ import { lastValueFrom, of } from 'rxjs';
 import {
   CONSENT_RULES,
   ContentSafetyInterceptor,
+  FILTERED_ROUTES,
   consentDecision,
   generationIdOf,
+  guardTargetFor,
   isUncensoredModel,
   normalizePath,
   requiresConsent,
@@ -73,7 +75,7 @@ describe('ContentSafetyInterceptor', () => {
     });
 
     it('vem antes do atestado: troca de rosto com atestado e menor no texto é recusada como menor', async () => {
-      const body = { source_image: FOTO, target_image: FOTO, consent_confirmed: true, prompt: 'schoolgirl' };
+      const body = { source_image: FOTO, target_image: FOTO, consent_confirmed: true, prompt: 'a 15 year old girl' };
       await expect(run(ctx('POST', '/api/v1/generations/face-swap', body))).rejects.toMatchObject({
         response: expect.objectContaining({ code: 'CONTENT_POLICY_MINOR' }),
       });
@@ -82,7 +84,7 @@ describe('ContentSafetyInterceptor', () => {
 
     it('falha ao gravar o evento não libera o pedido', async () => {
       safety.record.mockResolvedValue(null); // o service já engole o erro do banco; a recusa continua
-      await expect(run(ctx('POST', '/api/v1/generations/generate-image', { prompt: 'novinha' }))).rejects.toBeInstanceOf(BusinessException);
+      await expect(run(ctx('POST', '/api/v1/generations/generate-image', { prompt: 'garota de 16 anos' }))).rejects.toBeInstanceOf(BusinessException);
       expect(next.handle).not.toHaveBeenCalled();
     });
   });
@@ -495,5 +497,120 @@ describe('CONSENT_RULES × GenerationsController × DTOs', () => {
       const constraints = bad.find((e) => e.property === 'consent_confirmed')?.constraints ?? {};
       expect({ route, isBoolean: 'isBoolean' in constraints }).toEqual({ route, isBoolean: true });
     }
+  });
+});
+
+describe('guardTargetFor (para onde o pedido vai)', () => {
+  it('modelo sem filtro e tudo que a guarda não reconhece ficam na regra mais dura', () => {
+    expect(guardTargetFor('/api/v1/generations/generate-image', { model: 'sem-censura' })).toBe('uncensored');
+    expect(guardTargetFor('/api/v1/generations/generate-image', { model: 'deepdeep' })).toBe('uncensored');
+    expect(guardTargetFor('/api/v1/generations/generate-image', {})).toBe('uncensored');
+    expect(guardTargetFor('/api/v1/generations/generate-image', { model: 'modelo-novo' })).toBe('uncensored');
+    expect(guardTargetFor('/api/v1/generations/image-to-video-wavespeed', {})).toBe('uncensored');
+    expect(guardTargetFor('/api/v1/generations/minimax-h3-text-to-video', {})).toBe('uncensored');
+    expect(guardTargetFor('/api/v1/generations/face-swap', {})).toBe('uncensored');
+    expect(guardTargetFor('/api/v1/generations/virtual-try-on', {})).toBe('uncensored');
+    expect(guardTargetFor('/api/v1/generations/motion-control', {})).toBe('uncensored');
+    expect(guardTargetFor('/api/v1/generations/rota-nova', {})).toBe('uncensored');
+    expect(guardTargetFor('/api/v1/agent/run', { model: 'gpt-image-2' })).toBe('uncensored');
+    expect(guardTargetFor('/api/v1/avatars/abc/generate-video', {})).toBe('uncensored');
+  });
+
+  it('provedor com filtro próprio: rota conhecida ou modelo de imagem da lista', () => {
+    expect(guardTargetFor('/api/v1/generations/generate-image', { model: 'gemini-3.1-flash-image-preview' })).toBe('filtered');
+    expect(guardTargetFor('/API/v1/Generations/Generate-Image-Auto/', { model: 'GPT-Image-2' })).toBe('filtered');
+    expect(guardTargetFor('/api/v1/generations/generate-image-nano-banana', {})).toBe('filtered');
+    expect(guardTargetFor('/api/v1/generations/text-to-video', {})).toBe('filtered');
+    expect(guardTargetFor('/api/v1/generations/image-to-video-kie', {})).toBe('filtered');
+    expect(guardTargetFor('/api/v1/generations/seedance-video', {})).toBe('filtered');
+    expect(guardTargetFor('/api/v1/generations/voice-clone', {})).toBe('filtered');
+  });
+
+  it('o modelo sem filtro vence a rota com filtro', () => {
+    expect(guardTargetFor('/api/v1/generations/generate-image-nano-banana', { model: 'sem-censura' })).toBe('uncensored');
+  });
+
+  it('turbinar prompt segue o modelo de destino declarado', () => {
+    expect(guardTargetFor('/api/v1/prompt-enhancer/enhance', { context: { model: 'veo3-fast' } })).toBe('filtered');
+    expect(guardTargetFor('/api/v1/prompt-enhancer/enhance', { context: { model: 'sem-censura' } })).toBe('uncensored');
+    expect(guardTargetFor('/api/v1/prompt-enhancer/enhance', { context: { model: 'wavespeed-seedance-spicy' } })).toBe('uncensored');
+    expect(guardTargetFor('/api/v1/prompt-enhancer/enhance', {})).toBe('uncensored');
+  });
+
+  it('toda rota com filtro da lista existe no controller', () => {
+    const source = readFileSync(join(__dirname, '../../generations/generations.controller.ts'), 'utf8');
+    for (const route of FILTERED_ROUTES) expect(source).toContain(`@Post('${route}')`);
+  });
+});
+
+describe('ContentSafetyInterceptor · alvo do pedido', () => {
+  let safety: { record: jest.Mock; recordOrThrow: jest.Mock; linkGeneration: jest.Mock };
+  let interceptor: ContentSafetyInterceptor;
+  let next: CallHandler & { handle: jest.Mock };
+  const run = async (c: ExecutionContext) => lastValueFrom(await interceptor.intercept(c, next));
+  const CASTELO = 'Cinematic scene: two children in medieval clothes running through a castle courtyard';
+
+  beforeEach(() => {
+    safety = {
+      record: jest.fn().mockResolvedValue('evt-recusa'),
+      recordOrThrow: jest.fn().mockResolvedValue('evt-atestado'),
+      linkGeneration: jest.fn().mockResolvedValue(undefined),
+    };
+    interceptor = new ContentSafetyInterceptor(safety as unknown as ContentSafetyService);
+    next = { handle: jest.fn(() => of({ id: 'gen-1' })) };
+  });
+
+  it('criança em cena comum passa no provedor com filtro, sem registro', async () => {
+    await run(ctx('POST', '/api/v1/generations/text-to-video-kie', { prompt: CASTELO }));
+    await run(ctx('POST', '/api/v1/generations/generate-image-auto', { prompt: CASTELO, model: 'gemini-3.1-flash-image-preview' }));
+    expect(next.handle).toHaveBeenCalledTimes(2);
+    expect(safety.record).not.toHaveBeenCalled();
+  });
+
+  it('a mesma cena no modelo sem filtro é recusada e registrada', async () => {
+    await expect(run(ctx('POST', '/api/v1/generations/generate-image-auto', { prompt: CASTELO, model: 'sem-censura' }))).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'CONTENT_POLICY_MINOR' }),
+    });
+    expect(next.handle).not.toHaveBeenCalled();
+    expect(safety.record).toHaveBeenCalledWith(expect.objectContaining({ kind: 'MINOR_BLOCKED', match: 'children' }));
+  });
+
+  it('pedido sexual que cita menor é recusado também no provedor com filtro', async () => {
+    await expect(run(ctx('POST', '/api/v1/generations/text-to-video-kie', { prompt: 'two children running naked' }))).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'CONTENT_POLICY_MINOR' }),
+    });
+    expect(safety.record).toHaveBeenCalledTimes(1);
+  });
+
+  it('gíria de juventude no modelo sem filtro segue sem registro (o provedor recebe "mulher adulta")', async () => {
+    await run(ctx('POST', '/api/v1/generations/generate-image-auto', { prompt: 'novinha de biquíni na praia', model: 'sem-censura' }));
+    expect(next.handle).toHaveBeenCalledTimes(1);
+    expect(safety.record).not.toHaveBeenCalled();
+  });
+
+  it('gíria de juventude COM foto no modelo sem filtro: recusa com instrução, sem registro de menor', async () => {
+    const body = { prompt: 'novinha de biquíni na praia', model: 'sem-censura', images: [FOTO], consent_confirmed: true };
+    await expect(run(ctx('POST', '/api/v1/generations/generate-image-auto', body))).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'CONTENT_POLICY_PHOTO_YOUTH_TERM' }),
+      status: 422,
+    });
+    await expect(
+      run(ctx('POST', '/api/v1/generations/face-swap', { source_image: FOTO, target_image: FOTO, consent_confirmed: true, prompt: 'schoolgirl' })),
+    ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'CONTENT_POLICY_PHOTO_YOUTH_TERM' }) });
+    expect(next.handle).not.toHaveBeenCalled();
+    expect(safety.record).not.toHaveBeenCalled();
+    expect(safety.recordOrThrow).not.toHaveBeenCalled();
+    // a mesma gíria com foto num provedor com filtro segue: o filtro do provedor vê a foto
+    await run(ctx('POST', '/api/v1/generations/generate-image-auto', { prompt: 'novinha de biquíni na praia', model: 'gpt-image-2', images: [FOTO] }));
+    expect(next.handle).toHaveBeenCalledTimes(1);
+  });
+
+  it('alfabeto sem lista: recusa no modelo sem filtro, segue no provedor com filtro', async () => {
+    const prompt = 'એક સ્ત્રી બગીચામાં';
+    await expect(run(ctx('POST', '/api/v1/generations/generate-image-auto', { prompt, model: 'sem-censura' }))).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'CONTENT_POLICY_LANGUAGE' }),
+    });
+    await run(ctx('POST', '/api/v1/generations/generate-image-auto', { prompt, model: 'gpt-image-2' }));
+    expect(next.handle).toHaveBeenCalledTimes(1);
   });
 });

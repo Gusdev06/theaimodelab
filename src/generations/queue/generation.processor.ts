@@ -57,6 +57,7 @@ import {
   unwrapJobError,
 } from './unrecoverable.error';
 import { ContentSafetyService } from '../../content-safety/content-safety.service';
+import { assessText } from '../../content-safety/minor-guard';
 import {
   ConsentRequiredSafetyError,
   ContentSafetyError,
@@ -67,6 +68,7 @@ import {
   minorSupportCodeOf,
   type SafetyFallbackTarget,
   type TerminalSafetyBlockError,
+  UncensoredFallbackRefusedError,
 } from '../errors/content-safety.error';
 import {
   classifyGenerationFailure,
@@ -712,6 +714,21 @@ export class GenerationProcessor extends WorkerHost {
     this.logger.warn(
       `[FALLBACK] gen=${generation.id} ${generation.modelUsed} → ${plan.model} (${kind}: ${errorCode}) motivo="${originalError.message}"`,
     );
+
+    // Desvio TÉCNICO (provedor fora, tempo esgotado) para modelo sem filtro: o texto que entrou pela regra do provedor
+    // com filtro (criança em cena comum passa lá) é lido de novo na regra dura. Cita menor = fica sem desvio e a falha
+    // original segue o caminho de sempre.
+    if (
+      kind !== 'safety' &&
+      !fallbackMedia &&
+      isUncensoredFallbackModel(plan.model) &&
+      (await this.promptForUncensored(generation.id)).blocked
+    ) {
+      this.logger.warn(
+        `[FALLBACK] gen=${generation.id} ${generation.modelUsed} → ${plan.model} recusado: o texto cita menor de idade e o destino é sem filtro`,
+      );
+      return 'none';
+    }
 
     // Desvio por bloqueio de conteúdo leva prompt e fotos a modelo sem filtro (MiniMax H3): mesma guarda da PR #4
     // (lança bloqueio terminal se for menor ou foto sem atestado). Com foto própria, a guarda roda em QUALQUER motivo:
@@ -2413,6 +2430,9 @@ export class GenerationProcessor extends WorkerHost {
    * geração pelo caminho normal de falha (handleFailure: estorno, SSE, MINOR_BLOCKED) sem nova tentativa do BullMQ.
    *  - menor de idade, qualquer alvo → MinorSafetyBlockError (CONTENT_POLICY_MINOR);
    *  - alvo 'same_provider' (retryWithRefinedPrompt) → segue: a foto já está nesse provedor com filtro;
+   *  - alvo 'uncensored' e o TEXTO da geração cita menor de idade pela regra dos modelos sem filtro →
+   *    UncensoredFallbackRefusedError (CONTENT_SAFETY_BLOCKED): o pedido entrou por um provedor com filtro, onde
+   *    criança em cena comum passa, e não segue para o modelo sem filtro;
    *  - alvo 'uncensored' (fallbackToSeedream) com foto do usuário (pode ser pessoa real) sem atestado de imagem →
    *    ConsentRequiredSafetyError (CONTENT_BLOCKED_NEEDS_CONSENT): nada de modelo sem censura com a foto;
    *  - alvo 'uncensored' só com texto, ou com foto atestada → segue o desvio de sempre.
@@ -2435,6 +2455,18 @@ export class GenerationProcessor extends WorkerHost {
     request: SafetyFallbackRequest,
   ): Promise<void> {
     const isMinor = isMinorSafetyBlock(error);
+    // Texto primeiro: pedido que entrou por provedor com filtro passou pela regra dele (criança em cena comum é aceita
+    // lá). Antes de levar o MESMO texto a um modelo sem filtro, a trava lê de novo na regra dura.
+    const text =
+      !isMinor && request.target === 'uncensored'
+        ? await this.promptForUncensored(generationId)
+        : { blocked: false, slang: false };
+    if (text.blocked) {
+      this.logger.warn(
+        `[SAFETY_GUARD] gen=${generationId} model=${request.model}: o texto cita menor de idade — encerrada sem desvio para modelo sem censura`,
+      );
+      throw new UncensoredFallbackRefusedError(error, request.model);
+    }
     const checksMedia = !isMinor && request.target === 'uncensored';
     const hasUserImages =
       checksMedia &&
@@ -2450,6 +2482,14 @@ export class GenerationProcessor extends WorkerHost {
       (request.ownCleanMedia === true ||
         (request.ownCleanMedia === undefined &&
           (await this.prepareOwnImagesForUnlocked(generationId))));
+    // gíria de juventude ("novinha", "colegial") com foto que não é geração limpa da própria conta: a troca por
+    // "mulher adulta" não muda quem está na foto, então ela não segue para o modelo sem filtro
+    if (text.slang && hasUserImages && !ownClean) {
+      this.logger.warn(
+        `[SAFETY_GUARD] gen=${generationId} model=${request.model}: gíria de juventude com foto do usuário — encerrada sem desvio para modelo sem censura`,
+      );
+      throw new UncensoredFallbackRefusedError(error, request.model);
+    }
     const decision = decideSafetyFallback({
       target: request.target,
       isMinor,
@@ -2560,6 +2600,28 @@ export class GenerationProcessor extends WorkerHost {
       this.logger.error(
         `Generation ${generationId} segue PROCESSING: nem o encerramento de reserva gravou (${(updateError as Error).message}) — o cron de presas encerra depois`,
       );
+    }
+  }
+
+  /**
+   * O texto da geração pela regra dos modelos sem filtro (minor-guard, alvo 'uncensored'): cita menor de idade
+   * (`blocked`) ou traz gíria de juventude liberada (`slang`)? Erro de banco nunca libera o desvio (conta como se citasse).
+   */
+  private async promptForUncensored(
+    generationId: string,
+  ): Promise<{ blocked: boolean; slang: boolean }> {
+    try {
+      const generation = await this.prisma.generation.findUnique({
+        where: { id: generationId },
+        select: { prompt: true },
+      });
+      const verdict = assessText(generation?.prompt, { target: 'uncensored' });
+      return { blocked: verdict.blocked, slang: Boolean(verdict.slang) };
+    } catch (error) {
+      this.logger.error(
+        `[SAFETY_GUARD] gen=${generationId}: falha ao ler o texto da geração (${(error as Error).message}) — sem desvio para modelo sem censura`,
+      );
+      return { blocked: true, slang: false };
     }
   }
 
