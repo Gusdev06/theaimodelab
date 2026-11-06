@@ -8,6 +8,7 @@ import {
 import { ContentSafetyEvent, ContentSafetyEventKind, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { countMinorBlocks, MINOR_BLOCKED_HOLD_THRESHOLD, MinorBlockTally } from '../users/account-erasure.service';
+import { readImageDeclaration } from '../users/image-declaration';
 import { CURRENT_TERMS_VERSION } from '../users/terms.constants';
 
 /**
@@ -29,6 +30,14 @@ export function minorHoldReached(tally: MinorBlockTally): boolean {
 /** Nota da liberação de um bloqueio por menor: o jurídico explica por quê (fica na trilha). */
 export const SAFETY_RELEASE_NOTE_MIN_LENGTH = 10;
 export const SAFETY_RELEASE_NOTE_MAX_LENGTH = 1000;
+
+/** Teto de contas "já declarou" guardadas em memória; cheio, sai a mais antiga (a próxima consulta dela vai ao banco). */
+export const DECLARED_ACCOUNTS_MAX_ENTRIES = 10_000;
+
+/** Declaração de responsabilidade pelas imagens que a conta já fez (versão do texto que ficou gravada). */
+export interface AccountImageDeclaration {
+  version: string | null;
+}
 
 export type SafetyEventWithRelease = ContentSafetyEvent & { released: boolean };
 export type ReleasedSafetyEvent = SafetyEventWithRelease & {
@@ -64,6 +73,11 @@ export interface SafetyEventInput {
 @Injectable()
 export class ContentSafetyService {
   private readonly logger = new Logger(ContentSafetyService.name);
+  /**
+   * Contas que já declararam (id → versão). Só o "sim" fica em memória, porque a declaração nunca é desfeita; o "não"
+   * vai sempre ao banco, para quem acabou de declarar não levar 400 no pedido seguinte (nem em outra instância da API).
+   */
+  private readonly declaredAccounts = new Map<string, string | null>();
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -94,6 +108,8 @@ export class ContentSafetyService {
   /**
    * Grava o evento de RECUSA (menor, falta de atestado). Falha ao gravar não libera o pedido: quem chama já
    * decidiu recusar; o erro do banco só vira log, para a recusa nunca depender do registro.
+   * Serve também ao atestado das rotas OPCIONAIS (venha do campo do pedido ou da declaração da conta): ali o pedido
+   * passa com ou sem registro, então a falha não pode virar 503 (devolve null e o pedido segue sem atestado).
    */
   async record(event: SafetyEventInput): Promise<string | null> {
     let eventId: string | null;
@@ -175,6 +191,36 @@ export class ContentSafetyService {
       where: { generationId, kind: ContentSafetyEventKind.CONSENT_ATTESTED },
     });
     return count > 0;
+  }
+
+  /**
+   * A conta já fez a declaração de responsabilidade pelas imagens? Com ela, o pedido com foto vale como atestado sem
+   * precisar trazer `consent_confirmed`. Nunca lança: sem conseguir ler, responde "não" e o pedido segue a regra de
+   * sempre (o campo no corpo). Este service só LÊ a declaração: quem grava é o POST /users/me/image-declaration.
+   */
+  async accountImageDeclaration(userId: string | null): Promise<AccountImageDeclaration | null> {
+    if (!userId) return null;
+    if (this.declaredAccounts.has(userId)) return { version: this.declaredAccounts.get(userId) ?? null };
+    try {
+      const declaration = await readImageDeclaration(this.prisma, userId);
+      if (!declaration?.imageDeclarationAt) return null;
+      this.rememberDeclared(userId, declaration.imageDeclarationVersion);
+      return { version: declaration.imageDeclarationVersion };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`content-safety: não deu para ler a declaração de imagens da conta ${userId}: ${message}`);
+      return null;
+    }
+  }
+
+  private rememberDeclared(userId: string, version: string | null): void {
+    this.declaredAccounts.delete(userId);
+    while (this.declaredAccounts.size >= DECLARED_ACCOUNTS_MAX_ENTRIES) {
+      const oldest = this.declaredAccounts.keys().next();
+      if (oldest.done) break;
+      this.declaredAccounts.delete(oldest.value);
+    }
+    this.declaredAccounts.set(userId, version);
   }
 
   /** Quantos pedidos com referência a menor o usuário teve recusados nas últimas `hours` horas (sem os liberados). */

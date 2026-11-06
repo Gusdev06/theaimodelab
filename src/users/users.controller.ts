@@ -19,6 +19,7 @@ import {
 import { UsersService } from './users.service';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { AcceptTermsDto } from './dto/accept-terms.dto';
+import { ImageDeclarationDto, ImageDeclarationResponseDto } from './dto/image-declaration.dto';
 import { UserProfileResponseDto } from './dto/user-profile-response.dto';
 import { CurrentUser } from '../common/decorators';
 
@@ -87,6 +88,28 @@ export class UsersController {
     @Body() body: AcceptTermsDto,
   ): Promise<UserProfileResponseDto> {
     return this.usersService.acceptTerms(userId, body?.version);
+  }
+
+  @Post('me/image-declaration')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Declarar a responsabilidade pelas imagens enviadas (uma vez por conta, na primeira criação com foto)',
+    description:
+      'Grava na conta a data e a versão da declaração. Idempotente: quem já declarou recebe a data da primeira vez. ' +
+      'Depois disso os pedidos de geração com foto desta conta não precisam mais mandar consent_confirmed.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Declaração registrada (ou já existente)',
+    type: ImageDeclarationResponseDto,
+  })
+  @ApiResponse({ status: 400, description: 'Versão da declaração ausente ou desconhecida' })
+  @ApiResponse({ status: 401, description: 'Não autenticado' })
+  async declareImages(
+    @CurrentUser('sub') userId: string,
+    @Body() body: ImageDeclarationDto,
+  ): Promise<ImageDeclarationResponseDto> {
+    return this.usersService.declareImages(userId, body?.version);
   }
 
   @Delete('me')

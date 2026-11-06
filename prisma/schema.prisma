@@ -51,6 +51,10 @@ model User {
   /// Versão permite reapresentar o termo quando o texto mudar — ver users/terms.constants.ts.
   termsAcceptedAt         DateTime?                 @map("terms_accepted_at")
   termsVersion            String?                   @map("terms_version")
+  /// Declaração de responsabilidade pelas imagens enviadas, marcada UMA vez por conta (na primeira criação com foto).
+  /// A data nunca é trocada depois de gravada. Versões em users/image-declaration.ts.
+  imageDeclarationAt      DateTime?                 @map("image_declaration_at")
+  imageDeclarationVersion String?                   @map("image_declaration_version")
   affiliateEarnings       AffiliateEarning[]        @relation("referred_user_earnings")
   affiliate               Affiliate?
   communityLikes          CommunityPostLike[]
@@ -1433,7 +1437,8 @@ model ContentSafetyEvent {
   userId       String?                @map("user_id")
   kind         ContentSafetyEventKind
   route        String
-  /// o que disparou (termo ou idade), nunca o pedido inteiro
+  /// o que disparou (termo ou idade), nunca o pedido inteiro; no atestado, "account-declaration:<versão>" quando
+  /// valeu a declaração gravada na conta (vazio = o pedido trouxe consent_confirmed)
   match        String?
   /// trecho do pedido para revisão de abuso (até 300 caracteres)
   excerpt      String?
