@@ -2,33 +2,49 @@
  * Ponte Pack → plataforma: quem vendeu a isca (Pack) na Perfect Pay como AFILIADO
  * fica com o cliente quando ele cria a conta na plataforma.
  *
- * Este arquivo só LÊ o postback. O formato do afiliado no postback ainda é hipótese
- * (documentação da Perfect Pay, sem venda real conferida), por isso o leitor aceita
- * vários formatos, nunca lança e devolve null na dúvida:
- *   1. `commission[]` / `commissions[]` (lista, objeto único ou objeto de objetos): a linha
- *      com `affiliation_type_enum` 5 (affiliate). Tipos 0 plataforma, 1 produtor,
- *      2 coprodutor, 3 gerente de afiliados, 4 parceiro, 6 premium e 7 fornecedor ficam de
- *      fora. Linha SEM tipo só conta quando PERFECTPAY_OWN_ACCOUNT_EMAILS diz quais são
- *      as contas próprias (senão não dá para separar produtor de afiliado).
- *   2. `affiliate` / `affiliation` no topo (texto ou objeto).
- *   3. `metadata.src` / `metadata.utm_content` com `convite:CODIGO` ou `aff:CODIGO`
- *      (código de afiliado da PLATAFORMA posto no link do checkout).
- * E-mail de conta própria (produtor/coprodutor) nunca vira afiliado.
+ * Este arquivo só LÊ o postback, no formato da documentação da Perfect Pay; nunca lança
+ * e devolve null na dúvida:
+ *   - `commission` é uma lista, um item por participante da venda:
+ *     `{ affiliation_code, affiliation_type_enum, name, email, identification_number, commission_amount }`.
+ *     Tipos: 0 plataforma, 1 produtor, 2 coprodutor, 3 gerente de afiliados, 4 parceiro,
+ *     5 afiliado, 6 premium, 7 fornecedor. SÓ o tipo 5 conta; linha sem tipo não conta.
+ *     O e-mail pode vir ofuscado (com `*`): aí só o `affiliation_code` identifica o afiliado.
+ *   - `metadata.src` / `metadata.utm_content` com `convite:CODIGO` ou `aff:CODIGO`: código de
+ *     afiliado da PLATAFORMA posto no link do checkout. Quem monta o link controla esse
+ *     texto, então ele só vale com `allowLinkCodes` (env PACK_AFFILIATE_BRIDGE_LINK_CODES)
+ *     e apenas em venda SEM afiliado tipo 5.
+ *
+ * Dois espaços de nomes que nunca se misturam:
+ *   - `ppcode:` = `affiliation_code` da Perfect Pay. Casa só com `Affiliate.perfectpayAffiliateCode`.
+ *   - `code:`   = código da plataforma (`Affiliate.code`), vindo do link.
+ * E-mail de conta própria (PERFECTPAY_OWN_ACCOUNT_EMAILS) nunca vira afiliado.
  */
 export interface PerfectpayAffiliateRef {
-  /** E-mail do afiliado na Perfect Pay. */
+  /** `affiliation_code` do afiliado na Perfect Pay. */
+  perfectpayCode?: string;
+  /** E-mail do afiliado na Perfect Pay, quando não veio ofuscado. */
   email?: string;
-  /** Código do link (`convite:`/`aff:`) ou, na falta dele, o `affiliation_code` da Perfect Pay. */
-  code?: string;
+  /** Código de afiliado da plataforma posto no link (`convite:`/`aff:`). */
+  linkCode?: string;
 }
 
-export type DecodedAffiliateRef = { kind: 'email' | 'code'; value: string };
+export type AffiliateRefKind = 'ppcode' | 'email' | 'code';
+export type DecodedAffiliateRef = { kind: AffiliateRefKind; value: string };
+
+export interface ExtractAffiliateRefOptions {
+  /** E-mails das contas próprias na Perfect Pay (produtor/coprodutor). */
+  ownEmails?: Iterable<string>;
+  /** Aceita o código do link (`convite:CODIGO`). Desligado por padrão. */
+  allowLinkCodes?: boolean;
+}
 
 const PERFECTPAY_AFFILIATE_TYPE_ENUM = 5;
-const AFFILIATE_TYPE_NAMES = new Set(['affiliate', 'afiliado']);
-const EMAIL_SHAPE = /^[^\s@*]+@[^\s@*]+\.[^\s@*]+$/;
+// Sem `|` no e-mail: é o separador das partes da referência gravada na isca.
+const EMAIL_SHAPE = /^[^\s@*|]+@[^\s@*|]+\.[^\s@*|]+$/;
 const CODE_SHAPE = /^[A-Z0-9_-]{2,40}$/;
 const LINK_CODE = /(?:^|[\s|,;+&])(?:convite|aff):([A-Za-z0-9_-]{2,40})(?=$|[\s|,;+&])/i;
+const REF_SEPARATOR = '|';
+const REF_KIND_ORDER: AffiliateRefKind[] = ['ppcode', 'email', 'code'];
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -49,8 +65,17 @@ function normalizeCode(value: unknown): string | undefined {
   return CODE_SHAPE.test(code) ? code : undefined;
 }
 
-export function isPackAffiliateBridgeEnabled(raw: string | undefined | null): boolean {
+function isEnvTrue(raw: string | undefined | null): boolean {
   return (raw ?? '').trim().toLowerCase() === 'true';
+}
+
+export function isPackAffiliateBridgeEnabled(raw: string | undefined | null): boolean {
+  return isEnvTrue(raw);
+}
+
+/** PACK_AFFILIATE_BRIDGE_LINK_CODES: aceita `convite:CODIGO` do link do checkout. Padrão desligado. */
+export function isPackBridgeLinkCodesEnabled(raw: string | undefined | null): boolean {
+  return isEnvTrue(raw);
 }
 
 /** PERFECTPAY_OWN_ACCOUNT_EMAILS: e-mails das contas próprias na Perfect Pay, por vírgula. */
@@ -75,80 +100,17 @@ export function isPackProductAllowed(productCode: unknown, rawProducts: string |
   return allowed.includes(String(productCode).trim().toUpperCase());
 }
 
-function commissionEntries(value: unknown): UnknownRecord[] {
+function commissionEntries(payload: UnknownRecord): UnknownRecord[] {
+  const value = payload.commission;
   if (Array.isArray(value)) return value.filter(isRecord);
-  if (!isRecord(value)) return [];
-
-  const looksLikeEntry = [
-    'affiliation_email',
-    'email',
-    'affiliation_code',
-    'affiliation_type_enum',
-    'affiliation_type',
-    'commission_amount',
-  ].some((key) => key in value);
-  return looksLikeEntry ? [value] : Object.values(value).filter(isRecord);
+  // Um participante só pode chegar como objeto solto em vez de lista de um item.
+  return isRecord(value) ? [value] : [];
 }
 
-function entryRole(entry: UnknownRecord): 'affiliate' | 'other' | 'unknown' {
-  for (const key of ['affiliation_type_enum', 'affiliation_type', 'type_enum', 'type']) {
-    const raw = entry[key];
-    if (typeof raw === 'number' || (typeof raw === 'string' && /^\d+$/.test(raw.trim()))) {
-      return Number(raw) === PERFECTPAY_AFFILIATE_TYPE_ENUM ? 'affiliate' : 'other';
-    }
-  }
-  for (const key of ['affiliation_type_enum_key', 'affiliation_type', 'type', 'role']) {
-    const raw = entry[key];
-    if (typeof raw === 'string' && raw.trim().length > 0) {
-      return AFFILIATE_TYPE_NAMES.has(raw.trim().toLowerCase()) ? 'affiliate' : 'other';
-    }
-  }
-  return 'unknown';
-}
-
-function fromCommissions(payload: UnknownRecord, ownEmails: Set<string>): PerfectpayAffiliateRef | null {
-  const entries = [...commissionEntries(payload.commission), ...commissionEntries(payload.commissions)];
-  let untyped: PerfectpayAffiliateRef | null = null;
-
-  for (const entry of entries) {
-    const role = entryRole(entry);
-    if (role === 'other') continue;
-
-    const email = normalizeEmail(entry.affiliation_email) ?? normalizeEmail(entry.email);
-    if (email && ownEmails.has(email)) continue;
-    const code = normalizeCode(entry.affiliation_code);
-
-    if (role === 'affiliate' && (email || code)) {
-      return { ...(email && { email }), ...(code && { code }) };
-    }
-    // Linha sem tipo: só com e-mail, e só quando sabemos quais são as contas próprias.
-    if (role === 'unknown' && email && ownEmails.size > 0 && !untyped) {
-      untyped = { email, ...(code && { code }) };
-    }
-  }
-  return untyped;
-}
-
-function fromAffiliateNode(payload: UnknownRecord, ownEmails: Set<string>): PerfectpayAffiliateRef | null {
-  for (const node of [payload.affiliate, payload.affiliation]) {
-    if (typeof node === 'string') {
-      const email = normalizeEmail(node);
-      if (email) {
-        if (!ownEmails.has(email)) return { email };
-        continue;
-      }
-      const code = normalizeCode(node);
-      if (code) return { code };
-      continue;
-    }
-    if (!isRecord(node)) continue;
-
-    const email = normalizeEmail(node.affiliation_email) ?? normalizeEmail(node.email);
-    if (email && ownEmails.has(email)) continue;
-    const code = normalizeCode(node.affiliation_code) ?? normalizeCode(node.code);
-    if (email || code) return { ...(email && { email }), ...(code && { code }) };
-  }
-  return null;
+function isAffiliateEntry(entry: UnknownRecord): boolean {
+  const raw = entry.affiliation_type_enum;
+  if (typeof raw === 'number') return raw === PERFECTPAY_AFFILIATE_TYPE_ENUM;
+  return typeof raw === 'string' && raw.trim() === String(PERFECTPAY_AFFILIATE_TYPE_ENUM);
 }
 
 function linkCode(payload: UnknownRecord): string | undefined {
@@ -164,48 +126,63 @@ function linkCode(payload: UnknownRecord): string | undefined {
 
 export function extractPerfectpayAffiliateRef(
   payload: unknown,
-  ownEmails: Iterable<string> = [],
+  options: ExtractAffiliateRefOptions = {},
 ): PerfectpayAffiliateRef | null {
   try {
     if (!isRecord(payload)) return null;
     const own = new Set<string>();
-    for (const email of ownEmails) {
+    for (const email of options.ownEmails ?? []) {
       if (typeof email === 'string' && email.trim()) own.add(email.trim().toLowerCase());
     }
 
-    const seller = fromCommissions(payload, own) ?? fromAffiliateNode(payload, own);
-    // O código do link é da plataforma: vale mais que o `affiliation_code` da Perfect Pay.
-    const code = linkCode(payload) ?? seller?.code;
-    const email = seller?.email;
+    const affiliateEntries = commissionEntries(payload).filter(isAffiliateEntry);
+    for (const entry of affiliateEntries) {
+      const email = normalizeEmail(entry.email);
+      if (email && own.has(email)) continue;
+      const perfectpayCode = normalizeCode(entry.affiliation_code);
+      if (email || perfectpayCode) {
+        return { ...(perfectpayCode && { perfectpayCode }), ...(email && { email }) };
+      }
+    }
 
-    if (!email && !code) return null;
-    return { ...(email && { email }), ...(code && { code }) };
+    // Venda com afiliado da Perfect Pay (mesmo que seja conta própria): o link não manda.
+    if (affiliateEntries.length > 0 || !options.allowLinkCodes) return null;
+    const code = linkCode(payload);
+    return code ? { linkCode: code } : null;
   } catch {
     return null;
   }
 }
 
-/** Texto gravado na grant: `email:<e-mail>` (afiliado identificado pela Perfect Pay) ou `code:<CODIGO>`. */
+/**
+ * Texto gravado na isca (`affiliateRef`), partes separadas por `|`:
+ *   - venda de afiliado da Perfect Pay: `ppcode:<CODIGO>`, `email:<e-mail>` ou `ppcode:<CODIGO>|email:<e-mail>`;
+ *   - venda sem afiliado, com código no link: `code:<CODIGO DA PLATAFORMA>`.
+ */
 export function encodeAffiliateRef(ref: PerfectpayAffiliateRef | null | undefined): string | null {
-  if (ref?.email) return `email:${ref.email}`;
-  if (ref?.code) return `code:${ref.code}`;
-  return null;
+  const parts: string[] = [];
+  if (ref?.perfectpayCode) parts.push(`ppcode:${ref.perfectpayCode}`);
+  if (ref?.email) parts.push(`email:${ref.email}`);
+  if (parts.length === 0 && ref?.linkCode) parts.push(`code:${ref.linkCode}`);
+  return parts.length > 0 ? parts.join(REF_SEPARATOR) : null;
 }
 
-export function decodeAffiliateRef(raw: string | null | undefined): DecodedAffiliateRef | null {
-  if (typeof raw !== 'string') return null;
-  const separatorIndex = raw.indexOf(':');
-  if (separatorIndex <= 0) return null;
+/** Partes válidas da referência, na ordem em que a resolução tenta: `ppcode`, `email`, `code`. */
+export function decodeAffiliateRef(raw: string | null | undefined): DecodedAffiliateRef[] {
+  if (typeof raw !== 'string') return [];
 
-  const kind = raw.slice(0, separatorIndex);
-  const value = raw.slice(separatorIndex + 1);
-  if (kind === 'email') {
-    const email = normalizeEmail(value);
-    return email ? { kind, value: email } : null;
+  const decoded: DecodedAffiliateRef[] = [];
+  for (const part of raw.split(REF_SEPARATOR)) {
+    const separatorIndex = part.indexOf(':');
+    if (separatorIndex <= 0) continue;
+
+    const kind = part.slice(0, separatorIndex);
+    const rawValue = part.slice(separatorIndex + 1);
+    const value =
+      kind === 'email' ? normalizeEmail(rawValue) : kind === 'ppcode' || kind === 'code' ? normalizeCode(rawValue) : undefined;
+    if (value && !decoded.some((item) => item.kind === kind)) {
+      decoded.push({ kind: kind as AffiliateRefKind, value });
+    }
   }
-  if (kind === 'code') {
-    const code = normalizeCode(value);
-    return code ? { kind, value: code } : null;
-  }
-  return null;
+  return decoded.sort((a, b) => REF_KIND_ORDER.indexOf(a.kind) - REF_KIND_ORDER.indexOf(b.kind));
 }

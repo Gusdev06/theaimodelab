@@ -7,27 +7,35 @@ jest.mock('google-auth-library', () => ({
 }));
 
 /**
- * Ponte Pack → plataforma no cadastro: a conta que acabou de ganhar afiliado dentro da
- * transação (consumeForUser) não entra também no "indique e ganhe". Com a ponte desligada
- * o cadastro não faz nenhuma leitura a mais.
+ * Ponte Pack → plataforma no cadastro (e-mail e Google): a transação só consome as grants e
+ * devolve a venda candidata; a atribuição ao afiliado acontece depois do commit e nunca
+ * derruba o cadastro. Conta atribuída não entra também no "indique e ganhe". Login (conta
+ * que já existia) nunca atribui.
  */
 describe('AuthService · cadastro com a ponte Pack → plataforma', () => {
-  const ORIGINAL_FLAG = process.env.PACK_AFFILIATE_BRIDGE_ENABLED;
-
   beforeEach(() => {
     (bcrypt.hash as jest.Mock).mockResolvedValue('hash');
+    (bcrypt.compare as jest.Mock).mockResolvedValue(true);
   });
 
-  afterEach(() => {
-    if (ORIGINAL_FLAG === undefined) delete process.env.PACK_AFFILIATE_BRIDGE_ENABLED;
-    else process.env.PACK_AFFILIATE_BRIDGE_ENABLED = ORIGINAL_FLAG;
-  });
+  const candidate = {
+    grantId: 'g1',
+    affiliateRef: 'ppcode:PPAJFTR',
+    buyerEmail: 'buyer@mail.com',
+    grantCreatedAt: new Date('2026-11-01T10:00:00Z'),
+  };
+  const CREATED_AT = new Date('2026-11-06T12:00:00Z');
 
   /**
-   * `bridgedCode` = o que a ponte gravou em referredByCode durante a transação
-   * (null = a ponte não atribuiu ninguém). A releitura por id devolve esse valor.
+   * `packBridge` = venda candidata que a transação devolve (null = compra sem afiliado ou ponte
+   * desligada). `attributedCode` = o que a atribuição pós-commit devolve.
    */
-  function setup(opts: { bridgedCode: string | null; rereadFails?: boolean }) {
+  function setup(opts: {
+    packBridge: typeof candidate | null;
+    attributedCode?: string | null;
+    attributionThrows?: boolean;
+    existingUser?: Record<string, unknown> | null;
+  }) {
     const createdUser = {
       id: 'user-new',
       email: 'buyer@mail.com',
@@ -38,10 +46,11 @@ describe('AuthService · cadastro com a ponte Pack → plataforma', () => {
       hasCompletedOnboarding: false,
       termsAcceptedAt: null,
       termsVersion: null,
-      createdAt: new Date('2026-11-06T12:00:00Z'),
+      createdAt: CREATED_AT,
       referredByCode: null,
       signupBrand: null,
     };
+    const events: string[] = [];
     const tx = {
       affiliate: { findUnique: jest.fn(async () => null) },
       user: { create: jest.fn(async ({ data }: any) => ({ ...createdUser, ...data, id: 'user-new' })) },
@@ -52,20 +61,34 @@ describe('AuthService · cadastro com a ponte Pack → plataforma', () => {
     };
     const prisma = {
       user: {
-        // 1ª leitura: e-mail livre? (por e-mail) · releitura da ponte: por id
-        findUnique: jest.fn(async ({ where }: any) => {
-          if (where.email !== undefined) return null;
-          if (opts.rereadFails) throw new Error('conexão caiu');
-          return { referredByCode: opts.bridgedCode };
-        }),
-        findFirst: jest.fn(async () => null),
+        findUnique: jest.fn(async () => opts.existingUser ?? null),
+        findFirst: jest.fn(async () => opts.existingUser ?? null),
+        update: jest.fn(async () => opts.existingUser ?? null),
       },
       emailVerificationToken: { create: jest.fn(async () => ({})) },
       refreshToken: { create: jest.fn(async () => ({})) },
-      $transaction: jest.fn(async (fn: any) => fn(tx)),
+      $transaction: jest.fn(async (fn: any) => {
+        const result = await fn(tx);
+        events.push('commit');
+        return result;
+      }),
     };
     const referralsService = { attachOnSignup: jest.fn(async () => undefined) };
-    const pendingGrantsService = { consumeForUser: jest.fn(async () => 1) };
+    const pendingGrantsService = {
+      consumeForSignup: jest.fn(async () => {
+        events.push('consumeForSignup');
+        return { consumed: 1, packBridge: opts.packBridge };
+      }),
+      consumeForUser: jest.fn(async () => {
+        events.push('consumeForUser');
+        return 1;
+      }),
+      attributeSignupToPackAffiliate: jest.fn(async () => {
+        events.push('attribute');
+        if (opts.attributionThrows) throw new Error('conexão caiu');
+        return opts.attributedCode ?? null;
+      }),
+    };
     const service = new AuthService(
       prisma as never,
       { signAsync: jest.fn(async () => 'jwt') } as never,
@@ -79,9 +102,7 @@ describe('AuthService · cadastro com a ponte Pack → plataforma', () => {
       { grantIfEligible: jest.fn(async () => undefined) } as never,
       referralsService as never,
     );
-    const rereads = () =>
-      (prisma.user.findUnique.mock.calls as any[][]).filter(([args]) => args.where.id !== undefined).length;
-    return { service, prisma, tx, referralsService, pendingGrantsService, rereads };
+    return { service, prisma, tx, referralsService, pendingGrantsService, events };
   }
 
   const registration = { email: 'Buyer@Mail.com', password: 'Senha!12345', name: 'Buyer', referralCode: 'K7Q3M9XP' };
@@ -94,22 +115,36 @@ describe('AuthService · cadastro com a ponte Pack → plataforma', () => {
   };
 
   describe('cadastro por e-mail', () => {
-    it('ponte ligada e conta atribuída a um afiliado: não entra no "indique e ganhe"', async () => {
-      process.env.PACK_AFFILIATE_BRIDGE_ENABLED = 'true';
-      const { service, tx, referralsService, pendingGrantsService, rereads } = setup({ bridgedCode: 'PARCEIRA' });
+    it('a transação só consome; a atribuição acontece depois do commit, com a venda que ela devolveu', async () => {
+      const { service, tx, pendingGrantsService, events, prisma } = setup({
+        packBridge: candidate,
+        attributedCode: 'PARCEIRA',
+      });
 
       const result = await service.register(registration as never);
 
       expect(result.isNewUser).toBe(true);
-      // dentro da transação do cadastro (é ali que a ponte grava o afiliado)
-      expect(pendingGrantsService.consumeForUser).toHaveBeenCalledWith('user-new', 'buyer@mail.com', tx);
-      expect(rereads()).toBe(1);
+      expect(pendingGrantsService.consumeForSignup).toHaveBeenCalledWith('user-new', 'buyer@mail.com', tx);
+      expect(pendingGrantsService.attributeSignupToPackAffiliate).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'user-new', createdAt: CREATED_AT }),
+        candidate,
+      );
+      expect(events.slice(0, 3)).toEqual(['consumeForSignup', 'commit', 'attribute']);
+      // usa o resultado direto: nenhuma releitura da conta por id
+      const rereads = (prisma.user.findUnique.mock.calls as any[][]).filter(([args]) => args?.where?.id !== undefined);
+      expect(rereads).toEqual([]);
+    });
+
+    it('conta atribuída a um afiliado não entra no "indique e ganhe"', async () => {
+      const { service, referralsService } = setup({ packBridge: candidate, attributedCode: 'PARCEIRA' });
+
+      await service.register(registration as never);
+
       expect(referralsService.attachOnSignup).not.toHaveBeenCalled();
     });
 
-    it('ponte ligada, mas a ponte não atribuiu ninguém: indicação segue como sempre', async () => {
-      process.env.PACK_AFFILIATE_BRIDGE_ENABLED = 'true';
-      const { service, referralsService } = setup({ bridgedCode: null });
+    it('havia venda candidata, mas ninguém foi atribuído: a indicação segue como sempre', async () => {
+      const { service, referralsService } = setup({ packBridge: candidate, attributedCode: null });
 
       await service.register(registration as never);
 
@@ -118,47 +153,106 @@ describe('AuthService · cadastro com a ponte Pack → plataforma', () => {
       );
     });
 
-    it('ponte desligada (padrão): nenhuma leitura a mais e a indicação roda', async () => {
-      delete process.env.PACK_AFFILIATE_BRIDGE_ENABLED;
-      const { service, referralsService, rereads } = setup({ bridgedCode: 'PARCEIRA' });
+    it('sem venda candidata (ponte desligada ou compra sem afiliado): nada a mais é chamado', async () => {
+      const { service, referralsService, pendingGrantsService } = setup({ packBridge: null });
 
       await service.register(registration as never);
 
-      expect(rereads()).toBe(0);
+      expect(pendingGrantsService.attributeSignupToPackAffiliate).not.toHaveBeenCalled();
       expect(referralsService.attachOnSignup).toHaveBeenCalledTimes(1);
     });
 
-    it('releitura falhou: o cadastro conclui e, na dúvida, não dá a indicação', async () => {
-      process.env.PACK_AFFILIATE_BRIDGE_ENABLED = 'true';
-      const { service, referralsService } = setup({ bridgedCode: null, rereadFails: true });
+    it('erro na atribuição não derruba o cadastro: a conta nasce e a indicação segue', async () => {
+      const { service, referralsService } = setup({ packBridge: candidate, attributionThrows: true });
 
       const result = await service.register(registration as never);
 
       expect(result.accessToken).toBe('jwt');
-      expect(referralsService.attachOnSignup).not.toHaveBeenCalled();
+      expect(result.isNewUser).toBe(true);
+      expect(referralsService.attachOnSignup).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('cadastro pelo Google', () => {
-    it('ponte ligada e conta atribuída: não entra no "indique e ganhe"', async () => {
-      process.env.PACK_AFFILIATE_BRIDGE_ENABLED = 'true';
-      const { service, referralsService, rereads } = setup({ bridgedCode: 'PARCEIRA' });
+    it('conta nova: consome na transação, atribui depois do commit e não entra no "indique e ganhe"', async () => {
+      const { service, referralsService, pendingGrantsService, events, tx } = setup({
+        packBridge: candidate,
+        attributedCode: 'PARCEIRA',
+      });
 
       const result = await service.googleAuth(googleUser);
 
       expect(result.isNewUser).toBe(true);
-      expect(rereads()).toBe(1);
+      expect(pendingGrantsService.consumeForSignup).toHaveBeenCalledWith('user-new', 'buyer@mail.com', tx);
+      expect(pendingGrantsService.attributeSignupToPackAffiliate).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'user-new' }),
+        candidate,
+      );
+      expect(events.slice(0, 3)).toEqual(['consumeForSignup', 'commit', 'attribute']);
       expect(referralsService.attachOnSignup).not.toHaveBeenCalled();
     });
 
-    it('ponte desligada: indicação roda, sem leitura a mais', async () => {
-      delete process.env.PACK_AFFILIATE_BRIDGE_ENABLED;
-      const { service, referralsService, rereads } = setup({ bridgedCode: 'PARCEIRA' });
+    it('sem venda candidata: indicação roda, sem chamada a mais', async () => {
+      const { service, referralsService, pendingGrantsService } = setup({ packBridge: null });
 
       await service.googleAuth(googleUser);
 
-      expect(rereads()).toBe(0);
+      expect(pendingGrantsService.attributeSignupToPackAffiliate).not.toHaveBeenCalled();
       expect(referralsService.attachOnSignup).toHaveBeenCalledTimes(1);
+    });
+
+    it('erro na atribuição não derruba o cadastro pelo Google', async () => {
+      const { service, referralsService } = setup({ packBridge: candidate, attributionThrows: true });
+
+      const result = await service.googleAuth(googleUser);
+
+      expect(result.accessToken).toBe('jwt');
+      expect(referralsService.attachOnSignup).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('login (conta que já existia) nunca atribui', () => {
+    const existing = {
+      id: 'user-old',
+      email: 'buyer@mail.com',
+      name: 'Buyer',
+      avatarUrl: null,
+      role: 'USER',
+      isActive: true,
+      emailVerified: true,
+      passwordHash: 'hash',
+      oauthProvider: 'google',
+      oauthProviderId: 'google-1',
+      hasCompletedOnboarding: true,
+      termsAcceptedAt: null,
+      termsVersion: null,
+      createdAt: new Date('2026-09-01T00:00:00Z'),
+      referredByCode: null,
+      signupBrand: null,
+    };
+
+    it('login pelo Google: as grants são consumidas pelo caminho do login, sem atribuição', async () => {
+      const { service, pendingGrantsService, referralsService } = setup({ packBridge: candidate, existingUser: existing });
+
+      const result = await service.googleAuth(googleUser);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(result.isNewUser).toBe(false);
+      expect(pendingGrantsService.consumeForUser).toHaveBeenCalledWith('user-old', 'buyer@mail.com');
+      expect(pendingGrantsService.consumeForSignup).not.toHaveBeenCalled();
+      expect(pendingGrantsService.attributeSignupToPackAffiliate).not.toHaveBeenCalled();
+      expect(referralsService.attachOnSignup).not.toHaveBeenCalled();
+    });
+
+    it('login por senha: idem', async () => {
+      const { service, pendingGrantsService } = setup({ packBridge: candidate, existingUser: existing });
+
+      await service.login('buyer@mail.com', 'Senha!12345');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(pendingGrantsService.consumeForUser).toHaveBeenCalledWith('user-old', 'buyer@mail.com');
+      expect(pendingGrantsService.consumeForSignup).not.toHaveBeenCalled();
+      expect(pendingGrantsService.attributeSignupToPackAffiliate).not.toHaveBeenCalled();
     });
   });
 });

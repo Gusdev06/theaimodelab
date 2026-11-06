@@ -3,11 +3,14 @@ import {
   encodeAffiliateRef,
   extractPerfectpayAffiliateRef,
   isPackAffiliateBridgeEnabled,
+  isPackBridgeLinkCodesEnabled,
   isPackProductAllowed,
   parseOwnAccountEmails,
 } from '../perfectpay-affiliate';
 
 const OWN = ['produtor@casa.test', 'coprodutor@casa.test'];
+const own = { ownEmails: OWN };
+const withLink = { ownEmails: OWN, allowLinkCodes: true };
 
 /** Exemplo de `commission` da documentação oficial do postback (e-mails acrescentados). */
 const docCommission = [
@@ -32,22 +35,22 @@ const docCommission = [
 
 describe('extractPerfectpayAffiliateRef', () => {
   describe('commission[] do postback', () => {
-    it('pega a linha de afiliado (tipo 5), com o e-mail em minúsculas', () => {
-      expect(extractPerfectpayAffiliateRef({ commission: docCommission }, OWN)).toEqual({
+    it('pega a linha de afiliado (tipo 5): código da Perfect Pay e e-mail em minúsculas', () => {
+      expect(extractPerfectpayAffiliateRef({ commission: docCommission }, own)).toEqual({
+        perfectpayCode: 'PPAJFTR',
         email: 'afiliada@exemplo.test',
-        code: 'PPAJFTR',
       });
     });
 
-    it('funciona sem a lista de contas próprias quando a linha traz o tipo', () => {
+    it('funciona sem a lista de contas próprias', () => {
       expect(extractPerfectpayAffiliateRef({ commission: docCommission })).toEqual({
+        perfectpayCode: 'PPAJFTR',
         email: 'afiliada@exemplo.test',
-        code: 'PPAJFTR',
       });
     });
 
     it('venda sem afiliado (só produtor e plataforma) não devolve nada', () => {
-      expect(extractPerfectpayAffiliateRef({ commission: docCommission.slice(1) }, OWN)).toBeNull();
+      expect(extractPerfectpayAffiliateRef({ commission: docCommission.slice(1) }, own)).toBeNull();
     });
 
     it('produtor, coprodutor, gerente, parceiro, premium e fornecedor não são o afiliado da venda', () => {
@@ -55,125 +58,166 @@ describe('extractPerfectpayAffiliateRef', () => {
         const payload = {
           commission: [{ affiliation_type_enum: type, email: 'alguem@fora.test', affiliation_code: 'PPXXXXX' }],
         };
-        expect(extractPerfectpayAffiliateRef(payload, OWN)).toBeNull();
+        expect(extractPerfectpayAffiliateRef(payload, own)).toBeNull();
       }
     });
 
-    it('tipo como texto numérico ou como nome também vale', () => {
+    it('tipo 5 como texto numérico também vale', () => {
       expect(
-        extractPerfectpayAffiliateRef({ commission: [{ affiliation_type_enum: '5', email: 'a@b.test' }] }),
-      ).toEqual({ email: 'a@b.test' });
-      expect(
-        extractPerfectpayAffiliateRef({ commissions: [{ affiliation_type: 'Affiliate', affiliation_email: 'a@b.test' }] }),
-      ).toEqual({ email: 'a@b.test' });
-      expect(
-        extractPerfectpayAffiliateRef({ commissions: [{ affiliation_type: 'producer', affiliation_email: 'a@b.test' }] }, OWN),
-      ).toBeNull();
-    });
-
-    it('`commissions` como objeto único e como objeto de objetos', () => {
-      expect(
-        extractPerfectpayAffiliateRef({
-          commissions: { affiliation_type_enum: 5, affiliation_email: 'a@b.test', affiliation_code: 'ppabc12' },
-        }),
-      ).toEqual({ email: 'a@b.test', code: 'PPABC12' });
-      expect(
-        extractPerfectpayAffiliateRef({
-          commissions: {
-            '0': { affiliation_type_enum: 1, affiliation_email: 'produtor@casa.test' },
-            '1': { affiliation_type_enum: 5, affiliation_email: 'a@b.test' },
-          },
-        }),
+        extractPerfectpayAffiliateRef({ commission: [{ affiliation_type_enum: ' 5 ', email: 'a@b.test' }] }),
       ).toEqual({ email: 'a@b.test' });
     });
 
-    it('e-mail ofuscado não identifica ninguém: sobra o código da afiliação', () => {
+    it('um participante só, como objeto solto em vez de lista', () => {
+      expect(
+        extractPerfectpayAffiliateRef({
+          commission: { affiliation_type_enum: 5, email: 'a@b.test', affiliation_code: 'ppabc12' },
+        }),
+      ).toEqual({ perfectpayCode: 'PPABC12', email: 'a@b.test' });
+    });
+
+    it('e-mail ofuscado (com *) não identifica ninguém: sobra o código da Perfect Pay', () => {
       expect(
         extractPerfectpayAffiliateRef({
           commission: [{ affiliation_type_enum: 5, email: 'us***@exemplo.test', affiliation_code: 'PPAJFTR' }],
         }),
-      ).toEqual({ code: 'PPAJFTR' });
+      ).toEqual({ perfectpayCode: 'PPAJFTR' });
     });
 
     it('afiliado com o e-mail de uma conta própria é ignorado', () => {
       const payload = {
         commission: [{ affiliation_type_enum: 5, email: 'Coprodutor@Casa.test', affiliation_code: 'PPOWN01' }],
       };
-      expect(extractPerfectpayAffiliateRef(payload, OWN)).toBeNull();
-      expect(extractPerfectpayAffiliateRef(payload, ['  COPRODUTOR@casa.test '])).toBeNull();
+      expect(extractPerfectpayAffiliateRef(payload, own)).toBeNull();
+      expect(extractPerfectpayAffiliateRef(payload, { ownEmails: ['  COPRODUTOR@casa.test '] })).toBeNull();
     });
 
-    describe('linha sem tipo (formato da API de vendas)', () => {
+    it('conta própria como "afiliada" não esconde o afiliado de verdade da mesma venda', () => {
+      const payload = {
+        commission: [
+          { affiliation_type_enum: 5, email: 'coprodutor@casa.test', affiliation_code: 'PPOWN01' },
+          { affiliation_type_enum: 5, email: 'afiliada@exemplo.test', affiliation_code: 'PPAJFTR' },
+        ],
+      };
+      expect(extractPerfectpayAffiliateRef(payload, own)).toEqual({
+        perfectpayCode: 'PPAJFTR',
+        email: 'afiliada@exemplo.test',
+      });
+    });
+
+    describe('linha sem affiliation_type_enum nunca conta', () => {
       const untyped = {
-        commissions: [
-          { affiliation_email: 'produtor@casa.test', commission_amount: 10 },
-          { affiliation_email: 'afiliada@exemplo.test', commission_amount: 9 },
+        commission: [
+          { email: 'produtor@casa.test', commission_amount: 10 },
+          { email: 'afiliada@exemplo.test', affiliation_code: 'PPAJFTR', commission_amount: 9 },
         ],
       };
 
-      it('com as contas próprias configuradas, quem sobra é o afiliado', () => {
-        expect(extractPerfectpayAffiliateRef(untyped, OWN)).toEqual({ email: 'afiliada@exemplo.test' });
-      });
-
-      it('sem as contas próprias não dá para separar produtor de afiliado: nada', () => {
+      it('nem com as contas próprias configuradas (o atalho antigo saiu)', () => {
+        expect(extractPerfectpayAffiliateRef(untyped, own)).toBeNull();
         expect(extractPerfectpayAffiliateRef(untyped)).toBeNull();
-        expect(extractPerfectpayAffiliateRef(untyped, [])).toBeNull();
       });
 
-      it('linha sem tipo e sem e-mail nunca conta', () => {
-        expect(extractPerfectpayAffiliateRef({ commission: [{ affiliation_code: 'PPAGSDE' }] }, OWN)).toBeNull();
+      it('nome do tipo em texto ("affiliate") e campos fora da documentação não contam', () => {
+        for (const entry of [
+          { affiliation_type: 'Affiliate', email: 'a@b.test' },
+          { affiliation_type: 5, email: 'a@b.test' },
+          { type: 5, email: 'a@b.test' },
+          { role: 'afiliado', email: 'a@b.test' },
+          { affiliation_type_enum: 'affiliate', email: 'a@b.test' },
+          { affiliation_type_enum: 5.5, email: 'a@b.test' },
+        ]) {
+          expect(extractPerfectpayAffiliateRef({ commission: [entry] }, own)).toBeNull();
+        }
       });
     });
   });
 
-  describe('`affiliate` / `affiliation` no topo', () => {
-    it('objeto com e-mail e código', () => {
-      expect(
-        extractPerfectpayAffiliateRef({ affiliate: { email: 'A@B.test', code: 'ppzz999' } }, OWN),
-      ).toEqual({ email: 'a@b.test', code: 'PPZZ999' });
-      expect(
-        extractPerfectpayAffiliateRef({ affiliation: { affiliation_email: 'a@b.test', affiliation_code: 'PPZZ999' } }),
-      ).toEqual({ email: 'a@b.test', code: 'PPZZ999' });
+  describe('campos fora da documentação não são lidos', () => {
+    it('`affiliate` / `affiliation` soltos no topo não viram afiliado nem código', () => {
+      for (const payload of [
+        { affiliate: { email: 'a@b.test', code: 'MARIA30' } },
+        { affiliation: { affiliation_email: 'a@b.test', affiliation_code: 'PPZZ999' } },
+        { affiliate: ' a@b.test ' },
+        { affiliation: 'MARIA30' },
+        { affiliate: 'MARIA30', affiliation: 'MARIA30' },
+      ]) {
+        expect(extractPerfectpayAffiliateRef(payload, withLink)).toBeNull();
+      }
     });
 
-    it('texto: e-mail ou código', () => {
-      expect(extractPerfectpayAffiliateRef({ affiliate: ' a@b.test ' })).toEqual({ email: 'a@b.test' });
-      expect(extractPerfectpayAffiliateRef({ affiliation: 'ppzz999' })).toEqual({ code: 'PPZZ999' });
-    });
-
-    it('conta própria é ignorada', () => {
-      expect(extractPerfectpayAffiliateRef({ affiliate: { email: 'produtor@casa.test' } }, OWN)).toBeNull();
-      expect(extractPerfectpayAffiliateRef({ affiliate: 'produtor@casa.test' }, OWN)).toBeNull();
+    it('`commissions` (plural) e `affiliation_email` não são o formato do postback', () => {
+      expect(
+        extractPerfectpayAffiliateRef({ commissions: [{ affiliation_type_enum: 5, email: 'a@b.test' }] }, own),
+      ).toBeNull();
+      expect(
+        extractPerfectpayAffiliateRef(
+          { commission: [{ affiliation_type_enum: 5, affiliation_email: 'a@b.test' }] },
+          own,
+        ),
+      ).toBeNull();
     });
   });
 
   describe('código de afiliado da plataforma no link (metadata)', () => {
-    it('`convite:CODIGO` e `aff:CODIGO` em src ou utm_content', () => {
-      expect(extractPerfectpayAffiliateRef({ metadata: { src: 'convite:maria30' } })).toEqual({ code: 'MARIA30' });
-      expect(extractPerfectpayAffiliateRef({ metadata: { utm_content: 'AFF:Parceira_1' } })).toEqual({
-        code: 'PARCEIRA_1',
+    it('desligado por padrão: o link não vale nada', () => {
+      for (const options of [undefined, {}, own, { allowLinkCodes: false }]) {
+        expect(extractPerfectpayAffiliateRef({ metadata: { src: 'convite:maria30' } }, options)).toBeNull();
+        expect(extractPerfectpayAffiliateRef({ metadata: { utm_content: 'aff:MARIA30' } }, options)).toBeNull();
+      }
+    });
+
+    it('ligado: `convite:CODIGO` e `aff:CODIGO` em src ou utm_content, em venda sem afiliado', () => {
+      expect(extractPerfectpayAffiliateRef({ metadata: { src: 'convite:maria30' } }, withLink)).toEqual({
+        linkCode: 'MARIA30',
+      });
+      expect(extractPerfectpayAffiliateRef({ metadata: { utm_content: 'AFF:Parceira_1' } }, withLink)).toEqual({
+        linkCode: 'PARCEIRA_1',
       });
       expect(
-        extractPerfectpayAffiliateRef({ metadata: { src: null, utm_content: 'video3|aff:MARIA30|ig' } }),
-      ).toEqual({ code: 'MARIA30' });
+        extractPerfectpayAffiliateRef({ metadata: { src: null, utm_content: 'video3|aff:MARIA30|ig' } }, withLink),
+      ).toEqual({ linkCode: 'MARIA30' });
+      // produtor e plataforma na comissão não são afiliado: o link segue valendo
+      expect(
+        extractPerfectpayAffiliateRef(
+          { commission: docCommission.slice(1), metadata: { src: 'convite:MARIA30' } },
+          withLink,
+        ),
+      ).toEqual({ linkCode: 'MARIA30' });
     });
 
     it('utm comum não vira código', () => {
       expect(
-        extractPerfectpayAffiliateRef({
-          metadata: { src: 'instagram', utm_content: 'Example+User-seq1-ba', utm_source: 'aff:NAOVALE' },
-        }),
+        extractPerfectpayAffiliateRef(
+          { metadata: { src: 'instagram', utm_content: 'Example+User-seq1-ba', utm_source: 'aff:NAOVALE' } },
+          withLink,
+        ),
       ).toBeNull();
-      expect(extractPerfectpayAffiliateRef({ metadata: { src: 'staff:MARIA30' } })).toBeNull();
-      expect(extractPerfectpayAffiliateRef({ metadata: { src: 'convite:' } })).toBeNull();
-      expect(extractPerfectpayAffiliateRef({ metadata: { src: 'convite:A' } })).toBeNull();
-      expect(extractPerfectpayAffiliateRef({ metadata: { src: 'convite:cod!go' } })).toBeNull();
+      expect(extractPerfectpayAffiliateRef({ metadata: { src: 'staff:MARIA30' } }, withLink)).toBeNull();
+      expect(extractPerfectpayAffiliateRef({ metadata: { src: 'convite:' } }, withLink)).toBeNull();
+      expect(extractPerfectpayAffiliateRef({ metadata: { src: 'convite:A' } }, withLink)).toBeNull();
+      expect(extractPerfectpayAffiliateRef({ metadata: { src: 'convite:cod!go' } }, withLink)).toBeNull();
     });
 
-    it('com afiliado na comissão, o e-mail é dele e o código é o do link (da plataforma)', () => {
+    it('com afiliado da Perfect Pay (tipo 5) na venda, o link é ignorado', () => {
       expect(
-        extractPerfectpayAffiliateRef({ commission: docCommission, metadata: { src: 'convite:MARIA30' } }, OWN),
-      ).toEqual({ email: 'afiliada@exemplo.test', code: 'MARIA30' });
+        extractPerfectpayAffiliateRef({ commission: docCommission, metadata: { src: 'convite:MARIA30' } }, withLink),
+      ).toEqual({ perfectpayCode: 'PPAJFTR', email: 'afiliada@exemplo.test' });
+    });
+
+    it('afiliado tipo 5 presente, mesmo sem identificação útil ou sendo conta própria: o link não entra', () => {
+      for (const affiliateEntry of [
+        { affiliation_type_enum: 5 },
+        { affiliation_type_enum: 5, email: 'us***@exemplo.test' },
+        { affiliation_type_enum: 5, email: 'coprodutor@casa.test', affiliation_code: 'PPOWN01' },
+      ]) {
+        expect(
+          extractPerfectpayAffiliateRef(
+            { commission: [affiliateEntry], metadata: { src: 'convite:MARIA30' } },
+            withLink,
+          ),
+        ).toBeNull();
+      }
     });
   });
 
@@ -189,8 +233,9 @@ describe('extractPerfectpayAffiliateRef', () => {
     [{ commission: [{ affiliation_type_enum: 5 }] }],
     [{ commission: [{ affiliation_type_enum: 5, email: 'sem-arroba', affiliation_code: '!' }] }],
     [{ commission: [{ affiliation_type_enum: 5, email: { nested: true }, affiliation_code: {} }] }],
+    [{ commission: [{ affiliation_type_enum: 5, email: 'a|b@c.test' }] }],
   ])('lixo não lança e devolve null: %p', (payload) => {
-    expect(extractPerfectpayAffiliateRef(payload, OWN)).toBeNull();
+    expect(extractPerfectpayAffiliateRef(payload, withLink)).toBeNull();
   });
 
   it('nunca lança, nem com getter que explode nem com lista de contas torta', () => {
@@ -199,42 +244,67 @@ describe('extractPerfectpayAffiliateRef', () => {
         throw new Error('boom');
       },
     };
-    expect(() => extractPerfectpayAffiliateRef(hostile, OWN)).not.toThrow();
-    expect(extractPerfectpayAffiliateRef(hostile, OWN)).toBeNull();
+    expect(() => extractPerfectpayAffiliateRef(hostile, own)).not.toThrow();
+    expect(extractPerfectpayAffiliateRef(hostile, own)).toBeNull();
     expect(
-      extractPerfectpayAffiliateRef({ commission: docCommission }, [null, 5, 'produtor@casa.test'] as never),
-    ).toEqual({ email: 'afiliada@exemplo.test', code: 'PPAJFTR' });
+      extractPerfectpayAffiliateRef(
+        { commission: docCommission },
+        { ownEmails: [null, 5, 'produtor@casa.test'] as never },
+      ),
+    ).toEqual({ perfectpayCode: 'PPAJFTR', email: 'afiliada@exemplo.test' });
   });
 });
 
 describe('encodeAffiliateRef / decodeAffiliateRef', () => {
-  it('e-mail (afiliado identificado pela Perfect Pay) vale antes do código', () => {
-    expect(encodeAffiliateRef({ email: 'a@b.test', code: 'MARIA30' })).toBe('email:a@b.test');
-    expect(encodeAffiliateRef({ code: 'MARIA30' })).toBe('code:MARIA30');
+  it('afiliado da Perfect Pay: ppcode e e-mail; o código do link só entra sozinho', () => {
+    expect(encodeAffiliateRef({ perfectpayCode: 'PPAJFTR', email: 'a@b.test' })).toBe('ppcode:PPAJFTR|email:a@b.test');
+    expect(encodeAffiliateRef({ perfectpayCode: 'PPAJFTR' })).toBe('ppcode:PPAJFTR');
+    expect(encodeAffiliateRef({ email: 'a@b.test' })).toBe('email:a@b.test');
+    expect(encodeAffiliateRef({ linkCode: 'MARIA30' })).toBe('code:MARIA30');
+    expect(encodeAffiliateRef({ perfectpayCode: 'PPAJFTR', linkCode: 'MARIA30' })).toBe('ppcode:PPAJFTR');
     expect(encodeAffiliateRef(null)).toBeNull();
     expect(encodeAffiliateRef({})).toBeNull();
   });
 
-  it('ida e volta', () => {
-    expect(decodeAffiliateRef('email:a@b.test')).toEqual({ kind: 'email', value: 'a@b.test' });
-    expect(decodeAffiliateRef('email: A@B.test ')).toEqual({ kind: 'email', value: 'a@b.test' });
-    expect(decodeAffiliateRef('code:maria30')).toEqual({ kind: 'code', value: 'MARIA30' });
+  it('o código da Perfect Pay nunca sai como `code:` (espaço de nomes da plataforma)', () => {
+    const stored = encodeAffiliateRef(extractPerfectpayAffiliateRef({ commission: docCommission }));
+    expect(stored).toBe('ppcode:PPAJFTR|email:afiliada@exemplo.test');
+    expect(decodeAffiliateRef(stored).map((part) => part.kind)).toEqual(['ppcode', 'email']);
   });
 
-  it.each([null, undefined, '', 'a@b.test', 'email:', 'email:sem-arroba', 'code:', 'code:!', 'outro:valor', ':x'])(
-    'referência inválida (%p) vira null',
+  it('ida e volta, na ordem em que a resolução tenta', () => {
+    expect(decodeAffiliateRef('email:a@b.test')).toEqual([{ kind: 'email', value: 'a@b.test' }]);
+    expect(decodeAffiliateRef('email: A@B.test ')).toEqual([{ kind: 'email', value: 'a@b.test' }]);
+    expect(decodeAffiliateRef('code:maria30')).toEqual([{ kind: 'code', value: 'MARIA30' }]);
+    expect(decodeAffiliateRef('ppcode:ppajftr')).toEqual([{ kind: 'ppcode', value: 'PPAJFTR' }]);
+    expect(decodeAffiliateRef('email:a@b.test|ppcode:PPAJFTR')).toEqual([
+      { kind: 'ppcode', value: 'PPAJFTR' },
+      { kind: 'email', value: 'a@b.test' },
+    ]);
+  });
+
+  it('parte inválida é descartada sem derrubar a vizinha; parte repetida vale a primeira', () => {
+    expect(decodeAffiliateRef('ppcode:!|email:a@b.test')).toEqual([{ kind: 'email', value: 'a@b.test' }]);
+    expect(decodeAffiliateRef('ppcode:PPAJFTR|email:us***@b.test')).toEqual([{ kind: 'ppcode', value: 'PPAJFTR' }]);
+    expect(decodeAffiliateRef('ppcode:PPAAA|ppcode:PPBBB')).toEqual([{ kind: 'ppcode', value: 'PPAAA' }]);
+  });
+
+  it.each([null, undefined, '', 'a@b.test', 'email:', 'email:sem-arroba', 'code:', 'code:!', 'ppcode:', 'outro:valor', ':x', '|'])(
+    'referência inválida (%p) não tem parte nenhuma',
     (raw) => {
-      expect(decodeAffiliateRef(raw as string | null)).toBeNull();
+      expect(decodeAffiliateRef(raw as string | null)).toEqual([]);
     },
   );
 });
 
 describe('envs da ponte', () => {
-  it('PACK_AFFILIATE_BRIDGE_ENABLED: só "true" liga', () => {
-    expect(isPackAffiliateBridgeEnabled('true')).toBe(true);
-    expect(isPackAffiliateBridgeEnabled(' TRUE ')).toBe(true);
-    for (const raw of [undefined, null, '', 'false', '1', 'yes', 'on']) {
-      expect(isPackAffiliateBridgeEnabled(raw)).toBe(false);
+  it('PACK_AFFILIATE_BRIDGE_ENABLED e PACK_AFFILIATE_BRIDGE_LINK_CODES: só "true" liga', () => {
+    for (const isEnabled of [isPackAffiliateBridgeEnabled, isPackBridgeLinkCodesEnabled]) {
+      expect(isEnabled('true')).toBe(true);
+      expect(isEnabled(' TRUE ')).toBe(true);
+      for (const raw of [undefined, null, '', 'false', '1', 'yes', 'on']) {
+        expect(isEnabled(raw)).toBe(false);
+      }
     }
   });
 

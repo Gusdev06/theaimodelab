@@ -64,6 +64,15 @@ function compare(left: unknown, right: unknown): number {
   return a - b;
 }
 
+/** `endsWith` como o LIKE do banco: `_` do texto procurado casa um caractere e `%` qualquer trecho. */
+function likeEndsWith(actual: string, suffix: string): boolean {
+  const pattern = suffix
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/_/g, '.')
+    .replace(/%/g, '.*');
+  return new RegExp(`${pattern}$`, 's').test(actual);
+}
+
 function matchValue(actual: unknown, condition: unknown): boolean {
   if (condition === null) return actual === null || actual === undefined;
   if (condition instanceof Date)
@@ -95,6 +104,9 @@ function matchValue(actual: unknown, condition: unknown): boolean {
       if (!(expected as unknown[]).includes(actual)) return false;
     } else if (op === 'startsWith') {
       if (typeof actual !== 'string' || !actual.startsWith(String(expected)))
+        return false;
+    } else if (op === 'endsWith') {
+      if (typeof actual !== 'string' || !likeEndsWith(actual, String(expected)))
         return false;
     } else if (op === 'not') {
       if (matchValue(actual, expected)) return false;
@@ -789,6 +801,39 @@ function baseSeed(): Seed {
         externalEventId: 'sale-6',
         affiliateRef: 'email:outro.afiliado@example.com',
       },
+      // referência no formato com o código da Perfect Pay: código + e-mail, só o código, e as de terceiros parecidas
+      {
+        id: 'grant-ref-ppcode-email',
+        email: 'comprador4@exemplo.com',
+        consumedByUserId: null,
+        bundle: { NB2: 2 },
+        externalEventId: 'sale-7',
+        affiliateRef: 'ppcode:PPMARIA|email:maria.pp@example.com',
+      },
+      {
+        id: 'grant-ref-ppcode',
+        email: 'comprador5@exemplo.com',
+        consumedByUserId: null,
+        bundle: { NB2: 2 },
+        externalEventId: 'sale-8',
+        affiliateRef: 'ppcode:PPMARIA',
+      },
+      {
+        id: 'grant-ref-ppcode-parecido',
+        email: 'comprador6@exemplo.com',
+        consumedByUserId: null,
+        bundle: { NB2: 2 },
+        externalEventId: 'sale-9',
+        affiliateRef: 'ppcode:PPMARIA2|email:anamaria@exemplo.com',
+      },
+      {
+        id: 'grant-ref-codigo-link',
+        email: 'comprador7@exemplo.com',
+        consumedByUserId: null,
+        bundle: { NB2: 2 },
+        externalEventId: 'sale-10',
+        affiliateRef: 'code:MARIA10',
+      },
     ],
     paymentRecoveryCampaign: [
       {
@@ -813,6 +858,7 @@ function baseSeed(): Seed {
         payoutMethod: 'PAYPAL',
         payoutEmail: 'maria.paypal@example.com',
         perfectpayAffiliateEmail: 'maria.pp@example.com',
+        perfectpayAffiliateCode: 'PPMARIA',
         isActive: true,
       },
     ],
@@ -1239,6 +1285,21 @@ describe('AccountErasureService', () => {
     expect(
       rowById(tables.pendingFreeGenerationGrant, 'grant-ref-outro'),
     ).toMatchObject({ affiliateRef: 'email:outro.afiliado@example.com' });
+    // formato com o código da Perfect Pay: sai a referência inteira das vendas dela; as parecidas de terceiros ficam
+    expect(
+      rowById(tables.pendingFreeGenerationGrant, 'grant-ref-ppcode-email'),
+    ).toMatchObject({ email: 'comprador4@exemplo.com', affiliateRef: null });
+    expect(
+      rowById(tables.pendingFreeGenerationGrant, 'grant-ref-ppcode'),
+    ).toMatchObject({ email: 'comprador5@exemplo.com', affiliateRef: null });
+    expect(
+      rowById(tables.pendingFreeGenerationGrant, 'grant-ref-ppcode-parecido'),
+    ).toMatchObject({
+      affiliateRef: 'ppcode:PPMARIA2|email:anamaria@exemplo.com',
+    });
+    expect(
+      rowById(tables.pendingFreeGenerationGrant, 'grant-ref-codigo-link'),
+    ).toMatchObject({ affiliateRef: 'code:MARIA10' });
     // campanha de cobrança: fechada, sem cartão; a assinatura com falha sem campanha ganha uma já encerrada
     expect(rowById(tables.paymentRecoveryCampaign, 'prc-1')).toMatchObject({
       cardBrand: null,
@@ -1259,6 +1320,7 @@ describe('AccountErasureService', () => {
       payoutMethod: null,
       payoutEmail: null,
       perfectpayAffiliateEmail: null,
+      perfectpayAffiliateCode: null,
       isActive: false,
       code: 'MARIA10',
     });
@@ -1319,6 +1381,69 @@ describe('AccountErasureService', () => {
     expect(report.nextSteps).toContainEqual(
       expect.stringContaining('até 1 minuto'),
     );
+  });
+
+  it('quem nunca foi afiliado na plataforma também sai das referências das iscas (ponte do Pack)', async () => {
+    const { service, tables } = setup({
+      seed: (seed) => {
+        seed.affiliate = [];
+      },
+    });
+
+    const report = await service.erase(U, CONFIRM);
+
+    expect(report.scrubbed.affiliate).toBe(0);
+    // vendeu o Pack como afiliada da Perfect Pay com o e-mail da conta: a referência sai
+    expect(
+      rowById(tables.pendingFreeGenerationGrant, 'grant-ref-conta'),
+    ).toMatchObject({ email: 'comprador2@exemplo.com', affiliateRef: null });
+    // sem afiliado na plataforma não há e-mail/código da Perfect Pay ligados a ela: o resto fica
+    expect(
+      rowById(tables.pendingFreeGenerationGrant, 'grant-ref-pp'),
+    ).toMatchObject({ affiliateRef: 'email:maria.pp@example.com' });
+    expect(
+      rowById(tables.pendingFreeGenerationGrant, 'grant-ref-ppcode'),
+    ).toMatchObject({ affiliateRef: 'ppcode:PPMARIA' });
+    expect(
+      rowById(tables.pendingFreeGenerationGrant, 'grant-ref-outro'),
+    ).toMatchObject({ affiliateRef: 'email:outro.afiliado@example.com' });
+  });
+
+  it('`_` no e-mail vale como curinga no banco: só a referência que é exatamente dela sai', async () => {
+    const { service, tables } = setup({
+      seed: (seed) => {
+        rowById(seed.affiliate, 'aff-1')!.perfectpayAffiliateEmail =
+          'maria_pp@example.com';
+        seed.pendingFreeGenerationGrant.push(
+          {
+            id: 'grant-ref-sublinhado',
+            email: 'comprador8@exemplo.com',
+            consumedByUserId: null,
+            bundle: { NB2: 2 },
+            externalEventId: 'sale-11',
+            affiliateRef: 'ppcode:PPOUTRO9|email:maria_pp@example.com',
+          },
+          // o LIKE devolve esta linha (o `_` casa o `x`); ela é de outra pessoa e fica
+          {
+            id: 'grant-ref-curinga',
+            email: 'comprador9@exemplo.com',
+            consumedByUserId: null,
+            bundle: { NB2: 2 },
+            externalEventId: 'sale-12',
+            affiliateRef: 'email:mariaxpp@example.com',
+          },
+        );
+      },
+    });
+
+    await service.erase(U, CONFIRM);
+
+    expect(
+      rowById(tables.pendingFreeGenerationGrant, 'grant-ref-sublinhado'),
+    ).toMatchObject({ affiliateRef: null });
+    expect(
+      rowById(tables.pendingFreeGenerationGrant, 'grant-ref-curinga'),
+    ).toMatchObject({ affiliateRef: 'email:mariaxpp@example.com' });
   });
 
   describe('assinaturas', () => {

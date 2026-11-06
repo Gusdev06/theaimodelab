@@ -25,6 +25,7 @@ import {
   encodeAffiliateRef,
   extractPerfectpayAffiliateRef,
   isPackAffiliateBridgeEnabled,
+  isPackBridgeLinkCodesEnabled,
   isPackProductAllowed,
   parseOwnAccountEmails,
 } from './perfectpay-affiliate';
@@ -268,6 +269,8 @@ export class PerfectpayWebhookService {
    * referência do afiliado da Perfect Pay que vendeu a isca, para a conta do comprador nascer
    * com o afiliado da plataforma. PERFECTPAY_PACK_PRODUCTS limita aos produtos listados e
    * PERFECTPAY_OWN_ACCOUNT_EMAILS tira as contas próprias (produtor/coprodutor) da leitura.
+   * O código posto no link (`convite:CODIGO`) só entra com PACK_AFFILIATE_BRIDGE_LINK_CODES=true
+   * e em venda sem afiliado da Perfect Pay.
    */
   private packAffiliateRef(payload: any): string | null {
     if (!isPackAffiliateBridgeEnabled(this.configService.get<string>('PACK_AFFILIATE_BRIDGE_ENABLED'))) {
@@ -279,7 +282,10 @@ export class PerfectpayWebhookService {
     const ownEmails = parseOwnAccountEmails(
       this.configService.get<string>('PERFECTPAY_OWN_ACCOUNT_EMAILS'),
     );
-    return encodeAffiliateRef(extractPerfectpayAffiliateRef(payload, ownEmails));
+    const allowLinkCodes = isPackBridgeLinkCodesEnabled(
+      this.configService.get<string>('PACK_AFFILIATE_BRIDGE_LINK_CODES'),
+    );
+    return encodeAffiliateRef(extractPerfectpayAffiliateRef(payload, { ownEmails, allowLinkCodes }));
   }
 
   /**

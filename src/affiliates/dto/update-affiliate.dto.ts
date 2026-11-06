@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsString, IsOptional, IsInt, Min, Max, IsEnum, ValidateIf, IsEmail, MaxLength } from 'class-validator';
+import { IsString, IsOptional, IsInt, Min, Max, IsEnum, ValidateIf, IsEmail, MaxLength, Matches } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { AffiliateDiscountScope } from '@prisma/client';
 
@@ -52,4 +52,16 @@ export class UpdateAffiliateDto {
   @MaxLength(254)
   @IsOptional()
   perfectpayAffiliateEmail?: string | null;
+
+  @ApiPropertyOptional({
+    example: 'PPAJFTR',
+    description:
+      'Código deste afiliado na Perfect Pay (affiliation_code do postback; ponte Pack → plataforma). Envie null para remover.',
+    nullable: true,
+  })
+  @ValidateIf((_o, v) => v !== null)
+  @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim().toUpperCase() : value))
+  @Matches(/^[A-Z0-9_-]{2,40}$/, { message: 'perfectpayAffiliateCode: 2 a 40 letras, números, _ ou -' })
+  @IsOptional()
+  perfectpayAffiliateCode?: string | null;
 }

@@ -11,8 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import { EmailService } from '../email/email.service';
 import { LocaleContext } from '../common/utils/locale.util';
 import { t } from '../common/i18n/t';
-import { PendingGrantsService } from '../pending-grants/pending-grants.service';
-import { isPackAffiliateBridgeEnabled } from '../pending-grants/perfectpay-affiliate';
+import { PackBridgeCandidate, PendingGrantsService } from '../pending-grants/pending-grants.service';
 import { TrackingDto } from './dto/tracking.dto';
 import { MetaConversionsService, MetaRequestContext } from '../meta/meta-conversions.service';
 import { WelcomeCreditsService } from './welcome-credits.service';
@@ -120,6 +119,9 @@ export class AuthService {
     // Hash da senha
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Ponte Pack → plataforma: a transação só devolve a venda candidata; a atribuição é depois do commit.
+    let packBridge: PackBridgeCandidate | null = null;
+
     // Cria o usuário e o saldo de créditos em uma transação
     const user = await this.prisma.$transaction(async (tx) => {
       // Cria o usuário
@@ -198,7 +200,8 @@ export class AuthService {
       });
 
       // Consome pending grants (ex: compra de curso na Hubla antes do cadastro)
-      await this.pendingGrantsService.consumeForUser(newUser.id, newUser.email, tx);
+      const grants = await this.pendingGrantsService.consumeForSignup(newUser.id, newUser.email, tx);
+      packBridge = grants?.packBridge ?? null;
 
       return newUser;
     });
@@ -209,7 +212,7 @@ export class AuthService {
 
     // Indicação entre usuários: só quando o código não é de afiliado ativo (esse vira referredByCode).
     // Nunca lança — falha aqui não quebra o signup.
-    if (!user.referredByCode && !(await this.attributedByPackBridge(user.id))) {
+    if (!user.referredByCode && !(await this.attributedByPackBridge(user, packBridge))) {
       await this.referralsService.attachOnSignup({
         referredUserId: user.id,
         referredEmail: user.email,
@@ -271,25 +274,25 @@ export class AuthService {
    * pendente; nunca atrasa nem derruba o login.
    */
   /**
-   * A ponte Pack → plataforma (consumeForUser) grava `referredByCode` dentro da transação do
-   * cadastro, depois de o usuário ter sido lido: o objeto devolvido por ela é de antes. Relê o
-   * campo para a conta que acabou de ganhar afiliado não entrar também no "indique e ganhe".
-   * Com a ponte desligada não há o que reler.
+   * Ponte Pack → plataforma, depois do commit do cadastro: tenta dar à conta nova o afiliado
+   * que vendeu o Pack e diz se deu (o resultado vem direto do serviço, sem reler a conta).
+   * Conta atribuída não entra também no "indique e ganhe". Sem venda candidata (ponte
+   * desligada ou compra sem afiliado) não faz nada; erro aqui nunca derruba o cadastro.
    */
-  private async attributedByPackBridge(userId: string): Promise<boolean> {
-    if (!isPackAffiliateBridgeEnabled(process.env.PACK_AFFILIATE_BRIDGE_ENABLED)) return false;
+  private async attributedByPackBridge(
+    user: { id: string; createdAt: Date },
+    candidate: PackBridgeCandidate | null,
+  ): Promise<boolean> {
+    if (!candidate) return false;
     try {
-      const fresh = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: { referredByCode: true },
-      });
-      return Boolean(fresh?.referredByCode);
+      const affiliateCode = await this.pendingGrantsService.attributeSignupToPackAffiliate(user, candidate);
+      return Boolean(affiliateCode);
     } catch (error: unknown) {
-      // Na dúvida não dá a indicação: afiliado + indicação na mesma conta pagaria duas vezes.
+      // O serviço já engole os próprios erros; isto é a segunda rede. Sem atribuição, a indicação segue normal.
       this.logger.warn(
-        `Não consegui reler o afiliado da conta ${userId} depois do cadastro: ${error instanceof Error ? error.message : String(error)}`,
+        `Ponte Pack → plataforma falhou no cadastro da conta ${user.id}: ${error instanceof Error ? error.message : String(error)}`,
       );
-      return true;
+      return false;
     }
   }
 
@@ -541,6 +544,8 @@ export class AuthService {
     });
 
     let isNewUser = false;
+    // Ponte Pack → plataforma: só o cadastro (conta nova) preenche; login nunca atribui afiliado.
+    let packBridge: PackBridgeCandidate | null = null;
 
     // Conta desativada (bloqueio, guarda legal, exclusão ou a própria pessoa desativou) não entra pelo Google:
     // recusa antes de vincular, criar ou emitir qualquer token
@@ -645,7 +650,8 @@ export class AuthService {
         });
 
         // Consome pending grants (ex: compra de curso na Hubla antes do cadastro)
-        await this.pendingGrantsService.consumeForUser(newUser.id, newUser.email, tx);
+        const grants = await this.pendingGrantsService.consumeForSignup(newUser.id, newUser.email, tx);
+        packBridge = grants?.packBridge ?? null;
 
         return newUser;
       });
@@ -659,7 +665,7 @@ export class AuthService {
 
       // Sem IP de propósito: no site, quem chama esta rota é o servidor do Next (callback do
       // Google), então o IP seria o mesmo para todo mundo e jogaria toda indicação na revisão.
-      if (!user.referredByCode && !(await this.attributedByPackBridge(user.id))) {
+      if (!user.referredByCode && !(await this.attributedByPackBridge(user, packBridge))) {
         await this.referralsService.attachOnSignup({
           referredUserId: user.id,
           referredEmail: user.email,
