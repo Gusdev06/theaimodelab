@@ -102,7 +102,7 @@ export class AdultPromptEnhancerService {
 
     // o texto que volta para a cliente vai virar o prompt da geração: tem que passar na mesma trava que o pedido passou
     const composed = composeEnhanced(enhancement);
-    if (assessText(composed).blocked) {
+    if (assessText(composed, { source: 'description' }).blocked) {
       this.logger.warn(`[ADULT_ENHANCER] texto do modelo barrado pela trava (${model}, ${ADULT_ENHANCER_VERSION}); usando o bloco fixo`);
       const fallback = composeEnhanced(deterministicEnhancement(original, context));
       return {

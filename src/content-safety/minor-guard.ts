@@ -44,6 +44,13 @@ export type GuardTarget = 'uncensored' | 'filtered';
 export interface GuardOptions {
   /** padrão 'uncensored' (a regra mais dura): quem não sabe o alvo não afrouxa nada */
   target?: GuardTarget;
+  /**
+   * De quem é o texto. 'request' (padrão) = o pedido que a cliente escreveu: gíria de juventude, "menina" e
+   * "babysitter" são lidas como ela usa (mulher adulta). 'description' = texto que um modelo escreveu sobre uma foto
+   * ou no lugar da cliente (análise do Clonar prompt, saída do melhorador, texto de denúncia): aí a palavra vale ao pé
+   * da letra e barra, porque "novinha" na descrição de uma foto é o que o modelo VIU nela.
+   */
+  source?: 'request' | 'description';
 }
 
 export interface MinorAssessment {
@@ -673,6 +680,9 @@ function maskSecundaria(text: string): string | null {
 const PLAIN_YOUTH_SLANG =
   /(?<![\p{L}\p{N}])(?:novi+nh[a-z]*|novin|ninfet[a-z]*|nymph(?:et|ette)[a-z]*|colegia[a-z]*|kolegial[a-z]*|colejial[a-z]*|school ?girl[a-z]*|jovencit[a-z]*)(?![\p{L}\p{N}])/u;
 
+/** Palavras que o pedido da cliente usa para adulta e que, na descrição de uma foto, valem ao pé da letra. */
+const LITERAL_ONLY = /(?<![\p{L}\p{N}])(?:menin[a-z]*|babysit[a-z]*)(?![\p{L}\p{N}])/gu;
+
 /** Termo que já é sexual sozinho: barra em qualquer alvo, mesmo sem outra palavra sexual no pedido. */
 const ALWAYS_SEXUAL_MINOR =
   /(?<![a-z])(?:lol+i\w*|l\s?o\s?l\s?i|shota\w*|pedo\w*|p\s?e\s?d\s?o|jail ?bait\w*|child (?:porn\w*|abuse|sex\w*|model\w*)|csam|age ?play\w*|ddlg|littlespace|little ?space|pre ?teen\w*|tween\w*)(?![a-z])/;
@@ -699,7 +709,7 @@ export function assessText(text: string | null | undefined, options: GuardOption
   if (!source) return { blocked: false };
   if (source.length > MAX_TEXT_SCAN) return { blocked: true, reason: 'size' };
 
-  const verdict = assessStrict(source);
+  const verdict = assessStrict(source, options.source === 'description');
   if (!verdict.blocked || (options.target ?? 'uncensored') === 'uncensored') return verdict;
   if (verdict.reason === 'script') return { blocked: false };
   if (verdict.reason === 'size') return verdict;
@@ -708,7 +718,7 @@ export function assessText(text: string | null | undefined, options: GuardOption
 }
 
 /** A conferência completa (alvo sem filtro): qualquer referência a menor que não seja negação, remoção ou lista do que evitar. */
-function assessStrict(source: string): MinorAssessment {
+function assessStrict(source: string, literal = false): MinorAssessment {
   const script = checkScripts(source);
   if (script) return script;
 
@@ -738,7 +748,15 @@ function assessStrict(source: string): MinorAssessment {
   // gíria de juventude ("novinha", "colegial"): a escrita normal é liberada (o provedor sem filtro recebe "mulher
   // adulta" no lugar); só ofuscada ("n0v1nh4", "n i n f e t a") barra: quem esconde a palavra não está usando gíria
   const slang = findYouthSlang(working);
-  if (slang && !PLAIN_YOUTH_SLANG.test(flatten(working))) return { blocked: true, reason: 'term', match: slang.slice(0, 80) };
+  if (slang && (literal || !PLAIN_YOUTH_SLANG.test(flatten(working)))) return { blocked: true, reason: 'term', match: slang.slice(0, 80) };
+  if (literal) {
+    // descrição de foto: "menina" e "babysitter" também valem ao pé da letra (menos negadas: "no girl", "sem menina")
+    const flat = flatten(working);
+    for (const match of flat.matchAll(LITERAL_ONLY)) {
+      const start = match.index ?? 0;
+      if (!occurrenceExempt(flat, start, start + match[0].length, false, adultRequest)) return { blocked: true, reason: 'term', match: match[0] };
+    }
+  }
   const passed: MinorAssessment = slang ? { blocked: false, slang: slang.slice(0, 80) } : { blocked: false };
 
   const drawn = isDrawnStyle(working);

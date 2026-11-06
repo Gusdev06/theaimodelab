@@ -538,6 +538,23 @@ describe('minor-guard · contexto e alvo do pedido', () => {
     expect(assessText(gujarati, { target: 'filtered' })).toEqual({ blocked: false });
   });
 
+  it('texto que não é o pedido da cliente (análise de foto, saída do melhorador, denúncia) vale ao pé da letra', () => {
+    for (const text of ['linda novinha na praia', 'uma menina de vestido azul', 'schoolgirl costume', 'the babysitter on the sofa']) {
+      expect(assessText(text, { source: 'description' }).blocked).toBe(true);
+    }
+    // negação e as correções de leitura valem nos dois
+    expect(assessText('adult woman, no girl, sem menina na cena', { source: 'description' }).blocked).toBe(false);
+    expect(assessText('adult woman, wide childbearing hips', { source: 'description' })).toEqual({ blocked: false });
+    expect(assessText('mulher adulta de 30 anos', { source: 'description' })).toEqual({ blocked: false });
+  });
+
+  it('gíria + lugar de escola barra; o lugar sozinho não', () => {
+    expect(assessText('Adult woman, 27 years old, dressed as a schoolgirl in the classroom, lingerie').blocked).toBe(true);
+    expect(assessText('schoolgirl costume in a school hallway, nude').blocked).toBe(true);
+    expect(assessText('colegial na aula de matemática, de calcinha').blocked).toBe(true);
+    expect(assessText('woman in the classroom teaching, dressed')).toEqual({ blocked: false });
+  });
+
   it('a gíria liberada sobe do corpo do pedido', () => {
     expect(assessBody({ prompt: 'novinha de biquíni', model: 'sem-censura' })).toEqual({ blocked: false, slang: 'novinha' });
   });

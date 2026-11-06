@@ -11,6 +11,7 @@ import {
   WAN3_REFERENCE_MODEL_VARIANT,
 } from '../motion-control-engine';
 import { WavespeedVideoProvider } from '../providers/wavespeed-video.provider';
+import { adultSafePrompt } from '../../content-safety/adult-anchor';
 import { resolveFreeGenerationType } from '../../credits/credits.service';
 import { planFallback } from '../queue/generation-fallback';
 import { GenerationJobName, MotionControlJobData } from '../queue/generation-queue.constants';
@@ -114,7 +115,7 @@ describe('Motion Control · motor Wan 2.2 Animate (troca de pessoa no vídeo)', 
       const [model, body] = create.mock.calls[0] as unknown as [string, Record<string, unknown>];
       expect(model).toBe('alibaba/wan-3.0/reference-to-video');
       expect(body).toEqual({
-        prompt: 'Image 1 is the woman. Recreate Video 1.',
+        prompt: adultSafePrompt('Image 1 is the woman. Recreate Video 1.'),
         resolution: '720p',
         aspect_ratio: '9:16',
         duration: 5,
@@ -176,7 +177,7 @@ describe('Motion Control · motor Wan 2.2 Animate (troca de pessoa no vídeo)', 
         mode: 'replace',
         resolution: '720p',
         seed: -1,
-        prompt: 'Keep the outfit and background of the video.',
+        prompt: adultSafePrompt('Keep the outfit and background of the video.'),
       });
       expect(result).toEqual({ outputUrls: ['https://s3.example/out.mp4'], modelUsed: 'wavespeed-ai/wan-2.2/animate' });
     });
