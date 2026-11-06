@@ -443,6 +443,7 @@ model PendingFreeGenerationGrant {
   consumedByUserId String?   @map("consumed_by_user_id")
   consumedAt       DateTime? @map("consumed_at")
   createdAt        DateTime  @default(now()) @map("created_at")
+  affiliateRef     String?   @map("affiliate_ref")
 
   @@index([email])
   @@index([consumedByUserId])
@@ -735,6 +736,7 @@ model Affiliate {
   stripePromotionCodeId String?                @map("stripe_promotion_code_id")
   payoutMethod          String?                @map("payout_method")
   payoutEmail           String?                @map("payout_email")
+  perfectpayAffiliateEmail String?             @unique @map("perfectpay_affiliate_email")
   earnings              AffiliateEarning[]
   user                  User?                  @relation(fields: [userId], references: [id])
 

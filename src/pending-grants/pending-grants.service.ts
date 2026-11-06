@@ -1,6 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { FreeGenerationType, Prisma } from '@prisma/client';
+import { maskEmail } from '../affiliates/mask-email';
+import {
+  DecodedAffiliateRef,
+  decodeAffiliateRef,
+  isPackAffiliateBridgeEnabled,
+} from './perfectpay-affiliate';
 
 export type FreeGenerationBundle = Partial<Record<FreeGenerationType, number>>;
 
@@ -63,6 +69,8 @@ export class PendingGrantsService {
     bundle: FreeGenerationBundle;
     source: string;
     externalEventId?: string | null;
+    /** Ponte Pack → plataforma: afiliado da Perfect Pay que fez a venda (`email:…` ou `code:…`). */
+    affiliateRef?: string | null;
   }): Promise<{ created: boolean; id: string }> {
     const email = params.email.trim().toLowerCase();
 
@@ -82,6 +90,7 @@ export class PendingGrantsService {
           bundle: params.bundle as Prisma.InputJsonValue,
           source: params.source,
           externalEventId: params.externalEventId ?? null,
+          ...(params.affiliateRef ? { affiliateRef: params.affiliateRef } : {}),
         },
       });
       await this.applyToExistingAccount(email);
@@ -102,6 +111,10 @@ export class PendingGrantsService {
    * Consome todas as pending grants não utilizadas do email, creditando no
    * usuário recém-criado. Executado dentro de transação pra ser atômico com
    * o signup.
+   *
+   * Ponte Pack → plataforma (PACK_AFFILIATE_BRIDGE_ENABLED=true): grant de venda feita
+   * por afiliado da Perfect Pay deixa a conta com o afiliado da plataforma, na mesma
+   * transação e só para conta que ainda não tem `referredByCode`.
    */
   async consumeForUser(
     userId: string,
@@ -121,10 +134,14 @@ export class PendingGrantsService {
         email: normalizedEmail,
         consumedByUserId: null,
       },
+      // Mais antiga primeiro: se duas vendas trazem afiliados diferentes, vale o da primeira.
+      orderBy: { createdAt: 'asc' },
     });
 
     if (pendings.length === 0) return 0;
 
+    const bridgeEnabled = isPackAffiliateBridgeEnabled(process.env.PACK_AFFILIATE_BRIDGE_ENABLED);
+    let bridgeSettled = false;
     let consumed = 0;
     for (const pending of pendings) {
       // Reserva atômica: webhook, cadastro e login podem consumir a mesma grant
@@ -146,6 +163,10 @@ export class PendingGrantsService {
           update: { remaining: { increment: amount } },
         });
       }
+
+      if (bridgeEnabled && !bridgeSettled && pending.affiliateRef) {
+        bridgeSettled = await this.attributeToPackAffiliate(client, userId, pending.affiliateRef);
+      }
     }
 
     if (consumed > 0) {
@@ -154,6 +175,66 @@ export class PendingGrantsService {
       );
     }
     return consumed;
+  }
+
+  /**
+   * Grava na conta o afiliado da plataforma que corresponde ao afiliado da Perfect Pay
+   * que vendeu o Pack. Devolve true quando a conta ficou resolvida (atribuída agora ou
+   * já tinha dono) e false quando a referência não achou afiliado (a próxima grant tenta).
+   */
+  private async attributeToPackAffiliate(
+    client: Prisma.TransactionClient,
+    userId: string,
+    rawAffiliateRef: string,
+  ): Promise<boolean> {
+    const ref = decodeAffiliateRef(rawAffiliateRef);
+    if (!ref) return false;
+
+    const refLabel = ref.kind === 'code' ? `código ${ref.value}` : `e-mail ${maskEmail(ref.value)}`;
+    const affiliate = await this.findPlatformAffiliate(client, ref);
+    if (!affiliate?.isActive) {
+      this.logger.warn(
+        `Ponte Pack → plataforma: venda de afiliado da Perfect Pay (${refLabel}) sem afiliado ativo ` +
+          `correspondente na plataforma; conta ${userId} segue sem afiliado`,
+      );
+      return false;
+    }
+    // O afiliado comprando o próprio Pack não vira cliente de si mesmo.
+    if (affiliate.userId === userId) return false;
+
+    const attributed = await client.user.updateMany({
+      where: { id: userId, referredByCode: null },
+      data: { referredByCode: affiliate.code },
+    });
+    if (attributed.count > 0) {
+      this.logger.log(
+        `Ponte Pack → plataforma: conta ${userId} atribuída ao afiliado ${affiliate.code} (${refLabel})`,
+      );
+    }
+    return true;
+  }
+
+  /**
+   * `code:` → código do afiliado na plataforma. `email:` → e-mail da Perfect Pay que o admin
+   * gravou no afiliado; na falta, afiliado cuja conta (com e-mail confirmado) tem esse e-mail.
+   */
+  private async findPlatformAffiliate(client: Prisma.TransactionClient, ref: DecodedAffiliateRef) {
+    const select = { id: true, code: true, isActive: true, userId: true } as const;
+
+    if (ref.kind === 'code') {
+      return client.affiliate.findUnique({ where: { code: ref.value }, select });
+    }
+
+    const byPerfectpayEmail = await client.affiliate.findUnique({
+      where: { perfectpayAffiliateEmail: ref.value },
+      select,
+    });
+    if (byPerfectpayEmail) return byPerfectpayEmail;
+
+    return client.affiliate.findFirst({
+      where: { user: { email: { equals: ref.value, mode: 'insensitive' }, emailVerified: true } },
+      select,
+    });
   }
 
   /**
@@ -182,6 +263,7 @@ export class PendingGrantsService {
    * não usada vira bundle vazio (a linha fica para o dedupe do evento); grant já
    * aplicada tira das gerações grátis o que ainda sobra (até o valor do bundle).
    * `saleEventId` é o id por venda; ids antigos com o status no fim também casam.
+   * A atribuição ao afiliado (ponte do Pack) NÃO é desfeita: o cliente continua sendo dele e comissão só nasce em venda da plataforma.
    */
   async revokeForRefund(
     saleEventId: string,

@@ -2617,6 +2617,7 @@ export class AccountErasureService implements BeforeApplicationShutdown {
         pixKeyType: true,
         payoutMethod: true,
         payoutEmail: true,
+        perfectpayAffiliateEmail: true,
         isActive: true,
       },
     });
@@ -2628,6 +2629,7 @@ export class AccountErasureService implements BeforeApplicationShutdown {
         affiliate.pixKeyType !== null ||
         affiliate.payoutMethod !== null ||
         affiliate.payoutEmail !== null ||
+        affiliate.perfectpayAffiliateEmail !== null ||
         affiliate.name !== ERASED_AFFILIATE_NAME)
     ) {
       await tx.affiliate.update({
@@ -2638,9 +2640,20 @@ export class AccountErasureService implements BeforeApplicationShutdown {
           pixKeyType: null,
           payoutMethod: null,
           payoutEmail: null,
+          perfectpayAffiliateEmail: null,
           isActive: false,
         },
       });
+      // Iscas vendidas por este afiliado guardam o e-mail dele (ponte do Pack): a referência sai junto.
+      const affiliateRefs = [originalEmail, affiliate.perfectpayAffiliateEmail]
+        .filter((email): email is string => Boolean(email))
+        .map((email) => `email:${email.trim().toLowerCase()}`);
+      if (affiliateRefs.length > 0) {
+        await tx.pendingFreeGenerationGrant.updateMany({
+          where: { affiliateRef: { in: affiliateRefs } },
+          data: { affiliateRef: null },
+        });
+      }
       affiliateScrubbed = 1;
     }
 

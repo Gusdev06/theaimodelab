@@ -57,12 +57,16 @@ export class AffiliatesService {
       throw new ConflictException(`Código "${code}" já está em uso`);
     }
 
+    const perfectpayAffiliateEmail = dto.perfectpayAffiliateEmail?.trim().toLowerCase() || null;
+    await this.assertPerfectpayEmailFree(perfectpayAffiliateEmail);
+
     const affiliate = await this.prisma.affiliate.create({
       data: {
         name: dto.name,
         code,
         commissionPercent: dto.commissionPercent ?? 30,
         userId: dto.userId ?? null,
+        ...(perfectpayAffiliateEmail && { perfectpayAffiliateEmail }),
         discountPercent: dto.discountPercent ?? null,
         discountAppliesTo: dto.discountAppliesTo ?? AffiliateDiscountScope.FIRST_PURCHASE,
       },
@@ -322,6 +326,12 @@ export class AffiliatesService {
     const newDiscount = discountProvided ? dto.discountPercent : oldDiscount;
     const discountChanged = discountProvided && newDiscount !== oldDiscount;
 
+    const perfectpayEmailProvided = dto.perfectpayAffiliateEmail !== undefined;
+    const perfectpayAffiliateEmail = dto.perfectpayAffiliateEmail?.trim().toLowerCase() || null;
+    if (perfectpayEmailProvided) {
+      await this.assertPerfectpayEmailFree(perfectpayAffiliateEmail, id);
+    }
+
     let newCouponId = affiliate.stripeCouponId;
     let newPromotionCodeId = affiliate.stripePromotionCodeId;
 
@@ -355,6 +365,7 @@ export class AffiliatesService {
         ...(dto.userId !== undefined && { userId: dto.userId || null }),
         ...(discountProvided && { discountPercent: newDiscount ?? null }),
         ...(dto.discountAppliesTo !== undefined && { discountAppliesTo: dto.discountAppliesTo }),
+        ...(perfectpayEmailProvided && { perfectpayAffiliateEmail }),
         ...(discountChanged && {
           stripeCouponId: newCouponId,
           stripePromotionCodeId: newPromotionCodeId,
@@ -364,6 +375,22 @@ export class AffiliatesService {
         user: { select: { id: true, email: true, name: true } },
       },
     });
+  }
+
+  /**
+   * O e-mail da Perfect Pay decide para quem vai o cliente que comprou o Pack por afiliado:
+   * um e-mail, um afiliado. Só o admin grava (nunca o autoatendimento, que permitiria
+   * sequestrar as vendas de outro afiliado).
+   */
+  private async assertPerfectpayEmailFree(email: string | null, ownAffiliateId?: string): Promise<void> {
+    if (!email) return;
+    const holder = await this.prisma.affiliate.findUnique({
+      where: { perfectpayAffiliateEmail: email },
+      select: { id: true, code: true },
+    });
+    if (holder && holder.id !== ownAffiliateId) {
+      throw new ConflictException(`Este e-mail da Perfect Pay já está no afiliado "${holder.code}"`);
+    }
   }
 
   async toggleActive(id: string) {

@@ -764,6 +764,31 @@ function baseSeed(): Seed {
         bundle: {},
         externalEventId: 'sale-3',
       },
+      // iscas vendidas pela Maria como afiliada da Perfect Pay (ponte do Pack) e uma de outro afiliado
+      {
+        id: 'grant-ref-pp',
+        email: 'comprador1@exemplo.com',
+        consumedByUserId: null,
+        bundle: { NB2: 2 },
+        externalEventId: 'sale-4',
+        affiliateRef: 'email:maria.pp@example.com',
+      },
+      {
+        id: 'grant-ref-conta',
+        email: 'comprador2@exemplo.com',
+        consumedByUserId: null,
+        bundle: { NB2: 2 },
+        externalEventId: 'sale-5',
+        affiliateRef: 'email:maria@exemplo.com',
+      },
+      {
+        id: 'grant-ref-outro',
+        email: 'comprador3@exemplo.com',
+        consumedByUserId: null,
+        bundle: { NB2: 2 },
+        externalEventId: 'sale-6',
+        affiliateRef: 'email:outro.afiliado@example.com',
+      },
     ],
     paymentRecoveryCampaign: [
       {
@@ -787,6 +812,7 @@ function baseSeed(): Seed {
         pixKeyType: 'CPF',
         payoutMethod: 'PAYPAL',
         payoutEmail: 'maria.paypal@example.com',
+        perfectpayAffiliateEmail: 'maria.pp@example.com',
         isActive: true,
       },
     ],
@@ -1203,6 +1229,16 @@ describe('AccountErasureService', () => {
     expect(rowById(tables.pendingFreeGenerationGrant, 'grant-o')).toMatchObject(
       { email: 'outra@exemplo.com' },
     );
+    // isca de outro comprador vendida por esta afiliada: fica, sem o e-mail dela na referência
+    expect(
+      rowById(tables.pendingFreeGenerationGrant, 'grant-ref-pp'),
+    ).toMatchObject({ email: 'comprador1@exemplo.com', affiliateRef: null });
+    expect(
+      rowById(tables.pendingFreeGenerationGrant, 'grant-ref-conta'),
+    ).toMatchObject({ email: 'comprador2@exemplo.com', affiliateRef: null });
+    expect(
+      rowById(tables.pendingFreeGenerationGrant, 'grant-ref-outro'),
+    ).toMatchObject({ affiliateRef: 'email:outro.afiliado@example.com' });
     // campanha de cobrança: fechada, sem cartão; a assinatura com falha sem campanha ganha uma já encerrada
     expect(rowById(tables.paymentRecoveryCampaign, 'prc-1')).toMatchObject({
       cardBrand: null,
@@ -1222,6 +1258,7 @@ describe('AccountErasureService', () => {
       pixKeyType: null,
       payoutMethod: null,
       payoutEmail: null,
+      perfectpayAffiliateEmail: null,
       isActive: false,
       code: 'MARIA10',
     });

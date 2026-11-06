@@ -1,4 +1,5 @@
-import { IsString, IsOptional, IsInt, Min, Max, IsEnum, ValidateIf } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsString, IsOptional, IsInt, Min, Max, IsEnum, ValidateIf, IsEmail, MaxLength } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { AffiliateDiscountScope } from '@prisma/client';
 
@@ -39,4 +40,16 @@ export class UpdateAffiliateDto {
   @IsEnum(AffiliateDiscountScope)
   @IsOptional()
   discountAppliesTo?: AffiliateDiscountScope;
+
+  @ApiPropertyOptional({
+    example: 'afiliado@exemplo.com',
+    description: 'E-mail deste afiliado na Perfect Pay (ponte Pack → plataforma). Envie null para remover.',
+    nullable: true,
+  })
+  @ValidateIf((_o, v) => v !== null)
+  @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim().toLowerCase() : value))
+  @IsEmail()
+  @MaxLength(254)
+  @IsOptional()
+  perfectpayAffiliateEmail?: string | null;
 }

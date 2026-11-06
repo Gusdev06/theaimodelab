@@ -12,6 +12,7 @@ import { EmailService } from '../email/email.service';
 import { LocaleContext } from '../common/utils/locale.util';
 import { t } from '../common/i18n/t';
 import { PendingGrantsService } from '../pending-grants/pending-grants.service';
+import { isPackAffiliateBridgeEnabled } from '../pending-grants/perfectpay-affiliate';
 import { TrackingDto } from './dto/tracking.dto';
 import { MetaConversionsService, MetaRequestContext } from '../meta/meta-conversions.service';
 import { WelcomeCreditsService } from './welcome-credits.service';
@@ -208,7 +209,7 @@ export class AuthService {
 
     // Indicação entre usuários: só quando o código não é de afiliado ativo (esse vira referredByCode).
     // Nunca lança — falha aqui não quebra o signup.
-    if (!user.referredByCode) {
+    if (!user.referredByCode && !(await this.attributedByPackBridge(user.id))) {
       await this.referralsService.attachOnSignup({
         referredUserId: user.id,
         referredEmail: user.email,
@@ -269,6 +270,29 @@ export class AuthService {
    * ficavam presas para sempre (TKT-109). Todo login aplica o que estiver
    * pendente; nunca atrasa nem derruba o login.
    */
+  /**
+   * A ponte Pack → plataforma (consumeForUser) grava `referredByCode` dentro da transação do
+   * cadastro, depois de o usuário ter sido lido: o objeto devolvido por ela é de antes. Relê o
+   * campo para a conta que acabou de ganhar afiliado não entrar também no "indique e ganhe".
+   * Com a ponte desligada não há o que reler.
+   */
+  private async attributedByPackBridge(userId: string): Promise<boolean> {
+    if (!isPackAffiliateBridgeEnabled(process.env.PACK_AFFILIATE_BRIDGE_ENABLED)) return false;
+    try {
+      const fresh = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { referredByCode: true },
+      });
+      return Boolean(fresh?.referredByCode);
+    } catch (error: unknown) {
+      // Na dúvida não dá a indicação: afiliado + indicação na mesma conta pagaria duas vezes.
+      this.logger.warn(
+        `Não consegui reler o afiliado da conta ${userId} depois do cadastro: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return true;
+    }
+  }
+
   private claimPendingGrants(user: User): void {
     void this.pendingGrantsService
       .consumeForUser(user.id, user.email)
@@ -635,7 +659,7 @@ export class AuthService {
 
       // Sem IP de propósito: no site, quem chama esta rota é o servidor do Next (callback do
       // Google), então o IP seria o mesmo para todo mundo e jogaria toda indicação na revisão.
-      if (!user.referredByCode) {
+      if (!user.referredByCode && !(await this.attributedByPackBridge(user.id))) {
         await this.referralsService.attachOnSignup({
           referredUserId: user.id,
           referredEmail: user.email,
