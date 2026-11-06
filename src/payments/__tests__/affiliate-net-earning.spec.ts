@@ -1,4 +1,6 @@
+import { Logger } from '@nestjs/common';
 import { PaymentsService } from '../payments.service';
+import { resetAffiliateGatewayFeeWarnings } from '../../affiliates/affiliate-net';
 
 /**
  * Comissão de afiliado sobre o líquido de cada gateway. Sem a env
@@ -12,6 +14,7 @@ describe('PaymentsService · base líquida da comissão por gateway', () => {
 
   beforeEach(() => {
     delete process.env.AFFILIATE_RECURRING_MONTHS;
+    resetAffiliateGatewayFeeWarnings();
   });
 
   afterEach(() => {
@@ -131,6 +134,41 @@ describe('PaymentsService · base líquida da comissão por gateway', () => {
     await service.activateOrRenewPerfectpaySubscription(sale);
 
     expect(earningData()).toMatchObject({ amountCents: 3792, commissionCents: 1138 });
+  });
+
+  it('env com lixo: um aviso no log por valor da env, não um por venda', async () => {
+    process.env.AFFILIATE_GATEWAY_FEE_PERCENT = 'perfectpay:20%,cakto:6';
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    try {
+      for (const saleCode of ['PP-1', 'PP-2', 'PP-3']) {
+        const { service } = setup();
+        await service.activateOrRenewPerfectpaySubscription({ ...sale, saleCode });
+      }
+
+      const feeWarnings = warn.mock.calls.filter(([message]) =>
+        String(message).includes('AFFILIATE_GATEWAY_FEE_PERCENT'),
+      );
+      expect(feeWarnings).toHaveLength(1);
+      expect(String(feeWarnings[0][0])).toContain('"perfectpay:20%"');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('autoindicação: afiliado que paga com o próprio código não recebe comissão', async () => {
+    const own = setup({ id: 'aff-1', userId: 'user-1', isActive: true, commissionPercent: 30 });
+    await own.service.activateOrRenewPerfectpaySubscription(sale);
+    expect(own.tx.affiliateEarning.create).not.toHaveBeenCalled();
+    expect((own.tx.affiliate.findUnique.mock.calls as any[][])[0][0].select).toMatchObject({ userId: true });
+
+    // Afiliado de outra pessoa (ou sem conta ligada) segue recebendo.
+    const other = setup({ id: 'aff-1', userId: 'user-9', isActive: true, commissionPercent: 30 });
+    await other.service.activateOrRenewPerfectpaySubscription(sale);
+    expect(other.tx.affiliateEarning.create).toHaveBeenCalledTimes(1);
+
+    const unlinked = setup({ id: 'aff-1', userId: null, isActive: true, commissionPercent: 30 });
+    await unlinked.service.activateOrRenewPerfectpaySubscription(sale);
+    expect(unlinked.tx.affiliateEarning.create).toHaveBeenCalledTimes(1);
   });
 
   it('afiliado inativo ou inexistente não gera comissão', async () => {

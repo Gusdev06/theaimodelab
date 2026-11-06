@@ -5,8 +5,11 @@
  * A env `AFFILIATE_RECURRING_MONTHS` liga a recorrência sem deploy de código:
  *   - vazia, `0` ou inválida → só a primeira ativação (como hoje);
  *   - `all`                  → toda renovação, enquanto a assinatura durar;
- *   - `N` (1 a 120)          → renovações até N meses depois da primeira comissão
- *                              que o afiliado recebeu desse cliente.
+ *   - `N` (1 a 120)          → renovações até N meses depois do primeiro pagamento
+ *                              concluído do cliente.
+ *
+ * A janela conta do primeiro pagamento, não da primeira comissão: a comissão é apagada
+ * no reembolso, e ancorar nela faria a janela recomeçar a cada reembolso.
  *
  * Packs de créditos não passam por aqui: já pagam comissão em toda compra.
  */
@@ -30,19 +33,19 @@ export function resolveAffiliateRecurringWindow(raw: string | undefined | null):
 
 /**
  * A renovação que chegou agora paga comissão?
- * `firstEarningAt` = data da primeira comissão do afiliado com esse cliente
- * (null quando ainda não houve nenhuma: a janela começa nesta cobrança).
+ * `windowStartAt` = data do primeiro pagamento concluído do cliente
+ * (null quando não há nenhum anterior: a janela começa nesta cobrança).
  */
 export function renewalEarnsCommission(
   window: AffiliateRecurringWindow,
-  firstEarningAt: Date | null,
+  windowStartAt: Date | null,
   now: Date,
 ): boolean {
   if (window.mode === 'first-only') return false;
   if (window.mode === 'lifetime') return true;
-  if (!firstEarningAt) return true;
+  if (!windowStartAt) return true;
 
-  const windowEnd = new Date(firstEarningAt);
+  const windowEnd = new Date(windowStartAt);
   windowEnd.setMonth(windowEnd.getMonth() + window.months);
   return now.getTime() < windowEnd.getTime();
 }

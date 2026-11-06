@@ -4,7 +4,7 @@ import {
   resolveEarningCurrency,
   summarizeByCurrency,
 } from '../affiliate-currency';
-import { maskEmail } from '../mask-email';
+import { abbreviateCustomerName, maskEmail } from '../mask-email';
 
 const DAY_MS = 86_400_000;
 
@@ -51,6 +51,7 @@ function fakePrisma(rows: EarningRow[], affiliates: Array<Record<string, unknown
     if (where.status && row.status !== where.status) return false;
     if (where.currency === null && row.currency !== null) return false;
     if (where.currency && 'not' in where.currency && row.currency === null) return false;
+    if (where.payment?.currency !== undefined && row.payment.currency !== where.payment.currency) return false;
     if (where.createdAt?.lte && row.createdAt.getTime() > where.createdAt.lte.getTime()) return false;
     if (where.createdAt?.gt && row.createdAt.getTime() <= where.createdAt.gt.getTime()) return false;
     return true;
@@ -92,6 +93,15 @@ function fakePrisma(rows: EarningRow[], affiliates: Array<Record<string, unknown
       findMany: jest.fn(async ({ where }: any = {}) => rows.filter((row) => matches(row, where))),
       updateMany: jest.fn(async ({ where }: any) => ({ count: rows.filter((row) => matches(row, where)).length })),
     },
+    payment: {
+      // Moedas distintas dos pagamentos ligados às comissões que o filtro pega.
+      groupBy: jest.fn(async ({ where }: any) => {
+        const currencies = new Set(
+          rows.filter((row) => matches(row, where?.affiliateEarnings?.some)).map((row) => row.payment.currency),
+        );
+        return Array.from(currencies).map((currency) => ({ currency }));
+      }),
+    },
     user: {
       count: jest.fn(async () => 7),
       groupBy: jest.fn(async () => []),
@@ -110,8 +120,35 @@ describe('maskEmail', () => {
     expect(maskEmail('a@x.io')).toBe('a***@x.io');
   });
 
+  it('parte local de até 2 caracteres mostra só 1 (senão a máscara entrega o endereço)', () => {
+    expect(maskEmail('ab@x.io')).toBe('a***@x.io');
+    expect(maskEmail('abc@x.io')).toBe('ab***@x.io');
+  });
+
   it.each([undefined, null, '', 'sem-arroba', '@dominio.com', 'nome@'])('texto que não é e-mail (%p) vira ***', (value) => {
     expect(maskEmail(value as string | undefined)).toBe('***');
+  });
+});
+
+describe('abbreviateCustomerName', () => {
+  it('primeiro nome + inicial do último', () => {
+    expect(abbreviateCustomerName('Maria Souza')).toBe('Maria S.');
+    expect(abbreviateCustomerName('  maria   de souza   silva ')).toBe('maria S.');
+    expect(abbreviateCustomerName('Ana Érica')).toBe('Ana É.');
+  });
+
+  it('nome único fica como está', () => {
+    expect(abbreviateCustomerName('Joana')).toBe('Joana');
+  });
+
+  it('nome que é e-mail passa pela máscara de e-mail', () => {
+    expect(abbreviateCustomerName('maria.souza@gmail.com')).toBe('ma***@gmail.com');
+    expect(abbreviateCustomerName('Maria maria@gmail.com')).toBe('Ma***@gmail.com');
+    expect(abbreviateCustomerName('maria@')).toBe('***');
+  });
+
+  it.each([undefined, null, '', '   '])('vazio (%p) vira null', (value) => {
+    expect(abbreviateCustomerName(value as string | undefined)).toBeNull();
   });
 });
 
@@ -279,6 +316,53 @@ describe('AffiliatesService · totais por moeda', () => {
     expect(currencyById).toEqual({ e1: 'USD', e2: 'USD', e3: 'USD', e4: 'BRL', e5: 'USD' });
   });
 
+  it('getMyAffiliate: nome do cliente sai abreviado; nome que é e-mail sai mascarado', async () => {
+    const prisma = fakePrisma(
+      [
+        earning({ id: 'n1', user: { name: 'Maria Souza Silva', email: 'maria@gmail.com' } }),
+        earning({ id: 'n2', user: { name: 'ze@empresa.com', email: 'ze@empresa.com' } }),
+        earning({ id: 'n3', user: { name: '', email: 'ab@x.io' } }),
+      ],
+      [affiliate],
+    );
+    const service = new AffiliatesService(prisma as never, {} as never, {} as never);
+
+    const result = await service.getMyAffiliate('owner-1');
+
+    const userById = Object.fromEntries((result?.earnings ?? []).map((item) => [item.id, item.user]));
+    expect(userById).toEqual({
+      n1: { name: 'Maria S.', email: 'ma***@gmail.com' },
+      n2: { name: 'z***@empresa.com', email: 'z***@empresa.com' },
+      n3: { name: null, email: 'a***@x.io' },
+    });
+  });
+
+  describe('getMyAffiliate: commissionWindow e netOfFees', () => {
+    const ORIGINAL_RECURRING = process.env.AFFILIATE_RECURRING_MONTHS;
+
+    afterEach(() => {
+      if (ORIGINAL_RECURRING === undefined) delete process.env.AFFILIATE_RECURRING_MONTHS;
+      else process.env.AFFILIATE_RECURRING_MONTHS = ORIGINAL_RECURRING;
+    });
+
+    it.each([
+      [undefined, { mode: 'first-only' }],
+      ['', { mode: 'first-only' }],
+      ['lixo', { mode: 'first-only' }],
+      ['all', { mode: 'lifetime' }],
+      ['12', { mode: 'months', months: 12 }],
+    ])('AFFILIATE_RECURRING_MONTHS=%p → %p', async (raw, expected) => {
+      if (raw === undefined) delete process.env.AFFILIATE_RECURRING_MONTHS;
+      else process.env.AFFILIATE_RECURRING_MONTHS = raw;
+      const { service } = setup();
+
+      const result = await service.getMyAffiliate('owner-1');
+
+      expect(result?.summary.commissionWindow).toEqual(expected);
+      expect(result?.summary.netOfFees).toBe(true);
+    });
+  });
+
   it('getMyAffiliate: quem não é afiliado recebe null', async () => {
     const { service } = setup();
     await expect(service.getMyAffiliate('ninguem')).resolves.toBeNull();
@@ -324,6 +408,84 @@ describe('AffiliatesService · totais por moeda', () => {
       ['USD', 1090 + 7777],
       ['BRL', 90],
     ]);
+  });
+
+  it('byCurrency sai de consultas agregadas: nenhuma comissão sem moeda é lida linha a linha', async () => {
+    const { service, prisma } = setup();
+
+    await service.getDashboard();
+    await service.findAll();
+    await service.getEarnings('aff-1');
+
+    const rowReads = (prisma.affiliateEarning.findMany.mock.calls as any[][]).filter(
+      ([args]) => args?.where?.currency === null,
+    );
+    expect(rowReads).toEqual([]);
+    // getDashboard, findAll e getEarnings: uma consulta de moedas dos pagamentos antigos por chamada.
+    expect(prisma.payment.groupBy).toHaveBeenCalledTimes(3);
+    for (const [args] of prisma.payment.groupBy.mock.calls as any[][]) {
+      expect(args.by).toEqual(['currency']);
+      expect(args.where.affiliateEarnings.some.currency).toBeNull();
+    }
+  });
+
+  it('comissões antigas em duas moedas: cada uma cai na moeda do seu pagamento, com a maturação certa', async () => {
+    const legacyRows: EarningRow[] = [
+      earning({ id: 'l1', currency: null, createdAt: daysAgo(60), commissionCents: 40, amountCents: 400 }),
+      earning({ id: 'l2', currency: null, createdAt: daysAgo(2), commissionCents: 25, amountCents: 250 }),
+      earning({
+        id: 'l3',
+        currency: null,
+        status: 'PAID',
+        createdAt: daysAgo(80),
+        commissionCents: 70,
+        amountCents: 700,
+        payment: { currency: 'BRL', type: 'CREDIT_PURCHASE', amountCents: 900 },
+      }),
+      earning({
+        id: 'l4',
+        currency: null,
+        createdAt: daysAgo(40),
+        commissionCents: 11,
+        amountCents: 110,
+        payment: { currency: 'BRL', type: 'CREDIT_PURCHASE', amountCents: 150 },
+      }),
+    ];
+    const prisma = fakePrisma(legacyRows, [affiliate]);
+    const service = new AffiliatesService(prisma as never, {} as never, {} as never);
+
+    const result = await service.getMyAffiliate('owner-1');
+
+    expect(result?.summary.byCurrency).toEqual([
+      {
+        currency: 'BRL',
+        totalRevenueCents: 810,
+        totalCommissionCents: 81,
+        pendingCommissionCents: 11,
+        availableCommissionCents: 11,
+        maturingCommissionCents: 0,
+        paidCommissionCents: 70,
+      },
+      {
+        currency: 'USD',
+        totalRevenueCents: 650,
+        totalCommissionCents: 65,
+        pendingCommissionCents: 65,
+        availableCommissionCents: 40,
+        maturingCommissionCents: 25,
+        paidCommissionCents: 0,
+      },
+    ]);
+  });
+
+  it('sem comissão antiga, nenhuma soma por moeda de pagamento é feita', async () => {
+    const prisma = fakePrisma([earning({ id: 'c1' })], [affiliate]);
+    const service = new AffiliatesService(prisma as never, {} as never, {} as never);
+
+    await service.getDashboard();
+
+    // Só as duas somas das comissões com moeda (madura e em maturação).
+    expect(prisma.affiliateEarning.groupBy).toHaveBeenCalledTimes(2);
   });
 
   it('markEarningsPaid: comissões de moedas diferentes viram um e-mail por moeda', async () => {

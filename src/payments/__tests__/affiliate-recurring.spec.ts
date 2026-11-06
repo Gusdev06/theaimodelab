@@ -41,13 +41,13 @@ describe('renewalEarnsCommission', () => {
     expect(renewalEarnsCommission({ mode: 'lifetime' }, first, new Date('2031-01-10T12:00:00Z'))).toBe(true);
   });
 
-  it('janela em meses conta da primeira comissão', () => {
+  it('janela em meses conta do primeiro pagamento do cliente', () => {
     const window = { mode: 'months' as const, months: 3 };
     expect(renewalEarnsCommission(window, first, new Date('2026-04-10T11:59:59Z'))).toBe(true);
     expect(renewalEarnsCommission(window, first, new Date('2026-04-10T12:00:00Z'))).toBe(false);
   });
 
-  it('sem comissão anterior, a janela começa nesta cobrança', () => {
+  it('sem pagamento anterior, a janela começa nesta cobrança', () => {
     expect(renewalEarnsCommission({ mode: 'months', months: 3 }, null, new Date('2026-04-10T12:00:00Z'))).toBe(true);
   });
 });
@@ -61,11 +61,19 @@ describe('PaymentsService.activateOrRenewPerfectpaySubscription · comissão na 
     else process.env.AFFILIATE_RECURRING_MONTHS = ORIGINAL_ENV;
   });
 
-  function setup(opts: { activeSub: Record<string, unknown> | null; firstEarningAt?: Date | null }) {
+  function setup(opts: { activeSub: Record<string, unknown> | null; firstPaymentAt?: Date | null }) {
     const tx = {
       $executeRaw: jest.fn(async () => 1),
       payment: {
-        findFirst: jest.fn(async () => null),
+        // Duas leituras passam por aqui: a idempotência (pelo código da venda) e a âncora
+        // da janela (primeiro pagamento concluído do cliente).
+        findFirst: jest.fn(async ({ where }: any) => {
+          if (where?.externalPaymentId !== undefined) return null;
+          if (where?.userId && where?.status === 'COMPLETED') {
+            return opts.firstPaymentAt ? { createdAt: opts.firstPaymentAt } : null;
+          }
+          throw new Error(`payment.findFirst inesperado: ${JSON.stringify(where)}`);
+        }),
         create: jest.fn(async ({ data }: any) => ({ id: 'pay-1', ...data })),
       },
       subscription: {
@@ -80,19 +88,22 @@ describe('PaymentsService.activateOrRenewPerfectpaySubscription · comissão na 
         findUnique: jest.fn(async () => ({ id: 'aff-1', isActive: true, commissionPercent: 30 })),
       },
       affiliateEarning: {
-        findFirst: jest.fn(async () =>
-          opts.firstEarningAt ? { createdAt: opts.firstEarningAt } : null,
-        ),
+        // A comissão é apagada no reembolso: a janela não pode mais ser lida daqui.
+        findFirst: jest.fn(async () => {
+          throw new Error('a janela não ancora mais na comissão');
+        }),
         create: jest.fn(async () => ({ id: 'ae-1' })),
       },
     };
+    const windowAnchorReads = () =>
+      (tx.payment.findFirst.mock.calls as any[][]).filter(([args]) => args?.where?.status === 'COMPLETED');
     const prisma = {
       plan: { findUnique: jest.fn(async () => plan) },
       user: { findUnique: jest.fn(async () => null) },
       $transaction: jest.fn(async (fn: any) => fn(tx)),
     };
     const service = new PaymentsService(prisma as any, {} as any, {} as any, {} as any, {} as any);
-    return { service, tx };
+    return { service, tx, windowAnchorReads };
   }
 
   const renewingSub = {
@@ -134,11 +145,11 @@ describe('PaymentsService.activateOrRenewPerfectpaySubscription · comissão na 
 
   it('"all" paga a renovação sem consultar a janela', async () => {
     process.env.AFFILIATE_RECURRING_MONTHS = 'all';
-    const { service, tx } = setup({ activeSub: renewingSub });
+    const { service, tx, windowAnchorReads } = setup({ activeSub: renewingSub });
 
     await service.activateOrRenewPerfectpaySubscription(sale);
 
-    expect(tx.affiliateEarning.findFirst).not.toHaveBeenCalled();
+    expect(windowAnchorReads()).toHaveLength(0);
     expect(tx.affiliateEarning.create).toHaveBeenCalledTimes(1);
     const { data } = (tx.affiliateEarning.create.mock.calls[0] as any[])[0];
     expect(data).toMatchObject({ affiliateId: 'aff-1', paymentId: 'pay-1', userId: 'user-1', status: 'PENDING' });
@@ -147,13 +158,49 @@ describe('PaymentsService.activateOrRenewPerfectpaySubscription · comissão na 
   it('janela em meses: paga dentro, não paga depois', async () => {
     process.env.AFFILIATE_RECURRING_MONTHS = '12';
 
-    const inside = setup({ activeSub: renewingSub, firstEarningAt: new Date(Date.now() - 30 * 86_400_000) });
+    const inside = setup({ activeSub: renewingSub, firstPaymentAt: new Date(Date.now() - 30 * 86_400_000) });
     await inside.service.activateOrRenewPerfectpaySubscription(sale);
     expect(inside.tx.affiliateEarning.create).toHaveBeenCalledTimes(1);
 
-    const outside = setup({ activeSub: renewingSub, firstEarningAt: new Date(Date.now() - 400 * 86_400_000) });
+    const outside = setup({ activeSub: renewingSub, firstPaymentAt: new Date(Date.now() - 400 * 86_400_000) });
     await outside.service.activateOrRenewPerfectpaySubscription(sale);
     expect(outside.tx.affiliateEarning.create).not.toHaveBeenCalled();
+  });
+
+  it('janela em meses: a âncora é o 1º pagamento concluído do cliente, o mais antigo', async () => {
+    process.env.AFFILIATE_RECURRING_MONTHS = '12';
+    const { service, windowAnchorReads } = setup({
+      activeSub: renewingSub,
+      firstPaymentAt: new Date(Date.now() - 30 * 86_400_000),
+    });
+
+    await service.activateOrRenewPerfectpaySubscription(sale);
+
+    expect(windowAnchorReads()).toHaveLength(1);
+    expect(windowAnchorReads()[0][0]).toEqual({
+      where: { userId: 'user-1', status: 'COMPLETED' },
+      orderBy: { createdAt: 'asc' },
+      select: { createdAt: true },
+    });
+  });
+
+  it('reembolso apaga a comissão, mas não reabre a janela: 1º pagamento há 400 dias segue fora', async () => {
+    process.env.AFFILIATE_RECURRING_MONTHS = '12';
+    // Nenhuma comissão sobrou (affiliateEarning.findFirst lança se for lido); o pagamento antigo continua lá.
+    const { service, tx } = setup({ activeSub: renewingSub, firstPaymentAt: new Date(Date.now() - 400 * 86_400_000) });
+
+    await service.activateOrRenewPerfectpaySubscription(sale);
+
+    expect(tx.affiliateEarning.create).not.toHaveBeenCalled();
+  });
+
+  it('janela em meses sem pagamento anterior: começa nesta cobrança e paga', async () => {
+    process.env.AFFILIATE_RECURRING_MONTHS = '3';
+    const { service, tx } = setup({ activeSub: renewingSub, firstPaymentAt: null });
+
+    await service.activateOrRenewPerfectpaySubscription(sale);
+
+    expect(tx.affiliateEarning.create).toHaveBeenCalledTimes(1);
   });
 
   it('cliente sem código de afiliado nunca gera comissão', async () => {

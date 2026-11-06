@@ -21,7 +21,8 @@ import {
   resolveEarningCurrency,
   summarizeByCurrency,
 } from './affiliate-currency';
-import { maskEmail } from './mask-email';
+import { abbreviateCustomerName, maskEmail } from './mask-email';
+import { resolveAffiliateRecurringWindow } from './affiliate-recurring';
 import {
   PayoutData,
   PayoutInput,
@@ -470,6 +471,7 @@ export class AffiliatesService {
     if (!affiliate) {
       throw new NotFoundException('Você ainda não é afiliado');
     }
+    this.assertAffiliateActive(affiliate);
 
     const payout = this.requirePayout({ payoutMethod: 'PIX', pixKey: dto.pixKey, pixKeyType: dto.pixKeyType });
 
@@ -493,6 +495,7 @@ export class AffiliatesService {
     if (!affiliate) {
       throw new NotFoundException('Você ainda não é afiliado');
     }
+    this.assertAffiliateActive(affiliate);
 
     const payout = this.requirePayout(dto);
 
@@ -507,6 +510,16 @@ export class AffiliatesService {
         pixKeyType: true,
       },
     });
+  }
+
+  /** Afiliado desativado pelo admin não troca o destino do dinheiro (comissão pendente pode estar em análise). */
+  private assertAffiliateActive(affiliate: { isActive?: boolean | null }): void {
+    if (affiliate.isActive === false) {
+      throw new ForbiddenException({
+        message: 'Seu link de afiliado está desativado. Fale com o suporte para alterar o recebimento',
+        code: 'AFFILIATE_INACTIVE',
+      });
+    }
   }
 
   /** O DTO já valida na rota; aqui é a mesma regra para quem chama o serviço direto. */
@@ -638,12 +651,12 @@ export class AffiliatesService {
       },
     });
 
-    // O afiliado vê quem comprou, mas não o e-mail inteiro do cliente.
+    // O afiliado vê quem comprou, mas não o nome completo nem o e-mail inteiro do cliente.
     const earnings = earningRows.map((earning) => ({
       ...earning,
       currency: resolveEarningCurrency(earning.currency, earning.payment?.currency),
       user: earning.user
-        ? { name: earning.user.name, email: maskEmail(earning.user.email) }
+        ? { name: abbreviateCustomerName(earning.user.name), email: maskEmail(earning.user.email) }
         : earning.user,
     }));
 
@@ -674,6 +687,9 @@ export class AffiliatesService {
         maturingCommissionCents: maturingTotals._sum.commissionCents ?? 0,
         paidCommissionCents: paidTotals._sum.commissionCents ?? 0,
         maturationDays: AFFILIATE_MATURATION_DAYS,
+        // Para o site dizer a verdade: se a renovação paga comissão e que a base é o valor líquido.
+        commissionWindow: resolveAffiliateRecurringWindow(process.env.AFFILIATE_RECURRING_MONTHS),
+        netOfFees: true,
         byCurrency,
       },
       earnings,
@@ -688,23 +704,24 @@ export class AffiliatesService {
 
   /**
    * Fatias de comissão por afiliado, moeda, status e maturação, para o `byCurrency`.
-   * Comissão com moeda gravada sai agregada do banco; as antigas (sem moeda) vêm uma
-   * a uma com a moeda do pagamento ligado.
+   * Tudo sai agregado do banco. Comissão antiga (sem moeda gravada) usa a moeda do
+   * pagamento ligado: primeiro as moedas que existem entre esses pagamentos (poucas),
+   * depois uma soma por moeda. Nenhuma comissão é lida linha a linha.
    */
   private async loadCurrencySlices(
     where: Prisma.AffiliateEarningWhereInput,
     maturationDate: Date = this.maturationCutoff(),
   ): Promise<AffiliateCurrencySlice[]> {
     const slices: AffiliateCurrencySlice[] = [];
+    const maturationWindows = [
+      { matured: true, createdAt: { lte: maturationDate } },
+      { matured: false, createdAt: { gt: maturationDate } },
+    ];
 
-    for (const matured of [true, false]) {
+    for (const { matured, createdAt } of maturationWindows) {
       const groups = await this.prisma.affiliateEarning.groupBy({
         by: ['affiliateId', 'currency', 'status'],
-        where: {
-          ...where,
-          currency: { not: null },
-          createdAt: matured ? { lte: maturationDate } : { gt: maturationDate },
-        },
+        where: { ...where, currency: { not: null }, createdAt },
         _sum: { amountCents: true, commissionCents: true },
       });
       for (const group of groups) {
@@ -719,27 +736,31 @@ export class AffiliatesService {
       }
     }
 
-    const earningsWithoutCurrency = await this.prisma.affiliateEarning.findMany({
-      where: { ...where, currency: null },
-      select: {
-        affiliateId: true,
-        status: true,
-        createdAt: true,
-        amountCents: true,
-        commissionCents: true,
-        payment: { select: { currency: true } },
-      },
+    const legacyWhere: Prisma.AffiliateEarningWhereInput = { ...where, currency: null };
+    const legacyPaymentCurrencies = await this.prisma.payment.groupBy({
+      by: ['currency'],
+      where: { affiliateEarnings: { some: legacyWhere } },
     });
-    for (const earning of earningsWithoutCurrency) {
-      slices.push({
-        affiliateId: earning.affiliateId,
-        currency: null,
-        paymentCurrency: earning.payment?.currency ?? null,
-        status: earning.status,
-        matured: earning.createdAt.getTime() <= maturationDate.getTime(),
-        amountCents: earning.amountCents,
-        commissionCents: earning.commissionCents,
-      });
+
+    for (const { currency: paymentCurrency } of legacyPaymentCurrencies) {
+      for (const { matured, createdAt } of maturationWindows) {
+        const groups = await this.prisma.affiliateEarning.groupBy({
+          by: ['affiliateId', 'status'],
+          where: { ...legacyWhere, payment: { currency: paymentCurrency }, createdAt },
+          _sum: { amountCents: true, commissionCents: true },
+        });
+        for (const group of groups) {
+          slices.push({
+            affiliateId: group.affiliateId,
+            currency: null,
+            paymentCurrency,
+            status: group.status,
+            matured,
+            amountCents: group._sum.amountCents ?? 0,
+            commissionCents: group._sum.commissionCents ?? 0,
+          });
+        }
+      }
     }
 
     return slices;

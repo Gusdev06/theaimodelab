@@ -2,6 +2,9 @@ import {
   AFFILIATE_GATEWAY_FEE_MAX_PERCENT,
   computeAffiliateNetCents,
   parseAffiliateGatewayFees,
+  parseAffiliateGatewayFeesDetailed,
+  resetAffiliateGatewayFeeWarnings,
+  warnDiscardedAffiliateGatewayFees,
 } from '../affiliate-net';
 
 /**
@@ -38,6 +41,62 @@ describe('parseAffiliateGatewayFees', () => {
 
   it('gateway repetido: vale a última entrada válida', () => {
     expect(parseAffiliateGatewayFees('cakto:6,cakto:8,cakto:99').get('cakto')).toBe(8);
+  });
+});
+
+describe('parseAffiliateGatewayFeesDetailed', () => {
+  it('devolve o que valeu e o que foi descartado', () => {
+    const { fees, discarded } = parseAffiliateGatewayFeesDetailed(
+      ' perfectpay:20% , perfectpay=20,perfectpay:100, cakto:6 ,:7,stripe:,hubla: 4.5 ',
+    );
+
+    expect(Object.fromEntries(fees)).toEqual({ cakto: 6, hubla: 4.5 });
+    expect(discarded).toEqual(['perfectpay:20%', 'perfectpay=20', 'perfectpay:100', ':7', 'stripe:']);
+  });
+
+  it('vírgula sobrando e env vazia não contam como descarte', () => {
+    for (const raw of [undefined, null, '', '   ', ',', 'cakto:6,', ',,cakto:6, ,']) {
+      expect(parseAffiliateGatewayFeesDetailed(raw as string | undefined).discarded).toEqual([]);
+    }
+  });
+
+  it('decimal com vírgula: a sobra aparece no descarte', () => {
+    expect(parseAffiliateGatewayFeesDetailed('cakto:6,5,perfectpay:20').discarded).toEqual(['5']);
+  });
+});
+
+describe('warnDiscardedAffiliateGatewayFees', () => {
+  beforeEach(() => resetAffiliateGatewayFeeWarnings());
+
+  it('avisa uma vez por valor da env, não a cada venda', () => {
+    const warn = jest.fn();
+
+    expect(warnDiscardedAffiliateGatewayFees('perfectpay:20%,cakto:6', warn)).toEqual(['perfectpay:20%']);
+    expect(warnDiscardedAffiliateGatewayFees('perfectpay:20%,cakto:6', warn)).toEqual([]);
+    expect(warnDiscardedAffiliateGatewayFees('  perfectpay:20%,cakto:6  ', warn)).toEqual([]);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('"perfectpay:20%"');
+    expect(warn.mock.calls[0][0]).toContain('AFFILIATE_GATEWAY_FEE_PERCENT');
+  });
+
+  it('valor diferente da env avisa de novo', () => {
+    const warn = jest.fn();
+
+    warnDiscardedAffiliateGatewayFees('perfectpay=20', warn);
+    warnDiscardedAffiliateGatewayFees('perfectpay:100', warn);
+
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('env válida ou vazia não avisa', () => {
+    const warn = jest.fn();
+
+    for (const raw of [undefined, null, '', 'perfectpay:20,cakto:6', 'cakto:6,']) {
+      warnDiscardedAffiliateGatewayFees(raw as string | undefined, warn);
+    }
+
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 

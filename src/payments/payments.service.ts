@@ -7,7 +7,7 @@ import { AsaasSubscriptionsService } from './asaas-subscriptions.service';
 import { StripeService } from './stripe.service';
 import { MetaConversionsService } from '../meta/meta-conversions.service';
 import { renewalEarnsCommission, resolveAffiliateRecurringWindow } from '../affiliates/affiliate-recurring';
-import { computeAffiliateNetCents } from '../affiliates/affiliate-net';
+import { computeAffiliateNetCents, warnDiscardedAffiliateGatewayFees } from '../affiliates/affiliate-net';
 
 const ULTRA_BASIC_WELCOME_FREE_GENERATIONS = 2;
 
@@ -1443,7 +1443,9 @@ export class PaymentsService {
 
   /**
    * Renovação de assinatura (Perfect Pay/Cakto) paga comissão ao afiliado?
-   * Desligado por padrão; a janela vem de AFFILIATE_RECURRING_MONTHS.
+   * Desligado por padrão; a janela vem de AFFILIATE_RECURRING_MONTHS e conta do
+   * primeiro pagamento concluído do cliente (a comissão some no reembolso; o pagamento
+   * seguinte não pode reabrir a janela).
    */
   private async renewalEarnsAffiliateCommission(
     tx: Prisma.TransactionClient,
@@ -1457,12 +1459,12 @@ export class PaymentsService {
     if (window.mode === 'first-only') return false;
     if (window.mode === 'lifetime') return true;
 
-    const firstEarning = await tx.affiliateEarning.findFirst({
-      where: { userId, affiliate: { code: referredByCode } },
+    const firstCompletedPayment = await tx.payment.findFirst({
+      where: { userId, status: 'COMPLETED' },
       orderBy: { createdAt: 'asc' },
       select: { createdAt: true },
     });
-    return renewalEarnsCommission(window, firstEarning?.createdAt ?? null, now);
+    return renewalEarnsCommission(window, firstCompletedPayment?.createdAt ?? null, now);
   }
 
   /**
@@ -1482,13 +1484,18 @@ export class PaymentsService {
 
     const affiliate = await tx.affiliate.findUnique({
       where: { code: referredByCode },
-      select: { id: true, isActive: true, commissionPercent: true },
+      select: { id: true, userId: true, isActive: true, commissionPercent: true },
     });
 
     if (!affiliate?.isActive) return;
+    // Autoindicação: quem paga com o próprio código não recebe comissão da própria compra.
+    if (affiliate.userId && affiliate.userId === userId) return;
 
     const provider = payment.provider?.trim().toLowerCase() || null;
     const currency = payment.currency?.trim().toUpperCase() || null;
+    warnDiscardedAffiliateGatewayFees(process.env.AFFILIATE_GATEWAY_FEE_PERCENT, (message) =>
+      this.logger.warn(message),
+    );
     const { netCents: netAmountCents, feeCents, rule } = computeAffiliateNetCents(
       amountCents,
       provider,

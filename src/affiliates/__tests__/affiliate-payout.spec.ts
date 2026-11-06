@@ -305,6 +305,41 @@ describe('AffiliatesService · forma de recebimento', () => {
     });
   });
 
+  describe('afiliado desativado pelo admin não troca o recebimento', () => {
+    const inactive = { id: 'aff-1', isActive: false, payoutMethod: 'PIX', pixKey: '12345678900', pixKeyType: 'CPF' };
+
+    it('updateMyPayout: 403 AFFILIATE_INACTIVE e nada gravado', async () => {
+      const { service, prisma } = setup({ existingAffiliate: inactive });
+
+      const attempt = service.updateMyPayout('user-1', { payoutMethod: 'PAYPAL', payoutEmail: 'outra@example.com' } as never);
+
+      await expect(attempt).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(attempt).rejects.toMatchObject({ response: { code: 'AFFILIATE_INACTIVE' } });
+      expect(prisma.affiliate.update).not.toHaveBeenCalled();
+    });
+
+    it('updateMyPixKey (rota antiga): 403 AFFILIATE_INACTIVE e nada gravado', async () => {
+      const { service, prisma } = setup({ existingAffiliate: inactive });
+
+      const attempt = service.updateMyPixKey('user-1', { pixKeyType: 'CPF', pixKey: '99999999999' } as never);
+
+      await expect(attempt).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(attempt).rejects.toMatchObject({ response: { code: 'AFFILIATE_INACTIVE' } });
+      expect(prisma.affiliate.update).not.toHaveBeenCalled();
+    });
+
+    it('o 403 vem antes da validação do corpo; afiliado ativo segue trocando', async () => {
+      const blocked = setup({ existingAffiliate: inactive });
+      await expect(
+        blocked.service.updateMyPayout('user-1', { payoutMethod: 'PAYPAL' } as never),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      const active = setup({ existingAffiliate: { ...inactive, isActive: true } });
+      await active.service.updateMyPayout('user-1', { payoutMethod: 'WISE', payoutEmail: 'ana@example.com' } as never);
+      expect(active.prisma.affiliate.update).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('updateMyPixKey (rota antiga)', () => {
     it('continua funcionando e marca a forma como PIX', async () => {
       const { service, updatedData } = setup({
@@ -347,6 +382,7 @@ describe('AffiliatesService · forma de recebimento', () => {
           groupBy: jest.fn(async () => []),
           findMany: jest.fn(async () => []),
         },
+        payment: { groupBy: jest.fn(async () => []) },
         user: { count: jest.fn(async () => 0), groupBy: jest.fn(async () => []) },
       };
       return new AffiliatesService(prisma as never, {} as never, {} as never);
