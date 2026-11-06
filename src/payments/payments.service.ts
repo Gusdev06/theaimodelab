@@ -6,6 +6,7 @@ import { EmailService } from '../email/email.service';
 import { AsaasSubscriptionsService } from './asaas-subscriptions.service';
 import { StripeService } from './stripe.service';
 import { MetaConversionsService } from '../meta/meta-conversions.service';
+import { renewalEarnsCommission, resolveAffiliateRecurringWindow } from '../affiliates/affiliate-recurring';
 
 const ULTRA_BASIC_WELCOME_FREE_GENERATIONS = 2;
 
@@ -266,7 +267,8 @@ export class PaymentsService {
    *  - Sem assinatura ativa → cria nova (cancela quaisquer outras ativas).
    *
    * Idempotente pelo código da venda (Payment.externalPaymentId). Comissão de
-   * afiliado só é registrada na primeira ativação, nunca em renovações.
+   * afiliado só é registrada na primeira ativação; nas renovações, só quando a env
+   * AFFILIATE_RECURRING_MONTHS liga a recorrência (ver affiliate-recurring.ts).
    */
   async activateOrRenewPerfectpaySubscription(params: {
     userId: string;
@@ -435,7 +437,7 @@ export class PaymentsService {
         },
       });
 
-      if (created) {
+      if (created || (await this.renewalEarnsAffiliateCommission(tx, userId, referredByCode, now))) {
         await this.recordAffiliateEarning(tx, userId, payment.id, amountCents, referredByCode);
       }
     });
@@ -1436,6 +1438,30 @@ export class PaymentsService {
     this.logger.log(
       `Subscription ${subscription.id} deleted for user ${subscription.userId}`,
     );
+  }
+
+  /**
+   * Renovação de assinatura (Perfect Pay/Cakto) paga comissão ao afiliado?
+   * Desligado por padrão; a janela vem de AFFILIATE_RECURRING_MONTHS.
+   */
+  private async renewalEarnsAffiliateCommission(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    referredByCode: string | undefined,
+    now: Date,
+  ): Promise<boolean> {
+    if (!referredByCode) return false;
+
+    const window = resolveAffiliateRecurringWindow(process.env.AFFILIATE_RECURRING_MONTHS);
+    if (window.mode === 'first-only') return false;
+    if (window.mode === 'lifetime') return true;
+
+    const firstEarning = await tx.affiliateEarning.findFirst({
+      where: { userId, affiliate: { code: referredByCode } },
+      orderBy: { createdAt: 'asc' },
+      select: { createdAt: true },
+    });
+    return renewalEarnsCommission(window, firstEarning?.createdAt ?? null, now);
   }
 
   /**
