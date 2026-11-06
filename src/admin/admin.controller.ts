@@ -25,6 +25,9 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { ListGenerationsQueryDto } from './dto/list-generations-query.dto';
+import { ListUserTransactionsQueryDto } from './dto/list-user-transactions-query.dto';
+import { ListUserPaymentsQueryDto } from './dto/list-user-payments-query.dto';
+import { UpdateFxDto } from './dto/update-fx.dto';
 import { ListPromptTemplatesQueryDto } from './dto/list-prompt-templates-query.dto';
 import { AdjustCreditsDto } from './dto/adjust-credits.dto';
 import { AdjustFreeGenerationsDto } from './dto/adjust-free-generations.dto';
@@ -188,6 +191,44 @@ export class AdminController {
     @Query() pagination: PaginationDto,
   ) {
     return this.adminService.getUserGenerations(id, pagination);
+  }
+
+  @Get('users/:id/transactions')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({ summary: 'Extrato de créditos de um usuário (paginado, filtro de tipo e período, com resumo)' })
+  @ApiResponse({ status: 200, description: '{ data, meta, summary: { spent, received, net } }' })
+  @ApiResponse({ status: 404, description: 'Usuário não encontrado' })
+  async getUserTransactions(
+    @Param('id') id: string,
+    @Query() query: ListUserTransactionsQueryDto,
+  ) {
+    return this.adminService.getUserTransactions(id, query);
+  }
+
+  @Get('users/:id/payments')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({ summary: 'Pagamentos de um usuário (paginado, filtro de status)' })
+  @ApiResponse({ status: 200, description: '{ data, meta }' })
+  @ApiResponse({ status: 404, description: 'Usuário não encontrado' })
+  async getUserPayments(
+    @Param('id') id: string,
+    @Query() query: ListUserPaymentsQueryDto,
+  ) {
+    return this.adminService.getUserPayments(id, query);
+  }
+
+  @Get('settings/fx')
+  @ApiOperation({ summary: 'Câmbio USD→BRL usado nas estatísticas consolidadas' })
+  async getFxSetting() {
+    return this.adminService.getFxSetting();
+  }
+
+  @Patch('settings/fx')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({ summary: 'Atualiza o câmbio USD→BRL (app_settings.fx_usd_brl)' })
+  @ApiResponse({ status: 400, description: 'Câmbio fora de (0, 100)' })
+  async updateFxSetting(@Body() dto: UpdateFxDto) {
+    return this.adminService.updateFxSetting(dto.fxUsdBrl);
   }
 
   @Get('generations/providers')
