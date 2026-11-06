@@ -34,6 +34,66 @@ const WAN3_REFERENCE_MODEL = 'alibaba/wan-3.0/reference-to-video';
 
 const POLL_MAX_ATTEMPTS = 180; // ~9 min a 3s
 const POLL_INTERVAL_MS = 3_000;
+/**
+ * Consulta que falha por instante (429, 5xx, rede, tempo esgotado): a tarefa já foi aceita e cobrada na WaveSpeed,
+ * então a consulta espera e tenta de novo (3 s, 6 s, depois 10 s) em vez de perder o resultado. A 6ª falha seguida
+ * encerra; cada resposta boa zera a conta.
+ */
+const POLL_TRANSIENT_MAX = 6;
+const POLL_BACKOFF_MIN_MS = 3_000;
+const POLL_BACKOFF_MAX_MS = 10_000;
+/** Teto da espera pedida por um Retry-After. */
+const POLL_RETRY_AFTER_MAX_MS = 60_000;
+
+/** O que a geração entrega, para a mensagem de erro falar de foto ou de vídeo. */
+export type WavespeedMedia = 'foto' | 'vídeo';
+
+const FAILURE_MESSAGES: Record<
+  WavespeedMedia,
+  { unavailable: string; unexpected: string; missingOutput: string; failed: string; tooSlow: string }
+> = {
+  vídeo: {
+    unavailable: 'Não foi possível gerar o vídeo agora. Tente novamente em alguns instantes.',
+    unexpected: 'O serviço de vídeo não respondeu como esperado. Tente novamente em alguns instantes.',
+    missingOutput: 'A geração foi concluída mas o vídeo não pôde ser recuperado. Tente novamente.',
+    failed: 'A geração de vídeo falhou. Tente novamente.',
+    tooSlow: 'A geração de vídeo demorou mais que o esperado. Tente novamente em alguns instantes.',
+  },
+  foto: {
+    unavailable: 'Não foi possível gerar a foto agora. Tente novamente em alguns instantes.',
+    unexpected: 'O serviço de imagem não respondeu como esperado. Tente novamente em alguns instantes.',
+    missingOutput: 'A foto ficou pronta, mas não conseguimos buscá-la. Tente novamente.',
+    failed: 'A geração da foto falhou. Tente novamente.',
+    tooSlow: 'A foto demorou mais que o esperado. Tente novamente em alguns instantes.',
+  },
+};
+
+/** Estados em que a WaveSpeed não vai mais entregar nada (docs: completed, failed, cancelled, timeout, deleted). */
+const FINAL_FAILURE_STATUSES: ReadonlySet<string> = new Set(['failed', 'cancelled', 'timeout', 'deleted']);
+
+/** Status HTTP de consulta que vale esperar e repetir. */
+export function isTransientPollStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+/**
+ * Espera antes de repetir a consulta depois da N-ª falha passageira seguida: 3 s, 6 s, 10 s… O Retry-After (segundos
+ * ou data HTTP) vale quando pede mais que isso, até 60 s.
+ */
+export function transientPollDelayMs(streak: number, retryAfter: string | null, now: number = Date.now()): number {
+  const backoff = Math.min(POLL_BACKOFF_MIN_MS * 2 ** Math.max(streak - 1, 0), POLL_BACKOFF_MAX_MS);
+  if (!retryAfter) return backoff;
+  const trimmed = retryAfter.trim();
+  let requested: number | null = null;
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+    requested = Number(trimmed) * 1000;
+  } else {
+    const date = Date.parse(trimmed);
+    if (Number.isFinite(date)) requested = date - now;
+  }
+  if (requested === null || !Number.isFinite(requested)) return backoff;
+  return Math.min(Math.max(backoff, requested), POLL_RETRY_AFTER_MAX_MS);
+}
 
 export type WavespeedVideoResolution = '480p' | '720p' | '768p' | '1080p';
 export type SeedanceVideoResolution = '480p' | '720p' | '1080p' | '4k';
@@ -140,7 +200,7 @@ interface PredictionResultResponse {
   message?: string;
   data?: {
     id: string;
-    status: 'created' | 'processing' | 'completed' | 'failed';
+    status: 'created' | 'processing' | 'completed' | 'failed' | 'cancelled' | 'timeout' | 'deleted';
     outputs?: string[];
     error?: string;
   };
@@ -225,16 +285,20 @@ export class WavespeedVideoProvider {
       `[WAVESPEED_ANGLES] gen=${input.id} h=${input.horizontalAngle} v=${input.verticalAngle} d=${input.distance} image=${input.imageUrl.slice(0, 60)}`,
     );
 
-    const predictionId = await this.createPrediction(MULTIPLE_ANGLES_MODEL, {
-      images: [input.imageUrl],
-      horizontal_angle: input.horizontalAngle,
-      vertical_angle: input.verticalAngle,
-      distance: input.distance,
-      output_format: 'jpeg',
-      enable_base64_output: false,
-      enable_sync_mode: false,
-    });
-    const resultUrl = await this.pollPrediction(predictionId);
+    const predictionId = await this.createPrediction(
+      MULTIPLE_ANGLES_MODEL,
+      {
+        images: [input.imageUrl],
+        horizontal_angle: input.horizontalAngle,
+        vertical_angle: input.verticalAngle,
+        distance: input.distance,
+        output_format: 'jpeg',
+        enable_base64_output: false,
+        enable_sync_mode: false,
+      },
+      'foto',
+    );
+    const resultUrl = await this.pollPrediction(predictionId, 'foto');
     const outputUrl = await this.downloadAndUploadImage(resultUrl, input.id, 0);
     return { outputUrls: [outputUrl], modelUsed: MULTIPLE_ANGLES_MODEL };
   }
@@ -491,7 +555,9 @@ export class WavespeedVideoProvider {
   private async createPrediction(
     model: string,
     body: Record<string, unknown>,
+    media: WavespeedMedia = 'vídeo',
   ): Promise<string> {
+    const messages = FAILURE_MESSAGES[media];
     const response = await this.fetchWithTimeout(
       `${this.baseUrl}/api/v3/${model}`,
       {
@@ -508,7 +574,7 @@ export class WavespeedVideoProvider {
         `WaveSpeed ${model} createPrediction failed status=${response.status} body=${errorText.slice(0, 300)}`,
       );
       throw new ProviderFailureError(
-        'Não foi possível gerar o vídeo agora. Tente novamente em alguns instantes.',
+        messages.unavailable,
         `${response.status} ${errorText.slice(0, 300)}`,
       );
     }
@@ -519,69 +585,104 @@ export class WavespeedVideoProvider {
       this.logger.error(
         `WaveSpeed ${model} createPrediction missing id: ${JSON.stringify(data).slice(0, 300)}`,
       );
-      throw new Error(
-        'O serviço de vídeo não respondeu como esperado. Tente novamente em alguns instantes.',
-      );
+      throw new Error(messages.unexpected);
     }
     return predictionId;
   }
 
-  private async pollPrediction(predictionId: string): Promise<string> {
+  private async pollPrediction(predictionId: string, media: WavespeedMedia = 'vídeo'): Promise<string> {
+    const messages = FAILURE_MESSAGES[media];
+    let transientStreak = 0;
+    let nextDelayMs = POLL_INTERVAL_MS;
+
     for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
-      if (attempt > 0) {
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      if (attempt > 0) await this.wait(nextDelayMs);
+      nextDelayMs = POLL_INTERVAL_MS;
+
+      let response: Response;
+      try {
+        response = await this.fetchWithTimeout(
+          `${this.baseUrl}/api/v3/predictions/${predictionId}/result`,
+          { headers: this.headers() },
+          30_000,
+        );
+      } catch (error) {
+        const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+        transientStreak++;
+        if (transientStreak >= POLL_TRANSIENT_MAX) {
+          this.logger.error(`WaveSpeed result unreachable predictionId=${predictionId} after ${transientStreak} tries: ${detail}`);
+          throw new ProviderFailureError(messages.unavailable, `network ${detail.slice(0, 200)}`);
+        }
+        nextDelayMs = transientPollDelayMs(transientStreak, null);
+        this.logger.warn(
+          `WaveSpeed result network error predictionId=${predictionId} (${transientStreak}/${POLL_TRANSIENT_MAX}), retry in ${nextDelayMs} ms: ${detail.slice(0, 120)}`,
+        );
+        continue;
       }
 
-      const response = await this.fetchWithTimeout(
-        `${this.baseUrl}/api/v3/predictions/${predictionId}/result`,
-        { headers: this.headers() },
-        30_000,
-      );
-
       if (!response.ok) {
-        const errorText = await response.text();
+        const errorText = await response.text().catch(() => '');
+        if (isTransientPollStatus(response.status)) {
+          transientStreak++;
+          if (transientStreak < POLL_TRANSIENT_MAX) {
+            nextDelayMs = transientPollDelayMs(transientStreak, response.headers.get('retry-after'));
+            this.logger.warn(
+              `WaveSpeed result status=${response.status} predictionId=${predictionId} (${transientStreak}/${POLL_TRANSIENT_MAX}), retry in ${nextDelayMs} ms`,
+            );
+            continue;
+          }
+        }
         this.logger.error(
-          `WaveSpeed LTX result failed status=${response.status} predictionId=${predictionId} body=${errorText.slice(0, 200)}`,
+          `WaveSpeed result failed status=${response.status} predictionId=${predictionId} body=${errorText.slice(0, 200)}`,
         );
         throw new ProviderFailureError(
-          'Não foi possível gerar o vídeo agora. Tente novamente em alguns instantes.',
+          messages.unavailable,
           `${response.status} ${errorText.slice(0, 200)}`,
         );
       }
+      transientStreak = 0;
 
       const payload = (await response.json()) as PredictionResultResponse;
       const data = payload.data;
       if (!data) {
-        throw new Error(
-          'Resposta inesperada do serviço de vídeo. Tente gerar de novo.',
-        );
+        throw new Error(messages.unexpected);
       }
 
       if (data.status === 'completed') {
-        const videoUrl = data.outputs?.[0];
-        if (!videoUrl) {
-          throw new Error(
-            'A geração foi concluída mas o vídeo não pôde ser recuperado. Tente novamente.',
-          );
+        const resultUrl = data.outputs?.[0];
+        if (!resultUrl) {
+          throw new Error(messages.missingOutput);
         }
-        return videoUrl;
+        return resultUrl;
       }
 
       if (data.status === 'failed') {
         this.logger.error(
-          `WaveSpeed LTX prediction failed predictionId=${predictionId} error=${data.error ?? 'unknown'}`,
+          `WaveSpeed prediction failed predictionId=${predictionId} error=${data.error ?? 'unknown'}`,
         );
-        throw new Error(data.error ?? 'A geração de vídeo falhou. Tente novamente.');
+        throw new Error(data.error ?? messages.failed);
+      }
+
+      if (FINAL_FAILURE_STATUSES.has(data.status)) {
+        this.logger.error(
+          `WaveSpeed prediction ended status=${data.status} predictionId=${predictionId} error=${data.error ?? 'none'}`,
+        );
+        throw new ProviderFailureError(
+          messages.failed,
+          `status=${data.status}${data.error ? ` ${data.error.slice(0, 200)}` : ''}`,
+        );
       }
 
       this.logger.debug(
-        `WaveSpeed LTX prediction ${predictionId} ${data.status} (attempt ${attempt + 1}/${POLL_MAX_ATTEMPTS})`,
+        `WaveSpeed prediction ${predictionId} ${data.status} (attempt ${attempt + 1}/${POLL_MAX_ATTEMPTS})`,
       );
     }
 
-    throw new Error(
-      'A geração de vídeo demorou mais que o esperado. Tente novamente em alguns instantes.',
-    );
+    throw new Error(messages.tooSlow);
+  }
+
+  private wait(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private async downloadAndUpload(

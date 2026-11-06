@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
-import { GenerationStatus, GenerationType } from '@prisma/client';
+import { ContentSafetyEventKind, GenerationStatus, GenerationType, Prisma } from '@prisma/client';
 import * as sharp from 'sharp';
+import { assessText } from '../../content-safety/minor-guard';
 import { PrismaService } from '../../prisma/prisma.service';
 
 /**
@@ -15,7 +16,13 @@ import { PrismaService } from '../../prisma/prisma.service';
  *    exato dos bytes não serviria.
  *  - `cleanLineage`: a geração nasceu só de texto (sem foto de entrada, sem busca de imagem na web e sem prompt clonado
  *    de foto), ou todas as fotos de entrada bateram, no critério ESTRITO, com gerações limpas da mesma conta. Troca de
- *    rosto, provador e afins nunca entram (não são TEXT_TO_IMAGE/IMAGE_TO_IMAGE).
+ *    rosto, provador e afins nunca entram (não são TEXT_TO_IMAGE/IMAGE_TO_IMAGE). Prompt que a trava de menor barra
+ *    nunca é limpo, mesmo que tenha passado na época (geração anterior à trava ou a uma calibração mais nova).
+ *  - Trilha: a geração limpa a partir de fotos guarda, em `parameters.lineageSourceIds`, as gerações com que as fotos
+ *    de entrada bateram (as fotos somem na conclusão; a trilha é o que deixa reler a origem depois).
+ *  - Toda impressão limpa que casa é relida na hora (texto pela trava de hoje, bloqueio por menor ligado à geração e,
+ *    para imagem feita a partir de foto, a trilha): a impressão gravada antes desta regra não leva adiante uma origem
+ *    que hoje seria barrada. Texto barrado rebaixa a impressão para suja na mesma hora.
  *  - No desvio, cada foto do pedido é comparada com as impressões limpas da MESMA conta. Quando todas batem, quem vai
  *    ao modelo sem censura é a NOSSA cópia guardada da geração que bateu, nunca os bytes que vieram no pedido: uma foto
  *    forjada para bater com a impressão não chega ao modelo, e um falso positivo só troca a foto por uma da própria
@@ -157,10 +164,63 @@ export function bestMatch<T extends Fingerprint>(
 
 export type LineageByOrigin = 'clean' | 'check_inputs' | 'not_clean';
 
+/** Chave, nos `parameters` da geração, da trilha da linhagem: as gerações limpas com que as fotos de entrada bateram. */
+export const LINEAGE_SOURCES_KEY = 'lineageSourceIds';
+/** Mais gerações do que isso numa trilha = campo estranho (o pedido de imagem aceita bem menos fotos). */
+const MAX_LINEAGE_SOURCES = 16;
+const GENERATION_ID = /^[a-z0-9]{20,40}$/i;
+
+function parametersOf(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+/** Trilha gravada na conclusão (null = sem trilha: geração anterior a ela, sem foto de entrada ou campo estranho). */
+export function lineageSourceIdsOf(parameters: unknown): string[] | null {
+  const value = parametersOf(parameters)[LINEAGE_SOURCES_KEY];
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_LINEAGE_SOURCES) return null;
+  if (!value.every((id): id is string => typeof id === 'string' && GENERATION_ID.test(id))) return null;
+  return [...new Set(value)];
+}
+
+/**
+ * O texto guardado da geração impede a linhagem limpa hoje? Prompt clonado de foto, busca de imagem na web (Nano Banana
+ * `google_search`) ou prompt que a trava de menor barra hoje (inclusive o que passou por uma calibração antiga, o
+ * alfabeto sem lista e o texto grande demais).
+ */
+export function originTextDisqualifies(input: { prompt: string | null; parameters?: unknown }): boolean {
+  if (input.prompt && CLONED_FROM_PHOTO.test(input.prompt)) return true;
+  if (assessText(input.prompt).blocked) return true;
+  const params = parametersOf(input.parameters);
+  return params.google_search === true || params.googleSearch === true;
+}
+
+/** Por que uma geração com impressão limpa deixa de valer como foto própria quando é relida (null = vale). */
+export type OwnSourceRecheck = 'text' | 'minor_event' | 'untraceable';
+
+/**
+ * Releitura de uma geração cuja impressão limpa casou: o texto pela trava de hoje, o bloqueio por menor ainda não
+ * liberado ligado a ela e, para imagem feita a partir de foto, a trilha das gerações de entrada (sem ela, a impressão é
+ * anterior à trilha e a origem das fotos de entrada não dá mais para conferir: as fotos já foram apagadas).
+ */
+export function recheckOwnSource(
+  source: { type: GenerationType; prompt: string | null; parameters: unknown },
+  hasMinorEvent: boolean,
+): OwnSourceRecheck | null {
+  if (originTextDisqualifies(source)) return 'text';
+  if (hasMinorEvent) return 'minor_event';
+  if (source.type !== GenerationType.TEXT_TO_IMAGE && !lineageSourceIdsOf(source.parameters)) return 'untraceable';
+  return null;
+}
+
+/** `parameters` da geração com a trilha da linhagem (o resto fica como está). */
+export function withLineageSources(parameters: unknown, sourceIds: readonly string[]): Prisma.InputJsonObject {
+  return { ...(parametersOf(parameters) as Prisma.InputJsonObject), [LINEAGE_SOURCES_KEY]: [...new Set(sourceIds)] };
+}
+
 /**
  * Linhagem pela origem da geração: só texto = limpa; com fotos de entrada = depende de as fotos serem limpas;
- * qualquer outro tipo (troca de rosto, provador, upscale, vídeo…), imagem a partir de foto sem registro da foto,
- * busca de imagem na web (Nano Banana `google_search`) ou prompt clonado de foto = não limpa.
+ * qualquer outro tipo (troca de rosto, provador, upscale, vídeo…), imagem a partir de foto sem registro da foto ou
+ * texto que impede a linhagem (originTextDisqualifies) = não limpa.
  */
 export function lineageByOrigin(input: {
   type: GenerationType;
@@ -168,9 +228,7 @@ export function lineageByOrigin(input: {
   prompt: string | null;
   parameters?: unknown;
 }): LineageByOrigin {
-  if (input.prompt && CLONED_FROM_PHOTO.test(input.prompt)) return 'not_clean';
-  const params = (input.parameters ?? {}) as Record<string, unknown>;
-  if (params.google_search === true || params.googleSearch === true) return 'not_clean';
+  if (originTextDisqualifies(input)) return 'not_clean';
   if (input.type === GenerationType.TEXT_TO_IMAGE) {
     return input.inputImageCount === 0 ? 'clean' : 'check_inputs';
   }
@@ -340,6 +398,11 @@ export class OwnMediaProvenance {
         if (found.some((item) => !item)) return null;
       }
 
+      // a melhor impressão diz qual foto é: se essa origem não vale mais, a foto não é reconhecida (a 2ª mais parecida
+      // não entra no lugar, porque a foto continua sendo a da origem barrada)
+      const matchedIds = [...new Set(found.map((hit) => hit!.item.generationId))];
+      if ((await this.unusableSources(userId, matchedIds)).length > 0) return null;
+
       const matches: OwnMatch[] = [];
       for (let i = 0; i < imageUrls.length; i++) {
         const hit = found[i]!;
@@ -404,9 +467,19 @@ export class OwnMediaProvenance {
       });
       let clean = origin === 'clean';
       if (origin === 'check_inputs') {
-        clean =
-          inputUrls.length === generation.inputImages.length &&
-          (await this.matchOwnClean(generation.userId, inputUrls, LINEAGE_MATCH)) !== null;
+        const matches =
+          inputUrls.length === generation.inputImages.length
+            ? await this.matchOwnClean(generation.userId, inputUrls, LINEAGE_MATCH)
+            : null;
+        clean = matches !== null;
+        if (matches) {
+          // a trilha vai antes da impressão: impressão limpa a partir de foto nunca fica sem a trilha (se a gravação
+          // falhar, nada é gravado e a geração segue sem impressão, que para imagem a partir de foto é suja)
+          await this.prisma.generation.update({
+            where: { id: generationId },
+            data: { parameters: withLineageSources(generation.parameters, matches.map((match) => match.generationId)) },
+          });
+        }
       }
 
       for (const output of generation.outputs) {
@@ -444,6 +517,50 @@ export class OwnMediaProvenance {
     if (this.lastBackfill.size > 10_000) this.lastBackfill.clear();
     this.lastBackfill.set(userId, now);
     return true;
+  }
+
+  /**
+   * Das gerações cujas impressões limpas casaram, as que não valem mais como foto própria (recheckOwnSource). As de
+   * texto barrado pela trava de hoje ficam com a impressão suja na mesma hora; bloqueio por menor (que o jurídico pode
+   * liberar) e falta de trilha só recusam, sem mexer na impressão.
+   */
+  private async unusableSources(userId: string, generationIds: readonly string[]): Promise<string[]> {
+    if (generationIds.length === 0) return [];
+    const [generations, minorEvents] = await Promise.all([
+      this.prisma.generation.findMany({
+        where: { id: { in: [...generationIds] }, userId },
+        select: { id: true, type: true, prompt: true, parameters: true },
+      }),
+      this.prisma.contentSafetyEvent.findMany({
+        where: { generationId: { in: [...generationIds] }, kind: ContentSafetyEventKind.MINOR_BLOCKED, releasedAt: null },
+        select: { generationId: true },
+      }),
+    ]);
+    const flagged = new Set(minorEvents.map((event) => event.generationId));
+    const byId = new Map(generations.map((generation) => [generation.id, generation]));
+
+    const unusable: string[] = [];
+    const dirtyText: string[] = [];
+    for (const id of generationIds) {
+      const generation = byId.get(id);
+      const problem = generation ? recheckOwnSource(generation, flagged.has(id)) : 'untraceable';
+      if (!problem) continue;
+      unusable.push(id);
+      if (problem === 'text') dirtyText.push(id);
+      this.logger.warn(`[OWN_MEDIA] user=${userId}: a impressão da geração ${id} casou, mas não vale mais (${problem})`);
+    }
+
+    if (dirtyText.length > 0) {
+      try {
+        await this.prisma.mediaFingerprint.updateMany({
+          where: { userId, generationId: { in: dirtyText }, cleanLineage: true },
+          data: { cleanLineage: false },
+        });
+      } catch (error) {
+        this.logger.warn(`[OWN_MEDIA] user=${userId}: impressão barrada não rebaixada (${(error as Error).message})`);
+      }
+    }
+    return unusable;
   }
 
   /** Impressões limpas da conta cujas saídas ainda estão no armazenamento (sem prazo vencido). */

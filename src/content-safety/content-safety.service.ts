@@ -111,6 +111,15 @@ export class ContentSafetyService {
   }
 
   /**
+   * A conta está na guarda legal por menor (minorHoldReached, sem os bloqueios liberados pelo jurídico)? Vale também
+   * para a conta que a suspensão automática não pega: admin, MINOR_AUTO_SUSPEND_ENABLED=false ou que chegou à guarda
+   * antes da suspensão existir. Erro do banco sobe para quem chama.
+   */
+  async isUnderMinorHold(userId: string): Promise<boolean> {
+    return minorHoldReached(await countMinorBlocks(this.prisma, userId, new Date()));
+  }
+
+  /**
    * Conta que chega na guarda legal por menor é suspensa na hora: a trava recusa o pedido, mas sem isso a pessoa
    * continua tentando com outras palavras e com fotos. Desativa e revoga as
    * sessões, como o "Desativar" do admin; o JWT confere a conta ativa (cache de 60 s), então o acesso cai em até 1 min.
