@@ -18,6 +18,7 @@ const mockProfile: UserProfileResponseDto = {
   hasCompletedOnboarding: false,
   termsAcceptedAt: null,
   termsVersion: null,
+  imageDeclarationAt: null,
   createdAt: now,
   country: null,
   locale: 'pt-BR',

@@ -9,6 +9,16 @@ import { PromptJudgeService } from './prompt-judge/prompt-judge.service';
 /** Marca do juiz na trilha (campo `match` do evento): distingue do termo da trava de palavras. */
 export const JUDGE_MATCH_MINOR = 'judge:minor';
 
+/**
+ * Origem do atestado na trilha (campo `match` do evento CONSENT_ATTESTED): o pedido não trouxe `consent_confirmed` e
+ * valeu a declaração gravada na conta, na versão indicada. Atestado sem esta marca = o pedido trouxe o campo.
+ */
+export const ACCOUNT_DECLARATION_MATCH_PREFIX = 'account-declaration:';
+
+export function accountDeclarationMatch(version: string | null): string {
+  return `${ACCOUNT_DECLARATION_MATCH_PREFIX}${version ?? 'sem-versao'}`;
+}
+
 type Fields = Record<string, unknown>;
 
 function isRecord(value: unknown): value is Fields {
@@ -171,9 +181,12 @@ export function hasMedia(body: unknown, fields: readonly string[]): boolean {
 }
 
 /**
- * - required: sem `consent_confirmed: true`, recusa (400 CONSENT_REQUIRED)
- * - optional: segue sem atestado; com ele, o atestado é gravado e ligado à geração
+ * - required: sem `consent_confirmed: true` e sem a declaração gravada na conta, recusa (400 CONSENT_REQUIRED)
+ * - optional: segue sem atestado; com ele (no pedido ou pela declaração da conta), é gravado e ligado à geração
  * - none: rota sem foto de pessoa; nada a atestar
+ *
+ * A decisão olha só a rota e o corpo. A declaração da conta (users.image_declaration_at, marcada uma vez) é
+ * conferida depois, no interceptor, e só quando o corpo não traz o campo.
  */
 export type ConsentDecision = 'required' | 'optional' | 'none';
 
@@ -248,7 +261,10 @@ const INSPECTED_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH'])
  * cobrança (interceptor roda antes dos pipes e do handler):
  *  1. corpo grande demais para ser lido inteiro → recusa (413 REQUEST_TOO_LARGE), nunca libera sem ler
  *  2. qualquer texto livre do pedido que faça referência a menor de idade → recusa (422 CONTENT_POLICY_MINOR)
- *  3. ferramenta de foto de pessoa sem o atestado de consentimento → recusa (400 CONSENT_REQUIRED)
+ *  3. ferramenta de foto de pessoa sem o atestado: recusa (400 CONSENT_REQUIRED). O atestado é o campo
+ *     consent_confirmed: true do pedido OU a declaração de responsabilidade pelas imagens que a conta marcou uma
+ *     vez (users.image_declaration_at): quem já declarou não precisa mandar o campo a cada pedido, e o primeiro
+ *     pedido com o campo grava a declaração na conta
  * A recusa por menor, a falta de atestado e cada atestado aceito ficam na trilha de auditoria
  * (content_safety_events); o atestado é gravado antes do handler (sem registro, sem geração) e depois ligado à
  * geração criada. Um interceptor com a tabela de regras no lugar de 23 alterações no generations.service: rota nova
@@ -303,14 +319,38 @@ export class ContentSafetyInterceptor implements NestInterceptor {
 
     const decision = consentDecision(path, body);
     if (decision === 'none') return next.handle();
-    if (!hasConsent(body)) {
+
+    if (hasConsent(body)) {
+      // fail closed: sem o atestado gravado, o pedido não segue (o service responde 503)
+      const eventId = await this.safety.recordOrThrow({ userId, kind: ContentSafetyEventKind.CONSENT_ATTESTED, route });
+      // o campo veio no pedido: a conta fica com a declaração gravada e não precisa mandar de novo (nunca lança)
+      await this.safety.rememberImageDeclaration(userId);
+      return next.handle().pipe(tap((response) => this.linkInBackground(eventId, response)));
+    }
+
+    // sem o campo no corpo: vale a declaração que a conta fez uma vez (consulta só aqui, nas rotas da tabela)
+    const declaration = await this.safety.accountImageDeclaration(userId);
+    if (!declaration) {
       if (decision === 'optional') return next.handle();
       await this.safety.record({ userId, kind: ContentSafetyEventKind.CONSENT_MISSING, route });
       throw new BusinessException('CONSENT_REQUIRED');
     }
 
-    // fail closed: sem o atestado gravado, o pedido não segue (o service responde 503)
-    const eventId = await this.safety.recordOrThrow({ userId, kind: ContentSafetyEventKind.CONSENT_ATTESTED, route });
+    const attested = {
+      userId,
+      kind: ContentSafetyEventKind.CONSENT_ATTESTED,
+      route,
+      match: accountDeclarationMatch(declaration.version),
+    };
+    if (decision === 'required') {
+      // mesma regra do campo no corpo: ferramenta de foto de pessoa não roda sem o atestado gravado
+      const eventId = await this.safety.recordOrThrow(attested);
+      return next.handle().pipe(tap((response) => this.linkInBackground(eventId, response)));
+    }
+    // rota opcional: o pedido passa com ou sem registro. Gravado, o atestado libera o desvio para o modelo sem
+    // censura depois de um bloqueio do filtro; se a gravação falhar, o pedido segue sem atestado (nunca 503 aqui).
+    const eventId = await this.safety.record(attested);
+    if (!eventId) return next.handle();
     return next.handle().pipe(tap((response) => this.linkInBackground(eventId, response)));
   }
 

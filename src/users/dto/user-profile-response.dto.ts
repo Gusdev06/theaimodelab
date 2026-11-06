@@ -37,6 +37,12 @@ export class UserProfileResponseDto {
   termsAcceptedAt: Date | null;
   @ApiPropertyOptional({ description: "Versão do termo aceita (ex: 2026-09-03)." })
   termsVersion: string | null;
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Quando a conta declarou a responsabilidade pelas imagens enviadas (uma vez só). Null = ainda não declarou.',
+  })
+  imageDeclarationAt: Date | null;
   @ApiPropertyOptional() country: string | null;
   @ApiProperty() locale: string;
   @ApiProperty() currency: string;
