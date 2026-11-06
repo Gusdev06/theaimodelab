@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 import { applyBrand, Brand, brandedFrom } from '../brand/brand';
 import type { BuyerLocale } from '../pending-grants/buyer-locale';
+import { formatAffiliatePayoutAmount } from '../affiliates/affiliate-currency';
 
 /** Textos do e-mail de acesso da isca, por idioma do comprador (TKT-004). */
 interface PendingGrantsCopy {
@@ -413,6 +414,8 @@ export class EmailService implements OnModuleInit {
     name: string;
     totalCents: number;
     earningsCount: number;
+    /** Moeda das comissões pagas (ISO, ex.: USD). Sem ela vale o real, como sempre. */
+    currency?: string;
     attachment?: { filename: string; content: string; contentType?: string };
   }): Promise<void> {
     if (!this.client) {
@@ -425,7 +428,12 @@ export class EmailService implements OnModuleInit {
         from: this.fromEmail,
         to: [params.to],
         subject: 'Suas comissões foram pagas — The AI Model Lab',
-        html: this.getAffiliatePaymentTemplate(params.name, params.totalCents, params.earningsCount),
+        html: this.getAffiliatePaymentTemplate(
+          params.name,
+          params.totalCents,
+          params.earningsCount,
+          params.currency,
+        ),
         ...(params.attachment && {
           attachments: [
             {
@@ -909,15 +917,13 @@ export class EmailService implements OnModuleInit {
     name: string,
     totalCents: number,
     earningsCount: number,
+    currency?: string,
   ): string {
     const dashboardUrl = `${this.frontendUrl}/painel-afiliado`;
     const logoHtml = this.logoUrl
       ? `<img src="${this.logoUrl}" alt="The AI Model Lab" width="80" height="80" style="display: block; border-radius: 12px;">`
       : '';
-    const totalFormatted = (totalCents / 100).toLocaleString('pt-BR', {
-      style: 'currency',
-      currency: 'BRL',
-    });
+    const totalFormatted = formatAffiliatePayoutAmount(totalCents, currency);
     const earningsLabel = earningsCount === 1 ? '1 comissão paga' : `${earningsCount} comissões pagas`;
 
     return `

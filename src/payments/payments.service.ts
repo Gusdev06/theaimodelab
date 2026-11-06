@@ -7,6 +7,7 @@ import { AsaasSubscriptionsService } from './asaas-subscriptions.service';
 import { StripeService } from './stripe.service';
 import { MetaConversionsService } from '../meta/meta-conversions.service';
 import { renewalEarnsCommission, resolveAffiliateRecurringWindow } from '../affiliates/affiliate-recurring';
+import { computeAffiliateNetCents } from '../affiliates/affiliate-net';
 
 const ULTRA_BASIC_WELCOME_FREE_GENERATIONS = 2;
 
@@ -181,7 +182,7 @@ export class PaymentsService {
       });
 
       // Registrar comissão do afiliado se o usuário foi indicado
-      await this.recordAffiliateEarning(tx, userId, payment.id, amountCents, referredByCode);
+      await this.recordAffiliateEarning(tx, userId, payment, amountCents, referredByCode);
 
       // Welcome bonus Ultra Basic: 2 vídeos grátis (THEAIMODELAB_FAST) no primeiro acesso.
       // Idempotente por usuário: só concede se o user nunca teve ultra-basic antes.
@@ -438,7 +439,7 @@ export class PaymentsService {
       });
 
       if (created || (await this.renewalEarnsAffiliateCommission(tx, userId, referredByCode, now))) {
-        await this.recordAffiliateEarning(tx, userId, payment.id, amountCents, referredByCode);
+        await this.recordAffiliateEarning(tx, userId, payment, amountCents, referredByCode);
       }
     });
 
@@ -759,7 +760,7 @@ export class PaymentsService {
       });
 
       // Registrar comissão do afiliado se o usuário foi indicado
-      await this.recordAffiliateEarning(tx, userId, payment.id, amountCents, referredByCode);
+      await this.recordAffiliateEarning(tx, userId, payment, amountCents, referredByCode);
 
       return { processed: true, paymentId: payment.id };
     });
@@ -1059,7 +1060,7 @@ export class PaymentsService {
         select: { referredByCode: true },
       });
       if (user?.referredByCode) {
-        await this.recordAffiliateEarning(tx, subscription.userId, payment.id, amountCents, user.referredByCode);
+        await this.recordAffiliateEarning(tx, subscription.userId, payment, amountCents, user.referredByCode);
       }
     });
 
@@ -1467,11 +1468,13 @@ export class PaymentsService {
   /**
    * Registra comissão do afiliado para um pagamento.
    * Busca o afiliado pelo código, calcula a comissão e cria o registro.
+   * A base é o valor líquido da venda: taxa do gateway vinda de AFFILIATE_GATEWAY_FEE_PERCENT
+   * ou, para gateway que a env não cita, a fórmula de sempre (Stripe). Ver affiliate-net.ts.
    */
   private async recordAffiliateEarning(
     tx: Parameters<Parameters<typeof this.prisma.$transaction>[0]>[0],
     userId: string,
-    paymentId: string,
+    payment: { id: string; provider?: string | null; currency?: string | null },
     amountCents: number,
     referredByCode?: string,
   ): Promise<void> {
@@ -1484,9 +1487,13 @@ export class PaymentsService {
 
     if (!affiliate?.isActive) return;
 
-    // Calcula valor líquido após taxa Stripe (3.99% + R$0,39)
-    const stripeFee = Math.round(amountCents * 0.0399) + 39;
-    const netAmountCents = amountCents - stripeFee;
+    const provider = payment.provider?.trim().toLowerCase() || null;
+    const currency = payment.currency?.trim().toUpperCase() || null;
+    const { netCents: netAmountCents, feeCents, rule } = computeAffiliateNetCents(
+      amountCents,
+      provider,
+      process.env.AFFILIATE_GATEWAY_FEE_PERCENT,
+    );
 
     const commissionCents = Math.round(
       (netAmountCents * affiliate.commissionPercent) / 100,
@@ -1497,16 +1504,18 @@ export class PaymentsService {
     await tx.affiliateEarning.create({
       data: {
         affiliateId: affiliate.id,
-        paymentId,
+        paymentId: payment.id,
         userId,
         amountCents: netAmountCents,
         commissionCents,
+        currency,
+        provider,
         status: 'PENDING',
       },
     });
 
     this.logger.log(
-      `Affiliate earning recorded: ${commissionCents} centavos for affiliate ${affiliate.id} (${affiliate.commissionPercent}% of net ${netAmountCents}, original ${amountCents}, stripe fee ${stripeFee})`,
+      `Affiliate earning recorded: ${commissionCents} centavos${currency ? ` ${currency}` : ''} for affiliate ${affiliate.id} (${affiliate.commissionPercent}% of net ${netAmountCents}, original ${amountCents}, ${rule === 'gateway-percent' ? `${provider} fee` : 'stripe fee'} ${feeCents})`,
     );
   }
 }

@@ -750,6 +750,8 @@ model AffiliateEarning {
   status          AffiliateEarningStatus @default(PENDING)
   paidAt          DateTime?              @map("paid_at")
   createdAt       DateTime               @default(now()) @map("created_at")
+  currency        String?
+  provider        String?
   affiliate       Affiliate              @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
   payment         Payment                @relation(fields: [paymentId], references: [id], onDelete: Cascade)
   user            User                   @relation("referred_user_earnings", fields: [userId], references: [id], onDelete: Cascade)
