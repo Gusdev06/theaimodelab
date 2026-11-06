@@ -29,6 +29,7 @@ import { assessText } from '../content-safety/minor-guard';
 import { AsaasSubscriptionsService } from '../payments/asaas-subscriptions.service';
 import { CaktoApiService } from '../payments/cakto-api.service';
 import { StripeService } from '../payments/stripe.service';
+import { decodeAffiliateRef } from '../pending-grants/perfectpay-affiliate';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageDeleteError, UploadsService } from '../uploads/uploads.service';
 
@@ -2617,6 +2618,8 @@ export class AccountErasureService implements BeforeApplicationShutdown {
         pixKeyType: true,
         payoutMethod: true,
         payoutEmail: true,
+        perfectpayAffiliateEmail: true,
+        perfectpayAffiliateCode: true,
         isActive: true,
       },
     });
@@ -2628,6 +2631,8 @@ export class AccountErasureService implements BeforeApplicationShutdown {
         affiliate.pixKeyType !== null ||
         affiliate.payoutMethod !== null ||
         affiliate.payoutEmail !== null ||
+        affiliate.perfectpayAffiliateEmail !== null ||
+        affiliate.perfectpayAffiliateCode !== null ||
         affiliate.name !== ERASED_AFFILIATE_NAME)
     ) {
       await tx.affiliate.update({
@@ -2638,10 +2643,54 @@ export class AccountErasureService implements BeforeApplicationShutdown {
           pixKeyType: null,
           payoutMethod: null,
           payoutEmail: null,
+          perfectpayAffiliateEmail: null,
+          perfectpayAffiliateCode: null,
           isActive: false,
         },
       });
       affiliateScrubbed = 1;
+    }
+
+    // Ponte do Pack: iscas vendidas por esta pessoa como afiliada da Perfect Pay guardam o e-mail
+    // (e o código) dela na referência. Vale também para quem nunca teve afiliado na plataforma:
+    // o e-mail da conta pode estar lá. A referência é `[ppcode:X|]email:Y`, com o e-mail no fim.
+    const affiliateRefEmails = new Set(
+      [originalEmail, affiliate?.perfectpayAffiliateEmail]
+        .filter((email): email is string => Boolean(email))
+        .map((email) => email.trim().toLowerCase()),
+    );
+    const affiliateRefCode = affiliate?.perfectpayAffiliateCode?.trim().toUpperCase() || null;
+    const affiliateRefFilters: Prisma.PendingFreeGenerationGrantWhereInput[] = Array.from(affiliateRefEmails).map(
+      (email) => ({ affiliateRef: { endsWith: `email:${email}` } }),
+    );
+    if (affiliateRefCode) {
+      affiliateRefFilters.push(
+        { affiliateRef: `ppcode:${affiliateRefCode}` },
+        { affiliateRef: { startsWith: `ppcode:${affiliateRefCode}|` } },
+      );
+    }
+    if (affiliateRefFilters.length > 0) {
+      // O filtro do banco é só a peneira (`_` e `%` do e-mail valem como curinga no LIKE);
+      // quem decide é a leitura exata das partes da referência.
+      const candidates = await tx.pendingFreeGenerationGrant.findMany({
+        where: { OR: affiliateRefFilters },
+        select: { id: true, affiliateRef: true },
+      });
+      const grantIds = candidates
+        .filter((grant) =>
+          decodeAffiliateRef(grant.affiliateRef).some((part) =>
+            part.kind === 'email'
+              ? affiliateRefEmails.has(part.value)
+              : part.kind === 'ppcode' && part.value === affiliateRefCode,
+          ),
+        )
+        .map((grant) => grant.id);
+      if (grantIds.length > 0) {
+        await tx.pendingFreeGenerationGrant.updateMany({
+          where: { id: { in: grantIds } },
+          data: { affiliateRef: null },
+        });
+      }
     }
 
     const kept = await this.countKept(tx, userId);

@@ -443,6 +443,9 @@ model PendingFreeGenerationGrant {
   consumedByUserId String?   @map("consumed_by_user_id")
   consumedAt       DateTime? @map("consumed_at")
   createdAt        DateTime  @default(now()) @map("created_at")
+  affiliateRef     String?   @map("affiliate_ref")
+  /// Ponte do Pack: código do afiliado da plataforma que ESTA venda deu à conta (o reembolso desfaz por aqui).
+  attributedAffiliateCode String? @map("attributed_affiliate_code")
 
   @@index([email])
   @@index([consumedByUserId])
@@ -735,6 +738,9 @@ model Affiliate {
   stripePromotionCodeId String?                @map("stripe_promotion_code_id")
   payoutMethod          String?                @map("payout_method")
   payoutEmail           String?                @map("payout_email")
+  perfectpayAffiliateEmail String?             @unique @map("perfectpay_affiliate_email")
+  /// `affiliation_code` do afiliado na Perfect Pay. Outro espaço de nomes: nunca é comparado com `code`.
+  perfectpayAffiliateCode  String?             @unique @map("perfectpay_affiliate_code")
   earnings              AffiliateEarning[]
   user                  User?                  @relation(fields: [userId], references: [id])
 

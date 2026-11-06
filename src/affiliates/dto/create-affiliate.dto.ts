@@ -1,4 +1,5 @@
-import { IsString, IsNotEmpty, IsOptional, IsInt, Min, Max, IsEnum } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsString, IsNotEmpty, IsOptional, IsInt, Min, Max, IsEnum, IsEmail, MaxLength, Matches } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { AffiliateDiscountScope } from '@prisma/client';
 
@@ -42,4 +43,25 @@ export class CreateAffiliateDto {
   @IsEnum(AffiliateDiscountScope)
   @IsOptional()
   discountAppliesTo?: AffiliateDiscountScope;
+
+  @ApiPropertyOptional({
+    example: 'afiliado@exemplo.com',
+    description:
+      'E-mail deste afiliado na Perfect Pay (ponte Pack → plataforma). Só o admin define: quem vende o Pack por lá com este e-mail fica com o cliente aqui.',
+  })
+  @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim().toLowerCase() : value))
+  @IsEmail()
+  @MaxLength(254)
+  @IsOptional()
+  perfectpayAffiliateEmail?: string;
+
+  @ApiPropertyOptional({
+    example: 'PPAJFTR',
+    description:
+      'Código deste afiliado na Perfect Pay (affiliation_code do postback; ponte Pack → plataforma). Só o admin define. Não é o código do link da plataforma.',
+  })
+  @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim().toUpperCase() : value))
+  @Matches(/^[A-Z0-9_-]{2,40}$/, { message: 'perfectpayAffiliateCode: 2 a 40 letras, números, _ ou -' })
+  @IsOptional()
+  perfectpayAffiliateCode?: string;
 }
