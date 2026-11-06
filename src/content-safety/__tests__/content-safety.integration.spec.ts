@@ -216,32 +216,51 @@ describe('ContentSafety no pipeline do Nest', () => {
       expect(links).toEqual([{ id: 'evt-1', generationId: 'gen-swap' }]);
     });
 
-    it('site que ainda manda o campo: o primeiro pedido atestado grava a declaração na conta e o seguinte, sem o campo, já passa', async () => {
+    it('site que ainda manda o campo: o campo vale só para aquele pedido; a conta não fica declarada e o seguinte, sem o campo, leva 400', async () => {
       accounts['u-antigo'] = { termsVersion: '2026-10-15', imageDeclarationAt: null, imageDeclarationVersion: null };
-
-      const before = await post('/api/v1/generations/face-swap', 'u-antigo', TROCA_DE_ROSTO);
-      expect(before.status).toBe(400);
-      expect(before.body).toMatchObject({ code: 'CONSENT_REQUIRED' });
-      expect(accounts['u-antigo'].imageDeclarationAt).toBeNull();
+      prismaMock.user.findUnique.mockClear();
+      prismaMock.user.updateMany.mockClear();
 
       const attested = await post('/api/v1/generations/face-swap', 'u-antigo', { ...TROCA_DE_ROSTO, consent_confirmed: true });
       expect(attested.status).toBe(201);
-      expect(accounts['u-antigo'].imageDeclarationAt).toBeInstanceOf(Date);
-      expect(accounts['u-antigo'].imageDeclarationVersion).toBe('2026-11-06');
-      const declaredAt = accounts['u-antigo'].imageDeclarationAt;
+      expect(accounts['u-antigo']).toEqual({ termsVersion: '2026-10-15', imageDeclarationAt: null, imageDeclarationVersion: null });
+      // com o campo, nada é escrito em users e a única leitura é a da versão do termo que acompanha a evidência
+      // (já existia antes da declaração da conta); a declaração da conta não é consultada
+      expect(prismaMock.user.updateMany).not.toHaveBeenCalled();
+      expect(prismaMock.user.findUnique.mock.calls.map(([args]) => args)).toEqual([
+        { where: { id: 'u-antigo' }, select: { termsVersion: true } },
+      ]);
 
       const after = await post('/api/v1/generations/face-swap', 'u-antigo', TROCA_DE_ROSTO);
-      expect(after.status).toBe(201);
-      // outro pedido com o campo não troca a data da declaração
-      await post('/api/v1/generations/face-swap', 'u-antigo', { ...TROCA_DE_ROSTO, consent_confirmed: true });
-      expect(accounts['u-antigo'].imageDeclarationAt).toBe(declaredAt);
+      expect(after.status).toBe(400);
+      expect(after.body).toMatchObject({ code: 'CONSENT_REQUIRED' });
+      expect(accounts['u-antigo'].imageDeclarationAt).toBeNull();
+      expect(prismaMock.user.updateMany).not.toHaveBeenCalled();
 
       expect(events.map((event) => [event.kind, event.match])).toEqual([
+        ['CONSENT_ATTESTED', null],
         ['CONSENT_MISSING', null],
-        ['CONSENT_ATTESTED', null],
-        ['CONSENT_ATTESTED', 'account-declaration:2026-11-06'],
-        ['CONSENT_ATTESTED', null],
       ]);
+    });
+
+    it('rota opcional com o campo: sem conseguir gravar o atestado o pedido passa mesmo assim (nunca 503 onde sem o campo passaria)', async () => {
+      accounts['u-campo'] = { termsVersion: '2026-10-15', imageDeclarationAt: null, imageDeclarationVersion: null };
+      prismaMock.contentSafetyEvent.create.mockRejectedValueOnce(new Error('banco fora'));
+
+      const res = await post('/api/v1/generations/generate-image', 'u-campo', {
+        prompt: 'portrait, studio light',
+        model: 'gpt-image-2',
+        resolution: 'RES_2K',
+        images: [{ base64: 'iVBORw0KGgo' }],
+        consent_confirmed: true,
+      });
+
+      expect(res.status).toBe(201);
+      expect(controller.handled).toEqual(['generate-image']);
+      expect(events).toEqual([]);
+      await flush();
+      expect(links).toEqual([]);
+      expect(accounts['u-campo'].imageDeclarationAt).toBeNull();
     });
 
     it('acabou de declarar pela rota do perfil: o pedido seguinte passa na hora (o "não" de antes não ficou guardado)', async () => {

@@ -2,7 +2,7 @@ import { CallHandler, ExecutionContext, Injectable, Logger, NestInterceptor, Opt
 import { ContentSafetyEventKind } from '@prisma/client';
 import { Observable, tap } from 'rxjs';
 import { BusinessException } from '../common/exceptions/business.exception';
-import { ContentSafetyService } from './content-safety.service';
+import { ContentSafetyService, SafetyEventInput } from './content-safety.service';
 import { assessBody, collectTexts } from './minor-guard';
 import { PromptJudgeService } from './prompt-judge/prompt-judge.service';
 
@@ -263,8 +263,9 @@ const INSPECTED_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH'])
  *  2. qualquer texto livre do pedido que faça referência a menor de idade → recusa (422 CONTENT_POLICY_MINOR)
  *  3. ferramenta de foto de pessoa sem o atestado: recusa (400 CONSENT_REQUIRED). O atestado é o campo
  *     consent_confirmed: true do pedido OU a declaração de responsabilidade pelas imagens que a conta marcou uma
- *     vez (users.image_declaration_at): quem já declarou não precisa mandar o campo a cada pedido, e o primeiro
- *     pedido com o campo grava a declaração na conta
+ *     vez (users.image_declaration_at): quem já declarou não precisa mandar o campo a cada pedido. O campo vale só
+ *     para aquele pedido: a conta só fica declarada pelo POST /users/me/image-declaration, que o site chama ao
+ *     mostrar o texto da declaração (o campo sozinho não prova que a cliente viu esse texto)
  * A recusa por menor, a falta de atestado e cada atestado aceito ficam na trilha de auditoria
  * (content_safety_events); o atestado é gravado antes do handler (sem registro, sem geração) e depois ligado à
  * geração criada. Um interceptor com a tabela de regras no lugar de 23 alterações no generations.service: rota nova
@@ -321,11 +322,8 @@ export class ContentSafetyInterceptor implements NestInterceptor {
     if (decision === 'none') return next.handle();
 
     if (hasConsent(body)) {
-      // fail closed: sem o atestado gravado, o pedido não segue (o service responde 503)
-      const eventId = await this.safety.recordOrThrow({ userId, kind: ContentSafetyEventKind.CONSENT_ATTESTED, route });
-      // o campo veio no pedido: a conta fica com a declaração gravada e não precisa mandar de novo (nunca lança)
-      await this.safety.rememberImageDeclaration(userId);
-      return next.handle().pipe(tap((response) => this.linkInBackground(eventId, response)));
+      // o campo vale só para este pedido: não grava nada na conta e não consulta a declaração dela
+      return this.attestAndHandle(decision, { userId, kind: ContentSafetyEventKind.CONSENT_ATTESTED, route }, next);
     }
 
     // sem o campo no corpo: vale a declaração que a conta fez uma vez (consulta só aqui, nas rotas da tabela)
@@ -336,20 +334,25 @@ export class ContentSafetyInterceptor implements NestInterceptor {
       throw new BusinessException('CONSENT_REQUIRED');
     }
 
-    const attested = {
-      userId,
-      kind: ContentSafetyEventKind.CONSENT_ATTESTED,
-      route,
-      match: accountDeclarationMatch(declaration.version),
-    };
-    if (decision === 'required') {
-      // mesma regra do campo no corpo: ferramenta de foto de pessoa não roda sem o atestado gravado
-      const eventId = await this.safety.recordOrThrow(attested);
-      return next.handle().pipe(tap((response) => this.linkInBackground(eventId, response)));
-    }
-    // rota opcional: o pedido passa com ou sem registro. Gravado, o atestado libera o desvio para o modelo sem
-    // censura depois de um bloqueio do filtro; se a gravação falhar, o pedido segue sem atestado (nunca 503 aqui).
-    const eventId = await this.safety.record(attested);
+    return this.attestAndHandle(
+      decision,
+      { userId, kind: ContentSafetyEventKind.CONSENT_ATTESTED, route, match: accountDeclarationMatch(declaration.version) },
+      next,
+    );
+  }
+
+  /**
+   * Grava o atestado (do campo do pedido ou da declaração da conta) antes do handler e liga à geração criada.
+   * - rota que EXIGE: ferramenta de foto de pessoa não roda sem o atestado gravado (falha fechada, 503)
+   * - rota OPCIONAL: o pedido passa com ou sem registro. Gravado, o atestado libera o desvio para o modelo sem
+   *   censura depois de um bloqueio do filtro; se a gravação falhar, o pedido segue sem atestado (nunca 503 aqui)
+   */
+  private async attestAndHandle(
+    decision: Exclude<ConsentDecision, 'none'>,
+    attested: SafetyEventInput,
+    next: CallHandler,
+  ): Promise<Observable<unknown>> {
+    const eventId = decision === 'required' ? await this.safety.recordOrThrow(attested) : await this.safety.record(attested);
     if (!eventId) return next.handle();
     return next.handle().pipe(tap((response) => this.linkInBackground(eventId, response)));
   }

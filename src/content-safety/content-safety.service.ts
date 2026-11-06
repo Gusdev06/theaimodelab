@@ -8,11 +8,7 @@ import {
 import { ContentSafetyEvent, ContentSafetyEventKind, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { countMinorBlocks, MINOR_BLOCKED_HOLD_THRESHOLD, MinorBlockTally } from '../users/account-erasure.service';
-import {
-  CURRENT_IMAGE_DECLARATION_VERSION,
-  readImageDeclaration,
-  recordImageDeclaration,
-} from '../users/image-declaration';
+import { readImageDeclaration } from '../users/image-declaration';
 import { CURRENT_TERMS_VERSION } from '../users/terms.constants';
 
 /**
@@ -112,8 +108,8 @@ export class ContentSafetyService {
   /**
    * Grava o evento de RECUSA (menor, falta de atestado). Falha ao gravar não libera o pedido: quem chama já
    * decidiu recusar; o erro do banco só vira log, para a recusa nunca depender do registro.
-   * Serve também ao atestado das rotas OPCIONAIS quando ele vem da declaração da conta: ali o pedido passa com ou
-   * sem registro, então a falha não pode virar 503 (devolve null e o pedido segue sem atestado, como antes).
+   * Serve também ao atestado das rotas OPCIONAIS (venha do campo do pedido ou da declaração da conta): ali o pedido
+   * passa com ou sem registro, então a falha não pode virar 503 (devolve null e o pedido segue sem atestado).
    */
   async record(event: SafetyEventInput): Promise<string | null> {
     let eventId: string | null;
@@ -200,7 +196,7 @@ export class ContentSafetyService {
   /**
    * A conta já fez a declaração de responsabilidade pelas imagens? Com ela, o pedido com foto vale como atestado sem
    * precisar trazer `consent_confirmed`. Nunca lança: sem conseguir ler, responde "não" e o pedido segue a regra de
-   * sempre (o campo no corpo).
+   * sempre (o campo no corpo). Este service só LÊ a declaração: quem grava é o POST /users/me/image-declaration.
    */
   async accountImageDeclaration(userId: string | null): Promise<AccountImageDeclaration | null> {
     if (!userId) return null;
@@ -214,22 +210,6 @@ export class ContentSafetyService {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`content-safety: não deu para ler a declaração de imagens da conta ${userId}: ${message}`);
       return null;
-    }
-  }
-
-  /**
-   * O pedido trouxe `consent_confirmed: true`: se a conta ainda não tem a declaração, grava agora (versão vigente).
-   * É assim que o site que ainda manda o campo a cada pedido também forma o registro da conta. Melhor esforço: a
-   * evidência do pedido já está gravada (CONSENT_ATTESTED), então a falha aqui só vira log e nunca derruba o pedido.
-   */
-  async rememberImageDeclaration(userId: string | null): Promise<void> {
-    if (!userId || this.declaredAccounts.has(userId)) return;
-    try {
-      const declaration = await recordImageDeclaration(this.prisma, userId, CURRENT_IMAGE_DECLARATION_VERSION);
-      if (declaration?.imageDeclarationAt) this.rememberDeclared(userId, declaration.imageDeclarationVersion);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`content-safety: declaração de imagens da conta ${userId} não gravada: ${message}`);
     }
   }
 
