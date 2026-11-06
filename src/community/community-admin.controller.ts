@@ -22,9 +22,11 @@ import {
   CreateAdminCommunityPostDto,
   RejectCommunityPostDto,
 } from './dto/community.dto';
+import { AdminThrottle } from '../common/decorators/admin-throttle.decorator';
 
 @ApiTags('admin')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/community')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')
