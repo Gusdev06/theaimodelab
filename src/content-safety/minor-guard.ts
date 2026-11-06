@@ -676,6 +676,22 @@ function maskSecundaria(text: string): string | null {
 
 /* ------------------------------------------------------------------ conferência */
 
+/** Alfabetos que a trava lê (os de SCRIPT_GUARDS) mais o latino, a pontuação e os sinais comuns. */
+const READ_SCRIPTS =
+  /[\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}\p{Script=Hebrew}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Cyrillic}\p{Script=Arabic}\p{Script=Thai}\p{Script=Hangul}]/u;
+
+/**
+ * Troca por espaço cada letra de alfabeto que a trava não lê. Letra que só PARECE latina (homógrafo) fica: a forma
+ * canônica já a lê como latina e ela faz parte da palavra ofuscada.
+ */
+function withoutUnreadScripts(text: string): string {
+  return text.replace(/[\p{L}\p{M}]/gu, (char) => {
+    if (READ_SCRIPTS.test(char)) return char;
+    const mapped = canonical(char);
+    return mapped && /^[\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]+$/u.test(mapped) ? char : ' '.repeat(char.length);
+  });
+}
+
 /** Gíria de juventude escrita normalmente (texto achatado: minúsculo, sem acento). Ofuscada não casa aqui. */
 const PLAIN_YOUTH_SLANG =
   /(?<![\p{L}\p{N}])(?:novi+nh[a-z]*|novin|ninfet[a-z]*|nymph(?:et|ette)[a-z]*|colegia[a-z]*|kolegial[a-z]*|colejial[a-z]*|school ?girl[a-z]*|jovencit[a-z]*)(?![\p{L}\p{N}])/u;
@@ -709,9 +725,14 @@ export function assessText(text: string | null | undefined, options: GuardOption
   if (!source) return { blocked: false };
   if (source.length > MAX_TEXT_SCAN) return { blocked: true, reason: 'size' };
 
-  const verdict = assessStrict(source, options.source === 'description');
+  const literal = options.source === 'description';
+  let verdict = assessStrict(source, literal);
   if (!verdict.blocked || (options.target ?? 'uncensored') === 'uncensored') return verdict;
-  if (verdict.reason === 'script') return { blocked: false };
+  if (verdict.reason === 'script') {
+    // o alfabeto sem lista não recusa o pedido aqui, mas também não esconde o resto: lê o texto sem essas letras
+    verdict = assessStrict(withoutUnreadScripts(source), literal);
+    if (!verdict.blocked || verdict.reason === 'script') return { blocked: false };
+  }
   if (verdict.reason === 'size') return verdict;
   if (ALWAYS_SEXUAL_MINOR.test(canonical(verdict.match ?? '')) || sexualRequest(prepare(source))) return verdict;
   return { blocked: false };

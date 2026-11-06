@@ -536,6 +536,9 @@ describe('minor-guard · contexto e alvo do pedido', () => {
     const gujarati = 'એક સ્ત્રી બગીચામાં';
     expect(assessText(gujarati)).toMatchObject({ blocked: true, reason: 'script' });
     expect(assessText(gujarati, { target: 'filtered' })).toEqual({ blocked: false });
+    // mas a letra não lida não esconde o resto do pedido
+    expect(assessText('girl, 15, nude नमस्ते', { target: 'filtered' })).toMatchObject({ blocked: true, reason: 'age' });
+    expect(assessText('two children running through a castle नमस्ते', { target: 'filtered' })).toEqual({ blocked: false });
   });
 
   it('texto que não é o pedido da cliente (análise de foto, saída do melhorador, denúncia) vale ao pé da letra', () => {
