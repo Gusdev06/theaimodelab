@@ -23,6 +23,13 @@ import { PrismaService } from '../../prisma/prisma.service';
  *  - Imagem com transparência, com várias páginas ou gigante não é conferida (não reconhecida).
  *
  * Falha de leitura, rede ou banco = "não reconhecida": o desvio segue barrado como antes. Nada aqui lança.
+ *
+ * Vídeo (06/11/2026, A10 do estudo r2v): o site tira o 1º e o último quadro de um vídeo pronto para continuar a cena
+ * (Historinha, Estender, Corrigir). Com a porta da foto própria ligada (own-media-gate.ts), o vídeo de linhagem limpa
+ * ganha a impressão dos quadros das duas pontas (`frameIndex`: 0, 1, 2… = desde o começo; −1, −2… = desde o fim; o
+ * ponto que o site usa cai do 1º ao 4º quadro conforme os quadros por segundo). Quem casa com um quadro recebe a cópia
+ * tirada do NOSSO vídeo, nunca os bytes do pedido. As impressões de quadro só entram quando quem chama pede
+ * (`includeVideoFrames`): o desvio continua só com imagens.
  */
 
 /** Critério do desvio: a foto enviada vira a nossa cópia, então um falso positivo não leva foto de fora. */
@@ -36,6 +43,21 @@ export type MatchRule = { maxDistance: number; maxThumbDiff: number; maxAspectDi
 
 /** Marca que o "Clonar prompt" põe em todo prompt tirado de uma foto (PR #4): prompt assim descreve uma foto real. */
 const CLONED_FROM_PHOTO = /reference_override/i;
+/**
+ * `outputOrder` das impressões de quadro: a saída N do vídeo ganha FRAME_ORDER_BASE + N × FRAME_SLOTS + vaga (quadros
+ * do começo nas vagas 0…, do fim nas vagas FRAME_SLOTS ÷ 2…), para não colidir com a ordem das saídas de imagem na
+ * chave única (generation_id, output_order).
+ */
+export const FRAME_ORDER_BASE = 1000;
+export const FRAME_SLOTS = 16;
+
+/** Vaga de um quadro dentro da saída: índice 0, 1… → 0, 1…; índice −1, −2… → 8, 9… null = fora das vagas. */
+export function frameSlot(frameIndex: number): number | null {
+  const half = FRAME_SLOTS / 2;
+  if (!Number.isInteger(frameIndex)) return null;
+  if (frameIndex >= 0) return frameIndex < half ? frameIndex : null;
+  return -frameIndex <= half ? half + (-frameIndex - 1) : null;
+}
 /** Maior arquivo baixado para conferir (imagem de entrada ou saída). */
 const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
 /** Maior imagem decodificada (largura × altura): acima disso não confere (bomba de descompressão). */
@@ -262,28 +284,38 @@ export function substituteImageUrls<T>(data: T, replacements: ReadonlyMap<string
   return fields as T;
 }
 
-async function download(url: string): Promise<Buffer | null> {
+/** Falha passageira de leitura (rede, tempo, 5xx): diferente de "não dá para usar" (null). */
+const TRANSIENT = 'transient' as const;
+type Transient = typeof TRANSIENT;
+
+async function download(url: string): Promise<Buffer | Transient | null> {
+  if (!/^https:\/\//i.test(url)) return null;
   try {
-    if (!/^https:\/\//i.test(url)) return null;
     const res = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
-    if (!res.ok) return null;
+    if (!res.ok) return res.status >= 500 ? TRANSIENT : null;
     const length = Number(res.headers.get('content-length') ?? 0);
     if (length > MAX_DOWNLOAD_BYTES) return null;
     const buffer = Buffer.from(await res.arrayBuffer());
     return buffer.length > MAX_DOWNLOAD_BYTES ? null : buffer;
+  } catch {
+    return TRANSIENT;
+  }
+}
+
+/** Impressão da imagem do link; null = não dá para usar; TRANSIENT = não deu para ler agora. */
+async function fingerprintUrlDetailed(url: string): Promise<Fingerprint | Transient | null> {
+  const buffer = await download(url);
+  if (buffer === TRANSIENT || !buffer) return buffer;
+  try {
+    return await fingerprintImage(buffer);
   } catch {
     return null;
   }
 }
 
 async function fingerprintUrl(url: string): Promise<Fingerprint | null> {
-  const buffer = await download(url);
-  if (!buffer) return null;
-  try {
-    return await fingerprintImage(buffer);
-  } catch {
-    return null;
-  }
+  const fingerprint = await fingerprintUrlDetailed(url);
+  return fingerprint === TRANSIENT ? null : fingerprint;
 }
 
 /** Uma foto do pedido e a geração limpa da conta com que ela bateu. */
@@ -295,12 +327,21 @@ export interface OwnMatch {
   outputUrl: string;
   distance: number;
   thumbDiff: number;
+  /**
+   * Casou com um QUADRO de vídeo (só com `includeVideoFrames`): `outputUrl` é o vídeo, e a cópia que vai ao modelo é o
+   * quadro tirado dele (0, 1… = desde o começo; −1, −2… = desde o fim). null = imagem.
+   */
+  frameIndex: number | null;
 }
 
 interface KnownFingerprint extends Fingerprint {
   generationId: string;
   outputOrder: number;
+  frameIndex: number | null;
 }
+
+/** Tira os quadros das pontas de um vídeo (`index` como em OwnMatch.frameIndex). Lista vazia = não deu. */
+export type EdgeFrameExtractor = (videoUrl: string) => Promise<{ index: number; jpeg: Buffer }[]>;
 
 export class OwnMediaProvenance {
   private readonly logger = new Logger(OwnMediaProvenance.name);
@@ -316,38 +357,63 @@ export class OwnMediaProvenance {
     userId: string,
     imageUrls: readonly string[] | null,
     rule: MatchRule = DETOUR_MATCH,
+    options: { includeVideoFrames?: boolean; trustedUserIds?: readonly string[] } = {},
   ): Promise<OwnMatch[] | null> {
-    if (!imageUrls || imageUrls.length === 0) return null;
+    return (await this.matchOwnCleanDetailed(userId, imageUrls, rule, options)).matches;
+  }
+
+  /**
+   * O mesmo, dizendo quando o "não" foi falha passageira de leitura (rede, armazenamento, banco) e não uma foto que
+   * não bate: quem bloqueia por "foto de fora" precisa da diferença para não punir um soluço de rede. Nunca lança.
+   */
+  async matchOwnCleanDetailed(
+    userId: string,
+    imageUrls: readonly string[] | null,
+    rule: MatchRule = DETOUR_MATCH,
+    options: { includeVideoFrames?: boolean; trustedUserIds?: readonly string[] } = {},
+  ): Promise<{ matches: OwnMatch[] | null; transient: boolean }> {
+    const none = { matches: null, transient: false };
+    const includeVideoFrames = options.includeVideoFrames === true;
+    // contas da casa (capas da biblioteca geradas na conta do dono): as gerações limpas delas valem como próprias
+    const owners = [userId, ...(options.trustedUserIds ?? []).filter((id) => id && id !== userId)];
+    if (!imageUrls || imageUrls.length === 0) return none;
     try {
       // uma por vez: cada uma é decodificada em memória
       const inputs: Fingerprint[] = [];
       for (const url of imageUrls) {
-        const fingerprint = await fingerprintUrl(url);
-        if (!fingerprint) return null;
+        const fingerprint = await fingerprintUrlDetailed(url);
+        if (fingerprint === TRANSIENT) return { matches: null, transient: true };
+        if (!fingerprint) return none;
         inputs.push(fingerprint);
       }
 
-      let known = await this.cleanFingerprints(userId);
+      let known = await this.cleanFingerprints(owners, includeVideoFrames);
       let found = inputs.map((input) => bestMatch(input, known, rule));
       if (found.some((item) => !item)) {
         // gerações de antes desta tabela: impressão feita agora, só das que nasceram de texto (no máximo 1x a cada
         // 30 min por conta neste processo, para quem sempre manda foto de fora não baixar a galeria toda hora)
-        if (!this.backfillDue(userId)) return null;
+        if (!this.backfillDue(userId)) return none;
         const added = await this.backfillTextOnly(userId);
-        if (added === 0) return null;
-        known = await this.cleanFingerprints(userId);
+        if (added === 0) return none;
+        known = await this.cleanFingerprints(owners, includeVideoFrames);
         found = inputs.map((input) => bestMatch(input, known, rule));
-        if (found.some((item) => !item)) return null;
+        if (found.some((item) => !item)) return none;
       }
 
       const matches: OwnMatch[] = [];
       for (let i = 0; i < imageUrls.length; i++) {
         const hit = found[i]!;
+        const frameIndex = hit.item.frameIndex ?? null;
+        // quadro de vídeo: a saída é o vídeo de ordem (outputOrder − base) ÷ vagas
+        const order =
+          frameIndex === null
+            ? hit.item.outputOrder
+            : Math.floor((hit.item.outputOrder - FRAME_ORDER_BASE) / FRAME_SLOTS);
         const output = await this.prisma.generationOutput.findFirst({
-          where: { generationId: hit.item.generationId, order: hit.item.outputOrder },
+          where: { generationId: hit.item.generationId, order },
           select: { url: true },
         });
-        if (!output?.url || !/^https:\/\//i.test(output.url)) return null;
+        if (!output?.url || !/^https:\/\//i.test(output.url)) return none;
         matches.push({
           inputUrl: imageUrls[i],
           generationId: hit.item.generationId,
@@ -355,12 +421,13 @@ export class OwnMediaProvenance {
           outputUrl: output.url,
           distance: hit.distance,
           thumbDiff: Math.round(hit.thumbDiff * 10) / 10,
+          frameIndex,
         });
       }
-      return matches;
+      return { matches, transient: false };
     } catch (error) {
       this.logger.warn(`[OWN_MEDIA] user=${userId}: conferência da origem falhou (${(error as Error).message})`);
-      return null;
+      return { matches: null, transient: true };
     }
   }
 
@@ -437,6 +504,50 @@ export class OwnMediaProvenance {
     }
   }
 
+  /**
+   * Impressão dos quadros das pontas de cada saída de um vídeo de linhagem limpa (a porta da foto própria decidiu a
+   * linhagem no envio). Vídeo de linhagem suja não chega aqui. Nunca lança.
+   */
+  async recordVideoFrames(
+    generationId: string,
+    outputUrls: readonly string[],
+    extract: EdgeFrameExtractor,
+  ): Promise<number> {
+    let recorded = 0;
+    try {
+      const generation = await this.prisma.generation.findUnique({
+        where: { id: generationId },
+        select: { userId: true, status: true },
+      });
+      if (!generation || generation.status !== GenerationStatus.COMPLETED) return 0;
+      for (let index = 0; index < outputUrls.length; index++) {
+        for (const frame of await extract(outputUrls[index])) {
+          const slot = frameSlot(frame.index);
+          if (slot === null) continue;
+          const fingerprint = await fingerprintImage(frame.jpeg).catch(() => null);
+          if (!fingerprint) continue;
+          const outputOrder = FRAME_ORDER_BASE + index * FRAME_SLOTS + slot;
+          const data = {
+            dhash: fingerprint.dhash,
+            thumb: fingerprint.thumb,
+            aspect: fingerprint.aspect,
+            cleanLineage: true,
+            frameIndex: frame.index,
+          };
+          await this.prisma.mediaFingerprint.upsert({
+            where: { generationId_outputOrder: { generationId, outputOrder } },
+            create: { userId: generation.userId, generationId, outputOrder, ...data },
+            update: data,
+          });
+          recorded++;
+        }
+      }
+    } catch (error) {
+      this.logger.warn(`[OWN_MEDIA] gen=${generationId}: quadros do vídeo não gravados (${(error as Error).message})`);
+    }
+    return recorded;
+  }
+
   private backfillDue(userId: string): boolean {
     const now = Date.now();
     const last = this.lastBackfill.get(userId);
@@ -447,17 +558,28 @@ export class OwnMediaProvenance {
   }
 
   /** Impressões limpas da conta cujas saídas ainda estão no armazenamento (sem prazo vencido). */
-  private async cleanFingerprints(userId: string): Promise<KnownFingerprint[]> {
-    return this.prisma.mediaFingerprint.findMany({
-      where: {
-        userId,
-        cleanLineage: true,
-        generation: { OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: MAX_FINGERPRINTS,
-      select: { generationId: true, outputOrder: true, dhash: true, thumb: true, aspect: true },
-    });
+  private async cleanFingerprints(owners: readonly string[], includeVideoFrames = false): Promise<KnownFingerprint[]> {
+    const known: KnownFingerprint[] = [];
+    const query = (userId: string, frames: boolean) =>
+      this.prisma.mediaFingerprint.findMany({
+        where: {
+          userId,
+          cleanLineage: true,
+          frameIndex: frames ? { not: null } : null,
+          generation: { OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: MAX_FINGERPRINTS,
+        select: { generationId: true, outputOrder: true, dhash: true, thumb: true, aspect: true, frameIndex: true },
+      });
+    // uma consulta por conta: a conta da casa (milhares de capas) não tira da lista as impressões da cliente
+    for (const userId of owners) {
+      known.push(...(await query(userId, false)));
+      // quadros de vídeo à parte (até 8 por vídeo): não empurram a foto base antiga para fora do teto. Só para quem
+      // sabe tirar a cópia do vídeo (a porta da foto própria); o desvio fica nas imagens
+      if (includeVideoFrames) known.push(...(await query(userId, true)));
+    }
+    return known;
   }
 
   /** Impressão das gerações só de texto mais novas que ainda não têm. Devolve quantas limpas gravou. */

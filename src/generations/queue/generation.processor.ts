@@ -44,13 +44,22 @@ import {
   planFallback,
 } from './generation-fallback';
 import {
+  DETOUR_MATCH,
   Fingerprint,
   fingerprintImage,
   inputImageUrlsOfJob,
+  LINEAGE_MATCH,
   OwnMatch,
   OwnMediaProvenance,
   substituteImageUrls,
 } from '../provenance/own-media';
+import {
+  OwnMediaGate,
+  type OwnMediaGateAudit,
+  ownMediaGateMode,
+  trustedOwnerIds,
+} from '../provenance/own-media-gate';
+import { extractEdgeFrames, extractVideoFrame } from '../provenance/video-frame';
 import {
   GenerationUnrecoverableError,
   isUnrecoverableJobError,
@@ -353,6 +362,91 @@ export class GenerationProcessor extends WorkerHost {
     return this.ownMediaInstance;
   }
 
+  private ownMediaGateInstance?: OwnMediaGate;
+
+  /**
+   * Porta da foto própria nos modelos sem filtro (src/generations/provenance/own-media-gate.ts), pelo env
+   * UNCENSORED_OWN_MEDIA_MODE (off | log | enforce; padrão off) e OWN_MEDIA_TRUSTED_USER_IDS (contas da casa).
+   */
+  private get ownMediaGate(): OwnMediaGate {
+    if (this.ownMediaGateInstance) return this.ownMediaGateInstance;
+    const mode = ownMediaGateMode(this.configService.get<string>('UNCENSORED_OWN_MEDIA_MODE', 'off'));
+    const trusted = trustedOwnerIds(this.configService.get<string>('OWN_MEDIA_TRUSTED_USER_IDS', ''));
+    this.ownMediaGateInstance = new OwnMediaGate({
+      mode,
+      match: (userId, urls, rule) =>
+        this.ownMedia.matchOwnCleanDetailed(userId, urls, rule === 'lineage' ? LINEAGE_MATCH : DETOUR_MATCH, {
+          includeVideoFrames: true,
+          trustedUserIds: trusted,
+        }),
+      storedImages: (generationId) =>
+        this.prisma.generationInputImage.findMany({
+          where: { generationId },
+          orderBy: { order: 'asc' },
+          select: { id: true, url: true, mimeType: true },
+        }),
+      replaceStoredImages: async (rows) => {
+        await this.prisma.$transaction(
+          rows.map((row) => this.prisma.generationInputImage.update({ where: { id: row.id }, data: { url: row.url } })),
+        );
+      },
+      copyFrame: async (videoUrl, frameIndex, generationId, index) => {
+        const frame = await extractVideoFrame(videoUrl, frameIndex);
+        if (!frame) return null;
+        // junto das entradas desta geração: a limpeza da conclusão apaga
+        const { publicUrl } = await this.uploadsService.uploadBufferPublic(
+          frame,
+          `inputs/${generationId}`,
+          `own-frame-${index}.jpg`,
+          'image/jpeg',
+        );
+        return publicUrl;
+      },
+      saveAudit: (generationId, audit) => this.saveOwnMediaGateAudit(generationId, audit),
+    });
+    return this.ownMediaGateInstance;
+  }
+
+  /** Grava a decisão da porta em `parameters.ownMediaGate` (só contagens, ids e a decisão). Nunca lança. */
+  private async saveOwnMediaGateAudit(generationId: string, audit: OwnMediaGateAudit): Promise<void> {
+    try {
+      const generation = await this.prisma.generation.findUnique({
+        where: { id: generationId },
+        select: { parameters: true },
+      });
+      const params =
+        generation?.parameters && typeof generation.parameters === 'object'
+          ? (generation.parameters as Record<string, unknown>)
+          : {};
+      await this.prisma.generation.update({
+        where: { id: generationId },
+        data: { parameters: { ...params, ownMediaGate: { ...audit } } },
+      });
+    } catch (error) {
+      this.logger.warn(`[OWN_MEDIA_GATE] gen=${generationId}: registro não gravado (${(error as Error).message})`);
+    }
+  }
+
+  /**
+   * Vídeo concluído de linhagem limpa (a porta decidiu no envio): impressão dos quadros das duas pontas, para a
+   * continuação (Historinha, Estender, Corrigir) valer como foto própria no sem filtro. Só com a porta ligada.
+   */
+  private async recordOwnVideoFrames(generationId: string, outputUrls: string[]): Promise<void> {
+    if (this.ownMediaGate.mode === 'off') return;
+    const generation = await this.prisma.generation.findUnique({
+      where: { id: generationId },
+      select: { parameters: true },
+    });
+    const params =
+      generation?.parameters && typeof generation.parameters === 'object'
+        ? (generation.parameters as Record<string, unknown>)
+        : {};
+    const gate = params.ownMediaGate as { lineage?: string } | undefined;
+    if (gate?.lineage !== 'clean') return;
+    const recorded = await this.ownMedia.recordVideoFrames(generationId, outputUrls, extractEdgeFrames);
+    if (recorded > 0) this.logger.log(`[OWN_MEDIA_GATE] gen=${generationId}: ${recorded} quadro(s) do vídeo com impressão limpa`);
+  }
+
   /** Erros que não mudam 30 s depois: sem retry cego do BullMQ (TKT-107). */
   private static readonly NO_RETRY_CODES = new Set<string>([
     GenerationFailureCode.CONTENT_SAFETY_BLOCKED,
@@ -392,6 +486,10 @@ export class GenerationProcessor extends WorkerHost {
       );
       return;
     }
+
+    // Porta da foto própria (UNCENSORED_OWN_MEDIA_MODE): no enforce, foto de fora num sem filtro encerra aqui
+    // (OwnMediaRequiredError é bloqueio terminal) e foto própria segue pela nossa cópia.
+    data = await this.ownMediaGate.apply(jobName, data);
 
     try {
       await this.dispatch(jobName, data);
@@ -723,6 +821,17 @@ export class GenerationProcessor extends WorkerHost {
         userMedia: jobHasMedia,
         ownCleanMedia: !!fallbackMedia,
       });
+    }
+
+    // A alternativa também passa pela porta da foto própria: com o desvio liberado por env, foto de fora não chega
+    // a um vídeo sem filtro por este caminho. Barrada ou sem conferência = sem alternativa (o motivo original sobe).
+    try {
+      plan.data = await this.ownMediaGate.apply(plan.jobName, plan.data);
+    } catch (gateError) {
+      this.logger.warn(
+        `[FALLBACK] gen=${generation.id} ${generation.modelUsed} → ${plan.model} barrado pela porta da foto própria (${(gateError as Error).name})`,
+      );
+      return 'none';
     }
 
     const attempt = {
@@ -3087,6 +3196,10 @@ export class GenerationProcessor extends WorkerHost {
           this.logger.warn(
             `Video post-processing failed for ${generationId}: ${(err as Error).message}`,
           ),
+      );
+      // quadros do vídeo de linhagem limpa (porta da foto própria ligada)
+      this.recordOwnVideoFrames(generationId, result.outputUrls).catch((err) =>
+        this.logger.warn(`[OWN_MEDIA_GATE] gen=${generationId}: quadros não gravados (${(err as Error).message})`),
       );
     }
 

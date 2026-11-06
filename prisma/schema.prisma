@@ -549,6 +549,9 @@ model MediaFingerprint {
   /// largura ÷ altura da imagem
   aspect       Float
   cleanLineage Boolean    @map("clean_lineage")
+  /// quadro de um vídeo (0, 1… = desde o começo; -1, -2… = desde o fim); null = saída de imagem.
+  /// Quadros usam output_order 1000 + saída × 16 + vaga: ver own-media.ts, FRAME_ORDER_BASE e frameSlot
+  frameIndex   Int?       @map("frame_index")
   createdAt    DateTime   @default(now()) @map("created_at")
   user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   generation   Generation @relation(fields: [generationId], references: [id], onDelete: Cascade)

@@ -288,16 +288,39 @@ export class ConsentRequiredSafetyError extends ContentSafetyError {
   }
 }
 
-/** Bloqueio que encerra a geração sem nova tentativa (menor de idade ou foto sem atestado). */
+/**
+ * Pedido a um modelo sem filtro com uma foto que NÃO é geração limpa da própria conta (a porta da foto própria,
+ * src/generations/provenance/own-media-gate.ts, com UNCENSORED_OWN_MEDIA_MODE=enforce). Nada vai ao provedor: a
+ * geração termina aqui com estorno e sem a nova tentativa do BullMQ. Sai como UNCENSORED_OWN_MEDIA_REQUIRED: o site
+ * explica que no sem filtro entra só a modelo criada na plataforma.
+ */
+export class OwnMediaRequiredError extends Error {
+  /** código da falha decidido aqui (GenerationFailureCode.UNCENSORED_OWN_MEDIA_REQUIRED) */
+  readonly failureCode = 'UNCENSORED_OWN_MEDIA_REQUIRED' as const;
+  /** modelo/motor sem filtro que receberia a foto */
+  readonly model: string;
+
+  constructor(model: string) {
+    super(
+      'Foto que não é geração da própria conta num modelo sem filtro: o pedido não foi ao provedor',
+    );
+    this.name = 'OwnMediaRequiredError';
+    this.model = model;
+  }
+}
+
+/** Bloqueio que encerra a geração sem nova tentativa (menor de idade, foto sem atestado ou foto de fora no sem filtro). */
 export type TerminalSafetyBlockError =
   | MinorSafetyBlockError
-  | ConsentRequiredSafetyError;
+  | ConsentRequiredSafetyError
+  | OwnMediaRequiredError;
 
 export function isTerminalSafetyBlock(
   error: unknown,
 ): error is TerminalSafetyBlockError {
   return (
     error instanceof MinorSafetyBlockError ||
-    error instanceof ConsentRequiredSafetyError
+    error instanceof ConsentRequiredSafetyError ||
+    error instanceof OwnMediaRequiredError
   );
 }

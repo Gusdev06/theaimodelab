@@ -32,6 +32,12 @@ export const GenerationFailureCode = {
    * do provedor: o site pede para marcar a autorização de imagem e gerar de novo.
    */
   CONTENT_BLOCKED_NEEDS_CONSENT: 'CONTENT_BLOCKED_NEEDS_CONSENT',
+  /**
+   * Modelo sem filtro com uma foto que não é geração limpa da própria conta (a porta da foto própria, com
+   * UNCENSORED_OWN_MEDIA_MODE=enforce). Decidido antes do provedor (OwnMediaRequiredError): o site diz que no sem
+   * filtro entra só a modelo criada na plataforma e oferece o modo com filtro.
+   */
+  UNCENSORED_OWN_MEDIA_REQUIRED: 'UNCENSORED_OWN_MEDIA_REQUIRED',
   /** Provedor recusou por política de conteúdo / filtro de segurança. */
   CONTENT_SAFETY_BLOCKED: 'CONTENT_SAFETY_BLOCKED',
   /** A imagem enviada foi recusada pelo provedor (não o prompt). */
@@ -82,6 +88,10 @@ export const CONTENT_BLOCKED_USER_MESSAGE =
 /** Texto para o usuário de CONTENT_BLOCKED_NEEDS_CONSENT (o site traduz pelo código; este é o pt-BR gravado). */
 export const CONTENT_BLOCKED_NEEDS_CONSENT_MESSAGE =
   'O filtro do modelo bloqueou esta geração. Para tentar no Unlocked com a sua foto, marque a autorização de imagem e gere de novo.';
+
+/** Texto para o usuário de UNCENSORED_OWN_MEDIA_REQUIRED (o site traduz pelo código; este é o pt-BR gravado). */
+export const UNCENSORED_OWN_MEDIA_REQUIRED_MESSAGE =
+  'Nos modelos de vídeo sem censura entra só a sua modelo criada aqui. Foto enviada vai pelos modelos com filtro. Seus créditos foram devolvidos.';
 
 /**
  * Erro de provedor que já vem com uma mensagem amigável, mas guarda o motivo
@@ -239,7 +249,7 @@ export function classifyGenerationFailure(
 
 /**
  * Código da falha de um erro. O que a guarda de segurança decidiu vem pronto no erro (`failureCode` de
- * MinorSafetyBlockError / ConsentRequiredSafetyError) e vence o texto; o resto sai de classifyGenerationFailure
+ * MinorSafetyBlockError / ConsentRequiredSafetyError / OwnMediaRequiredError) e vence o texto; o resto sai de classifyGenerationFailure
  * sobre o texto cru (rawFailureText).
  */
 export function failureCodeOf(
@@ -266,6 +276,8 @@ export function failureUserMessage(
       return MINOR_BLOCK_USER_MESSAGE;
     case GenerationFailureCode.CONTENT_BLOCKED_NEEDS_CONSENT:
       return CONTENT_BLOCKED_NEEDS_CONSENT_MESSAGE;
+    case GenerationFailureCode.UNCENSORED_OWN_MEDIA_REQUIRED:
+      return UNCENSORED_OWN_MEDIA_REQUIRED_MESSAGE;
     case GenerationFailureCode.CONTENT_SAFETY_BLOCKED:
       return CONTENT_BLOCKED_USER_MESSAGE;
     default:

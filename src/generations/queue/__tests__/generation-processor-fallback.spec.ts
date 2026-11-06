@@ -2,7 +2,8 @@ import { UnrecoverableError } from 'bullmq';
 import { GenerationProcessor } from '../generation.processor';
 import { GenerationJobName } from '../generation-queue.constants';
 import { GenerationUnrecoverableError } from '../unrecoverable.error';
-import { ConsentRequiredSafetyError, ContentSafetyError, MinorSafetyBlockError } from '../../errors/content-safety.error';
+import { LINEAGE_MATCH } from '../../provenance/own-media';
+import { ConsentRequiredSafetyError, ContentSafetyError, MinorSafetyBlockError, OwnMediaRequiredError } from '../../errors/content-safety.error';
 
 /**
  * Orquestração do fallback (dispatchWithFallback): provedores e banco
@@ -92,6 +93,8 @@ function setup(record: GenerationRecord | null, config: Record<string, string> =
   // conferência "foto = geração limpa da própria conta" (own-media): padrão = não reconhecida, sem rede
   const ownMedia = {
     matchOwnClean: jest.fn(async (): Promise<unknown> => null),
+    // usado pela porta da foto própria (UNCENSORED_OWN_MEDIA_MODE)
+    matchOwnCleanDetailed: jest.fn(async (): Promise<unknown> => ({ matches: null, transient: false })),
     recordGeneration: jest.fn(async () => undefined),
   };
   (processor as unknown as { ownMediaInstance: unknown }).ownMediaInstance = ownMedia;
@@ -562,6 +565,132 @@ describe('GenerationProcessor — fallback automático de modelo', () => {
         processor.dispatchWithFallback(GenerationJobName.IMAGE_TO_VIDEO_KIE, veoImageJob() as any, { queued: true }),
       ).rejects.toBe(original);
       expect(calls).toHaveLength(1);
+    });
+  });
+
+  describe('porta da foto própria nos vídeos sem filtro (UNCENSORED_OWN_MEDIA_MODE)', () => {
+    const ltxJob = () => ({
+      generationId: 'gen-1',
+      userId: 'user-1',
+      creditsConsumed: 1200,
+      usedFreeGeneration: false,
+      prompt: 'adult woman, 27 years old, walking on the beach',
+      resolution: 'RES_720P',
+      durationSeconds: 6,
+      imageUrl: 'https://cdn/inputs/gen-1/foto.jpg',
+    });
+    const ltxRecord = () => makeRecord({ type: 'IMAGE_TO_VIDEO', modelUsed: 'wavespeed-ltx-spicy', creditsConsumed: 1200 });
+    const deliver = (processor: GenerationProcessor, record: GenerationRecord) => {
+      const seen: unknown[] = [];
+      jest.spyOn(processor, 'dispatch').mockImplementation(async (_jobName: string, data: unknown) => {
+        seen.push(data);
+        record.status = 'COMPLETED';
+      });
+      return seen;
+    };
+
+    it('desligada (padrão): o job vai como veio, sem conferência nem registro', async () => {
+      const record = ltxRecord();
+      const { processor, ownMedia, prisma } = setup(record);
+      const seen = deliver(processor, record);
+      const job = ltxJob();
+
+      await processor.dispatchWithFallback(GenerationJobName.WAVESPEED_IMAGE_TO_VIDEO, job as any, { queued: true });
+
+      expect(seen).toEqual([job]);
+      expect(ownMedia.matchOwnCleanDetailed).not.toHaveBeenCalled();
+      expect(prisma.generation.update).not.toHaveBeenCalled();
+    });
+
+    it('log: foto de fora segue ao provedor igual, com o registro na geração', async () => {
+      const record = ltxRecord();
+      const { processor } = setup(record, { UNCENSORED_OWN_MEDIA_MODE: 'log' });
+      const seen = deliver(processor, record);
+      const job = ltxJob();
+
+      await processor.dispatchWithFallback(GenerationJobName.WAVESPEED_IMAGE_TO_VIDEO, job as any, { queued: true });
+
+      expect(seen).toEqual([job]);
+      expect(record.parameters).toMatchObject({
+        provider: 'kie',
+        ownMediaGate: { mode: 'log', uncensored: true, images: 1, own: false, lineage: 'not_clean' },
+      });
+    });
+
+    it('enforce: foto de fora não chega ao provedor e encerra como bloqueio terminal (sem retry)', async () => {
+      const record = ltxRecord();
+      const { processor } = setup(record, { UNCENSORED_OWN_MEDIA_MODE: 'enforce' });
+      const seen = deliver(processor, record);
+      const job = ltxJob();
+
+      const error = await processor
+        .dispatchWithFallback(GenerationJobName.WAVESPEED_IMAGE_TO_VIDEO, job as any, { queued: true })
+        .catch((e) => e);
+
+      expect(error).toBeInstanceOf(OwnMediaRequiredError);
+      expect(seen).toEqual([]);
+      expect(processor.terminalSafetyBlockOf(error, job)).toBe(error);
+      expect(record.parameters).toMatchObject({ ownMediaGate: { mode: 'enforce', blocked: true, own: false } });
+    });
+
+    it('enforce: conferência que não conseguiu ler a foto é passageira (o BullMQ tenta de novo), não bloqueio terminal', async () => {
+      const record = ltxRecord();
+      const { processor, ownMedia } = setup(record, { UNCENSORED_OWN_MEDIA_MODE: 'enforce' });
+      ownMedia.matchOwnCleanDetailed.mockResolvedValue({ matches: null, transient: true });
+      const seen = deliver(processor, record);
+      const job = ltxJob();
+
+      const error = await processor
+        .dispatchWithFallback(GenerationJobName.WAVESPEED_IMAGE_TO_VIDEO, job as any, { queued: true })
+        .catch((e) => e);
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(OwnMediaRequiredError);
+      expect(processor.terminalSafetyBlockOf(error, job)).toBeNull();
+      expect(seen).toEqual([]);
+    });
+
+    it('enforce: o desvio liberado por env também passa pela porta (Veo com foto de fora não cai no MiniMax)', async () => {
+      const record = makeRecord({ type: 'IMAGE_TO_VIDEO' });
+      const { processor } = setup(record, {
+        UNCENSORED_OWN_MEDIA_MODE: 'enforce',
+        GENERATION_FALLBACK_UNCENSORED_WITH_MEDIA: 'true',
+      });
+      const original = new Error('Veo generation failed: internal error, please try again later.');
+      const { calls } = scriptDispatch(processor, record, GenerationJobName.IMAGE_TO_VIDEO_KIE, original);
+
+      await expect(
+        processor.dispatchWithFallback(
+          GenerationJobName.IMAGE_TO_VIDEO_KIE,
+          { ...veoJob(), imageUrls: ['https://cdn/in.jpg'] } as any,
+          { queued: true },
+        ),
+      ).rejects.toBe(original);
+
+      expect(calls).toEqual([GenerationJobName.IMAGE_TO_VIDEO_KIE]);
+      expect(record.parameters).not.toHaveProperty('fallbackAttempt');
+    });
+
+    it('enforce: foto da própria modelo vai ao provedor pela NOSSA cópia; as contas da casa entram na conferência', async () => {
+      const record = ltxRecord();
+      const { processor, ownMedia } = setup(record, { UNCENSORED_OWN_MEDIA_MODE: 'enforce', OWN_MEDIA_TRUSTED_USER_IDS: 'casa-1' });
+      ownMedia.matchOwnCleanDetailed.mockResolvedValue({
+        matches: [
+          { inputUrl: 'https://cdn/inputs/gen-1/foto.jpg', generationId: 'g-modelo', outputOrder: 0, outputUrl: 'https://s3/g-modelo/0.png', distance: 1, thumbDiff: 2, frameIndex: null },
+        ],
+        transient: false,
+      });
+      const seen = deliver(processor, record);
+      const job = ltxJob();
+
+      await processor.dispatchWithFallback(GenerationJobName.WAVESPEED_IMAGE_TO_VIDEO, job as any, { queued: true });
+
+      expect(seen).toEqual([{ ...job, imageUrl: 'https://s3/g-modelo/0.png' }]);
+      expect(ownMedia.matchOwnCleanDetailed).toHaveBeenCalledWith('user-1', ['https://cdn/inputs/gen-1/foto.jpg'], LINEAGE_MATCH, {
+        includeVideoFrames: true,
+        trustedUserIds: ['casa-1'],
+      });
+      expect(record.parameters).toMatchObject({ ownMediaGate: { own: true, substituted: true, lineage: 'clean' } });
     });
   });
 
