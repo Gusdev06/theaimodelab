@@ -40,9 +40,11 @@ import { UpdatePromptCategoryDto } from './dto/update-prompt-category.dto';
 import { CreatePromptTemplateDto } from './dto/create-prompt-template.dto';
 import { UpdatePromptTemplateDto } from './dto/update-prompt-template.dto';
 import { ToggleModelDto } from './dto/toggle-model.dto';
+import { AdminThrottle } from '../common/decorators/admin-throttle.decorator';
 
 @ApiTags('admin')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')

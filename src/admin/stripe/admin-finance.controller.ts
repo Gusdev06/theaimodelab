@@ -3,9 +3,11 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { AdminFinanceService } from './admin-finance.service';
+import { AdminThrottle } from '../../common/decorators/admin-throttle.decorator';
 
 @ApiTags('admin/stripe/finance')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/stripe/finance')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')

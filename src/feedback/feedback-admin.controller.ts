@@ -11,9 +11,11 @@ import { FeedbackService } from './feedback.service';
 import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { PaginationDto } from '../common/dto/pagination.dto';
+import { AdminThrottle } from '../common/decorators/admin-throttle.decorator';
 
 @ApiTags('admin')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/feedback')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')

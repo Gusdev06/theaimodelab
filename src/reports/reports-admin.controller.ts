@@ -8,6 +8,7 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { UpdateReportDto } from './dto/create-report.dto';
 import { REPORTS_SORTS, ReportsService, ReportsSort } from './reports.service';
+import { AdminThrottle } from '../common/decorators/admin-throttle.decorator';
 
 /**
  * Denúncias no admin. Cada denúncia vem com `citesMinor` (descrição ou alvo cita menor, a mesma conferência da
@@ -17,6 +18,7 @@ import { REPORTS_SORTS, ReportsService, ReportsSort } from './reports.service';
  */
 @ApiTags('admin')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/reports')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')

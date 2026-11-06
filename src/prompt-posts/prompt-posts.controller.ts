@@ -21,6 +21,7 @@ import { Public } from '../common/decorators/public.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { AdminThrottle } from '../common/decorators/admin-throttle.decorator';
 
 @ApiTags('prompt-posts')
 @Controller('api/v1/prompt-posts')
@@ -46,6 +47,7 @@ export class PromptPostsPublicController {
 
 @ApiTags('admin')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/prompt-posts')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')

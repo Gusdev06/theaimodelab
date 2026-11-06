@@ -32,6 +32,7 @@ import {
   SAFETY_RELEASE_NOTE_MAX_LENGTH,
   SAFETY_RELEASE_NOTE_MIN_LENGTH,
 } from './content-safety.service';
+import { AdminThrottle } from '../common/decorators/admin-throttle.decorator';
 
 /** Liberação de um bloqueio por menor pelo jurídico: a nota explica por quê e fica na trilha. */
 export class ReleaseSafetyEventDto {
@@ -57,6 +58,7 @@ export class ReleaseSafetyEventDto {
 
 @ApiTags('admin')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/content-safety')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')

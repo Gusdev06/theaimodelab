@@ -17,9 +17,11 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { CreateAffiliateDto } from './dto/create-affiliate.dto';
 import { UpdateAffiliateDto } from './dto/update-affiliate.dto';
 import { MarkEarningsPaidDto } from './dto/mark-paid.dto';
+import { AdminThrottle } from '../common/decorators/admin-throttle.decorator';
 
 @ApiTags('affiliates')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/affiliates')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')

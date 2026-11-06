@@ -4,9 +4,11 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { CheckoutCodesService } from './checkout-codes.service';
 import { CreateCheckoutCodeDto, UpdateCheckoutCodeDto } from './dto/checkout-code.dto';
+import { AdminThrottle } from '../common/decorators/admin-throttle.decorator';
 
 @ApiTags('admin')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/checkout-codes')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')
