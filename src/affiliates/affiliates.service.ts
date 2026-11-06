@@ -1,4 +1,11 @@
-import { Injectable, ConflictException, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { PixKeyType, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { StripeService } from '../payments/stripe.service';
@@ -6,6 +13,7 @@ import { EmailService } from '../email/email.service';
 import { CreateAffiliateDto } from './dto/create-affiliate.dto';
 import { UpdateAffiliateDto } from './dto/update-affiliate.dto';
 import { UpdatePixKeyDto } from './dto/update-pix-key.dto';
+import { UpdatePayoutDto } from './dto/update-payout.dto';
 import { MarkEarningsPaidDto } from './dto/mark-paid.dto';
 import { AffiliateDiscountScope } from '@prisma/client';
 import {
@@ -14,6 +22,12 @@ import {
   summarizeByCurrency,
 } from './affiliate-currency';
 import { maskEmail } from './mask-email';
+import {
+  PayoutData,
+  PayoutInput,
+  resolvePayout,
+  resolveSelfServiceCommissionPercent,
+} from './affiliate-payout';
 
 /** Dias até a comissão pendente ficar disponível para saque (janela de reembolso). */
 const AFFILIATE_MATURATION_DAYS = 30;
@@ -214,6 +228,7 @@ export class AffiliatesService {
             name: true,
             pixKey: true,
             pixKeyType: true,
+            payoutMethod: true,
             user: { select: { email: true, name: true } },
           },
         },
@@ -234,7 +249,14 @@ export class AffiliatesService {
     // Um e-mail por afiliado e por moeda: somar centavos de real com centavos de dólar daria um valor que não existe.
     const byAffiliate = new Map<
       string,
-      { email: string; name: string; currency: string; totalCents: number; count: number }
+      {
+        email: string;
+        name: string;
+        currency: string;
+        payoutMethod: string | null;
+        totalCents: number;
+        count: number;
+      }
     >();
 
     for (const earning of earnings) {
@@ -251,6 +273,7 @@ export class AffiliatesService {
         email,
         name: earning.affiliate.user?.name || earning.affiliate.name,
         currency,
+        payoutMethod: earning.affiliate.payoutMethod ?? null,
         totalCents: 0,
         count: 0,
       };
@@ -276,6 +299,7 @@ export class AffiliatesService {
           totalCents: info.totalCents,
           earningsCount: info.count,
           currency: info.currency,
+          payoutMethod: info.payoutMethod,
           attachment,
         }),
       ),
@@ -383,7 +407,7 @@ export class AffiliatesService {
     };
   }
 
-  async createForUser(userId: string, dto: UpdatePixKeyDto) {
+  async createForUser(userId: string, dto: UpdatePayoutDto | UpdatePixKeyDto) {
     const existing = await this.prisma.affiliate.findFirst({
       where: { userId },
     });
@@ -391,13 +415,26 @@ export class AffiliatesService {
       throw new ConflictException('Você já possui um link de afiliado');
     }
 
+    const payout = this.requirePayout(dto);
+
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { name: true, email: true },
+      select: { name: true, email: true, emailVerified: true },
     });
     if (!user) {
       throw new NotFoundException('Usuário não encontrado');
     }
+    // Comissão é dinheiro: conta sem e-mail confirmado não vira afiliada (barra cadastro descartável em série).
+    if (!user.emailVerified) {
+      throw new ForbiddenException({
+        message: 'Confirme seu e-mail antes de criar o link de afiliado',
+        code: 'EMAIL_NOT_VERIFIED',
+      });
+    }
+
+    const commissionPercent = resolveSelfServiceCommissionPercent(
+      process.env.AFFILIATE_SELF_SERVICE_PERCENT,
+    );
 
     const displayName = user.name?.trim() || user.email.split('@')[0];
 
@@ -412,10 +449,9 @@ export class AffiliatesService {
           data: {
             name: displayName,
             code,
-            commissionPercent: 20,
+            commissionPercent,
             userId,
-            pixKey: dto.pixKey.trim(),
-            pixKeyType: dto.pixKeyType as PixKeyType,
+            ...this.payoutColumns(payout),
           },
         });
       } catch (err: unknown) {
@@ -435,18 +471,60 @@ export class AffiliatesService {
       throw new NotFoundException('Você ainda não é afiliado');
     }
 
+    const payout = this.requirePayout({ payoutMethod: 'PIX', pixKey: dto.pixKey, pixKeyType: dto.pixKeyType });
+
     return this.prisma.affiliate.update({
       where: { id: affiliate.id },
-      data: {
-        pixKey: dto.pixKey.trim(),
-        pixKeyType: dto.pixKeyType as PixKeyType,
-      },
+      data: this.payoutColumns(payout),
       select: {
         id: true,
         pixKey: true,
         pixKeyType: true,
+        payoutMethod: true,
       },
     });
+  }
+
+  /** Troca a forma de recebimento do afiliado logado (PIX, PayPal ou Wise). */
+  async updateMyPayout(userId: string, dto: UpdatePayoutDto) {
+    const affiliate = await this.prisma.affiliate.findFirst({
+      where: { userId },
+    });
+    if (!affiliate) {
+      throw new NotFoundException('Você ainda não é afiliado');
+    }
+
+    const payout = this.requirePayout(dto);
+
+    return this.prisma.affiliate.update({
+      where: { id: affiliate.id },
+      data: this.payoutColumns(payout),
+      select: {
+        id: true,
+        payoutMethod: true,
+        payoutEmail: true,
+        pixKey: true,
+        pixKeyType: true,
+      },
+    });
+  }
+
+  /** O DTO já valida na rota; aqui é a mesma regra para quem chama o serviço direto. */
+  private requirePayout(input: PayoutInput): PayoutData {
+    const payout = resolvePayout(input);
+    if (!payout.ok) {
+      throw new BadRequestException(payout.reason);
+    }
+    return payout.data;
+  }
+
+  private payoutColumns(payout: PayoutData) {
+    return {
+      payoutMethod: payout.payoutMethod,
+      payoutEmail: payout.payoutEmail,
+      pixKey: payout.pixKey,
+      pixKeyType: payout.pixKeyType as PixKeyType | null,
+    };
   }
 
   private buildAffiliateCodeCandidate(name: string, email: string, attempt: number): string {
@@ -580,6 +658,9 @@ export class AffiliatesService {
         discountAppliesTo: affiliate.discountAppliesTo,
         pixKey: affiliate.pixKey,
         pixKeyType: affiliate.pixKeyType,
+        // Afiliado anterior a este campo só tem a chave Pix: conta como PIX.
+        payoutMethod: affiliate.payoutMethod ?? (affiliate.pixKey ? 'PIX' : null),
+        payoutEmail: affiliate.payoutEmail ?? null,
         createdAt: affiliate.createdAt,
       },
       summary: {

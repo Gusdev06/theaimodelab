@@ -19,7 +19,11 @@ describe('AffiliatesService · colisão com código de indicação', () => {
           where.code === 'K7Q3M9XP' ? { id: 'rc' } : null,
         ),
       },
-      user: { findUnique: jest.fn().mockResolvedValue({ name: 'K7Q3M9XP', email: 'atacante@exemplo.test' }) },
+      user: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ name: 'K7Q3M9XP', email: 'atacante@exemplo.test', emailVerified: true }),
+      },
     };
     const service = new AffiliatesService(prisma as never, {} as never, {} as never);
     return { service, prisma };

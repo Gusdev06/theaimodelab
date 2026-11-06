@@ -733,6 +733,8 @@ model Affiliate {
   discountPercent       Int?                   @map("discount_percent")
   stripeCouponId        String?                @map("stripe_coupon_id")
   stripePromotionCodeId String?                @map("stripe_promotion_code_id")
+  payoutMethod          String?                @map("payout_method")
+  payoutEmail           String?                @map("payout_email")
   earnings              AffiliateEarning[]
   user                  User?                  @relation(fields: [userId], references: [id])
 
