@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 import { applyBrand, Brand, brandedFrom } from '../brand/brand';
 import type { BuyerLocale } from '../pending-grants/buyer-locale';
+import { formatAffiliatePayoutAmount } from '../affiliates/affiliate-currency';
+import { describePayoutDestination } from '../affiliates/affiliate-payout';
 
 /** Textos do e-mail de acesso da isca, por idioma do comprador (TKT-004). */
 interface PendingGrantsCopy {
@@ -413,6 +415,10 @@ export class EmailService implements OnModuleInit {
     name: string;
     totalCents: number;
     earningsCount: number;
+    /** Moeda das comissões pagas (ISO, ex.: USD). Sem ela vale o real, como sempre. */
+    currency?: string;
+    /** PIX, PAYPAL ou WISE: muda só a frase de destino. Sem ele, Pix, como sempre. */
+    payoutMethod?: string | null;
     attachment?: { filename: string; content: string; contentType?: string };
   }): Promise<void> {
     if (!this.client) {
@@ -425,7 +431,13 @@ export class EmailService implements OnModuleInit {
         from: this.fromEmail,
         to: [params.to],
         subject: 'Suas comissões foram pagas — The AI Model Lab',
-        html: this.getAffiliatePaymentTemplate(params.name, params.totalCents, params.earningsCount),
+        html: this.getAffiliatePaymentTemplate(
+          params.name,
+          params.totalCents,
+          params.earningsCount,
+          params.currency,
+          params.payoutMethod,
+        ),
         ...(params.attachment && {
           attachments: [
             {
@@ -909,15 +921,14 @@ export class EmailService implements OnModuleInit {
     name: string,
     totalCents: number,
     earningsCount: number,
+    currency?: string,
+    payoutMethod?: string | null,
   ): string {
     const dashboardUrl = `${this.frontendUrl}/painel-afiliado`;
     const logoHtml = this.logoUrl
       ? `<img src="${this.logoUrl}" alt="The AI Model Lab" width="80" height="80" style="display: block; border-radius: 12px;">`
       : '';
-    const totalFormatted = (totalCents / 100).toLocaleString('pt-BR', {
-      style: 'currency',
-      currency: 'BRL',
-    });
+    const totalFormatted = formatAffiliatePayoutAmount(totalCents, currency);
     const earningsLabel = earningsCount === 1 ? '1 comissão paga' : `${earningsCount} comissões pagas`;
 
     return `
@@ -933,7 +944,7 @@ export class EmailService implements OnModuleInit {
             <td style="padding: 48px 40px;">
               ${logoHtml ? `<div style="margin-bottom: 32px;">${logoHtml}</div>` : ''}
               <h1 style="margin: 0 0 16px; font-size: 24px; font-weight: 700; color: #1a1a1a; line-height: 1.3;">Pagamento enviado, ${name}! 🎉</h1>
-              <p style="margin: 0 0 28px; font-size: 15px; color: #666; line-height: 1.6;">Suas comissões do programa de afiliados foram pagas e já estão a caminho da sua chave Pix cadastrada.</p>
+              <p style="margin: 0 0 28px; font-size: 15px; color: #666; line-height: 1.6;">Suas comissões do programa de afiliados foram pagas e já estão a caminho da ${describePayoutDestination(payoutMethod)}.</p>
               <div style="margin: 0 0 28px; padding: 20px; background-color: #f5f5f5; border-radius: 8px; text-align: center;">
                 <p style="margin: 0 0 4px; font-size: 13px; color: #999; text-transform: uppercase; letter-spacing: 1px;">Valor pago</p>
                 <p style="margin: 0 0 8px; font-size: 32px; font-weight: 700; color: #1a1a1a; line-height: 1;">${totalFormatted}</p>
