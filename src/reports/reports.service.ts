@@ -97,7 +97,7 @@ export type AdminReport = ContentReport & { citesMinor: boolean; urgentReasons: 
 
 /** O texto cita menor (termo ou idade)? Tamanho não conta: o DTO já limita descrição e alvo. */
 function citesMinor(text: string): boolean {
-  const assessment = assessText(text);
+  const assessment = assessText(text, { source: 'description' });
   return assessment.blocked && (assessment.reason === 'term' || assessment.reason === 'age');
 }
 

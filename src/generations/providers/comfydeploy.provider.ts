@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { UploadsService } from '../../uploads/uploads.service';
 import { GenerationResult } from './theaimodelab.provider';
+import { adultSafePrompt } from '../../content-safety/adult-anchor';
 
 /**
  * ComfyDeploy — WanImageToVideo (image-to-video, uso NSFW/legacy).
@@ -88,7 +89,7 @@ export class ComfyDeployProvider {
 
     const runId = await this.queueRun({
       input_image: input.imageUrl,
-      prompt: input.prompt,
+      prompt: adultSafePrompt(input.prompt, 2500),
       duration: frames,
     });
     this.logger.log(`[COMFYDEPLOY] Run queued: ${runId}`);

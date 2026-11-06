@@ -75,6 +75,14 @@ export const ErrorCodes = {
     statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
     message: 'Ainda não conseguimos conferir pedidos neste alfabeto. Escreva em português, inglês ou espanhol.',
   },
+  // gíria de juventude ("novinha", "colegial") num pedido COM foto para modelo sem filtro: sem a foto o pedido sai com
+  // uma mulher adulta; com a foto, a palavra descreve a pessoa da foto (não é registrado como tentativa com menor)
+  CONTENT_POLICY_PHOTO_YOUTH_TERM: {
+    code: 'CONTENT_POLICY_PHOTO_YOUTH_TERM',
+    statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
+    message:
+      'Com foto no pedido, descreva a pessoa sem palavras de idade (novinha, ninfeta…). A foto precisa ser de uma pessoa adulta. Sem a foto, o pedido é gerado com uma mulher adulta.',
+  },
 } as const;
 
 export type ErrorCode = keyof typeof ErrorCodes;

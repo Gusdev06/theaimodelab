@@ -5,6 +5,7 @@ import { UploadsService } from '../../uploads/uploads.service';
 import { GenerationResult } from './theaimodelab.provider';
 import { ContentSafetyError } from '../errors/content-safety.error';
 import { ProviderFailureError } from '../errors/failure-reason';
+import { adultSafePrompt } from '../../content-safety/adult-anchor';
 
 // Seedream V5.0 Pro na KIE (api.kie.ai). Sem imagem de referência usamos o
 // modelo text-to-image; com imagem(ns), o modelo image-to-image (edição).
@@ -147,10 +148,11 @@ export class SeedreamProvider {
     const hasImages = !!input.imageUrls?.length;
     const model = hasImages ? KIE_MODEL_I2I : KIE_MODEL_T2I;
 
-    // Prompt: undress (skipSafetyWrapper) passa cru; o resto ganha o wrapper que
-    // mantém o personagem vestido.
+    // Prompt: o modelo sem censura (skipSafetyWrapper: Unlocked, despir, desvio de segurança) recebe o pedido com a
+    // âncora de adulto (toda pessoa gerada é adulta; gíria de juventude vira "mulher adulta"); o resto ganha o wrapper
+    // que mantém o personagem vestido.
     const finalPrompt = input.skipSafetyWrapper
-      ? input.prompt.trim().slice(0, MAX_PROMPT_LENGTH)
+      ? adultSafePrompt(input.prompt, MAX_PROMPT_LENGTH)
       : applySafetyWrapper(input.prompt);
 
     // KIE exige aspect_ratio fixo (não tem `match_input_image`). Quando o request

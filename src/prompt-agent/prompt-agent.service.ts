@@ -77,9 +77,9 @@ const FOREIGN_LETTER = /[^\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]
  * conferida de novo sem essas letras.
  */
 function assessAnalysisText(text: string): MinorAssessment {
-  const verdict = assessText(text);
+  const verdict = assessText(text, { source: 'description' });
   if (verdict.reason !== 'script') return verdict;
-  return assessText(text.replace(/\p{L}/gu, (char) => (FOREIGN_LETTER.test(canonical(char)) ? ' ' : char)));
+  return assessText(text.replace(/\p{L}/gu, (char) => (FOREIGN_LETTER.test(canonical(char)) ? ' ' : char)), { source: 'description' });
 }
 
 /** Forma do que o describePhoto põe no prompt clonado: 'text' = texto ou número, 'list' = lista de textos. */

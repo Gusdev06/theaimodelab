@@ -3,7 +3,8 @@ import { ContentSafetyEventKind } from '@prisma/client';
 import { Observable, tap } from 'rxjs';
 import { BusinessException } from '../common/exceptions/business.exception';
 import { ContentSafetyService } from './content-safety.service';
-import { assessBody, collectTexts } from './minor-guard';
+import { assessBody, carriesMedia, collectTexts, type GuardTarget } from './minor-guard';
+import { hasAgeSlang } from './adult-anchor';
 import { PromptJudgeService } from './prompt-judge/prompt-judge.service';
 
 /** Marca do juiz na trilha (campo `match` do evento): distingue do termo da trava de palavras. */
@@ -73,6 +74,71 @@ export function isUncensoredModel(model: unknown): boolean {
   const slug = modelSlug(model);
   if (!slug) return false;
   return UNCENSORED_IMAGE_MODELS.has(slug) || UNCENSORED_VIDEO_MODELS.has(slug) || UNCENSORED_SLUG.test(slug);
+}
+
+/* ------------------------------------------------------------------ alvo da trava de menor */
+
+/**
+ * Modelos de imagem com filtro próprio do provedor (os do DTO de generate-image, menos os sem filtro). Lista fechada:
+ * modelo novo fica na regra mais dura até entrar aqui.
+ */
+export const FILTERED_IMAGE_MODELS: ReadonlySet<string> = new Set([
+  'gemini-3-pro-image-preview',
+  'gemini-3.1-flash-image-preview',
+  'gpt-image-2',
+  'gpt-image-2-5',
+  'seedream-5-lite',
+]);
+
+/** Rotas de imagem em que o modelo vem no corpo: com filtro só quando o modelo está na lista acima. */
+const MODEL_IN_BODY_ROUTES: ReadonlySet<string> = new Set(['generate-image', 'generate-image-auto']);
+
+/**
+ * Rotas de POST /generations/<rota> cujo provedor tem filtro próprio (Veo, Nano Banana, Grok, Omni, Seedance e Kling
+ * da kie, upscale no Gemini) ou que só produzem voz (o texto vira fala, não imagem). Nelas, criança em cena comum
+ * passa: foto de família, cena de filme, miniatura de vídeo. Pedido sexual que cita menor segue barrado aqui, e o
+ * desvio para o modelo sem filtro confere o texto de novo na regra dura (processor, assertSafetyFallbackAllowed).
+ * Lista fechada: rota nova fica na regra mais dura até entrar aqui.
+ */
+export const FILTERED_ROUTES: ReadonlySet<string> = new Set([
+  'upscale',
+  'generate-image-nano-banana',
+  'text-to-video',
+  'image-to-video',
+  'video-with-references',
+  'text-to-video-kie',
+  'image-to-video-kie',
+  'reference-to-video-kie',
+  'text-to-video-grok',
+  'image-to-video-grok',
+  'omni-video',
+  'seedance-video',
+  'image-to-video-kling',
+  'talking-avatar',
+  'text-to-speech',
+  'voice-clone',
+]);
+
+/** Modelo de destino declarado no "turbinar prompt" (context.model) que é de provedor com filtro. */
+const FILTERED_CONTEXT_MODEL = /^(?:gemini-|gpt-image-|seedream-5-lite$|nano-banana|veo|kling|grok|omni|seedance)/;
+
+/**
+ * Para onde o pedido vai, do ponto de vista da trava de menor (decisão do dono, 06/11):
+ *  - 'uncensored': modelo sem filtro (Unlocked, despir, Spicy, MiniMax H3…) e TUDO que a guarda não reconhece (rota
+ *    nova, modelo novo, agente, troca de rosto, provador, motion control): qualquer referência a menor barra;
+ *  - 'filtered': provedor com filtro próprio: só barra pedido sexual que cita menor.
+ */
+export function guardTargetFor(path: string, body: unknown): GuardTarget {
+  const fields = isRecord(body) ? body : {};
+  const context = isRecord(fields.context) ? fields.context : {};
+  const model = fields.model ?? context.model;
+  if (isUncensoredModel(model)) return 'uncensored';
+  const normalized = normalizePath(path);
+  const route = /\/generations\/([^/]+)$/.exec(normalized)?.[1];
+  if (route && FILTERED_ROUTES.has(route)) return 'filtered';
+  if (route && MODEL_IN_BODY_ROUTES.has(route) && FILTERED_IMAGE_MODELS.has(modelSlug(model))) return 'filtered';
+  if (/\/prompt-enhancer\/enhance$/.test(normalized) && FILTERED_CONTEXT_MODEL.test(modelSlug(model))) return 'filtered';
+  return 'uncensored';
 }
 
 /** Modelo que exige o atestado mesmo sem foto no pedido (despir). */
@@ -247,7 +313,12 @@ const INSPECTED_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH'])
  * (gerações, avatares falantes, turbinar prompt, agentes). Roda ANTES de qualquer provedor de IA e de qualquer
  * cobrança (interceptor roda antes dos pipes e do handler):
  *  1. corpo grande demais para ser lido inteiro → recusa (413 REQUEST_TOO_LARGE), nunca libera sem ler
- *  2. qualquer texto livre do pedido que faça referência a menor de idade → recusa (422 CONTENT_POLICY_MINOR)
+ *  2. texto livre do pedido que faz referência a menor de idade → recusa (422 CONTENT_POLICY_MINOR). Em modelo sem
+ *     filtro (e em toda rota que a guarda não reconhece), qualquer referência; em provedor com filtro próprio, só
+ *     pedido sexual que cita menor (guardTargetFor)
+ *  2a. gíria de idade ("novinha", "ninfeta") com foto no pedido, para modelo sem filtro → recusa sem registro
+ *     (422 CONTENT_POLICY_PHOTO_YOUTH_TERM); só com texto, ou com palavra de fantasia ("colegial"), o pedido segue e
+ *     o provedor recebe "mulher adulta"
  *  3. ferramenta de foto de pessoa sem o atestado de consentimento → recusa (400 CONSENT_REQUIRED)
  * A recusa por menor, a falta de atestado e cada atestado aceito ficam na trilha de auditoria
  * (content_safety_events); o atestado é gravado antes do handler (sem registro, sem geração) e depois ligado à
@@ -275,7 +346,8 @@ export class ContentSafetyInterceptor implements NestInterceptor {
     const userId = req.user?.sub ?? null;
     const body = req.body;
 
-    const assessment = assessBody(body);
+    const target = guardTargetFor(path, body);
+    const assessment = assessBody(body, { target });
     if (assessment.blocked) {
       if (assessment.reason === 'size') {
         // tamanho não é indício de menor: não entra na trilha de abuso, só não é liberado sem leitura
@@ -287,6 +359,7 @@ export class ContentSafetyInterceptor implements NestInterceptor {
         this.logger.warn(`content-safety: alfabeto que a trava não lê (${route}, usuário ${userId ?? '-'})`);
         throw new BusinessException('CONTENT_POLICY_LANGUAGE');
       }
+      this.logger.warn(`content-safety: menor barrado (${route}, alvo ${target}, motivo ${assessment.reason ?? '-'}, usuário ${userId ?? '-'})`);
       await this.safety.record({
         userId,
         kind: ContentSafetyEventKind.MINOR_BLOCKED,
@@ -295,6 +368,25 @@ export class ContentSafetyInterceptor implements NestInterceptor {
         excerpt: safetyExcerpt(body),
       });
       throw new BusinessException('CONTENT_POLICY_MINOR');
+    }
+
+    // gíria de IDADE ("novinha", "ninfeta") + foto, para modelo sem filtro: a troca por "mulher adulta" só vale quando
+    // o modelo desenha a pessoa a partir do texto. Com foto, a palavra descreve a pessoa da foto e nada no texto muda
+    // quem está nela: recusa com instrução de como refazer. Não é registro de menor (não conta para a guarda legal nem
+    // a suspensão). Palavra de fantasia ("colegial", "schoolgirl") é roupa e segue com foto (quase todo pedido leva a
+    // foto da modelo da cliente).
+    if (assessment.slang && target === 'uncensored' && collectTexts(body).some((text) => hasAgeSlang(text))) {
+      const rule = consentRuleFor(path);
+      if (rule ? hasMedia(body, rule.media) : carriesMedia(body)) {
+        this.logger.warn(`content-safety: gíria de juventude com foto em modelo sem filtro (${route}, usuário ${userId ?? '-'})`);
+        throw new BusinessException('CONTENT_POLICY_PHOTO_YOUTH_TERM');
+      }
+    }
+
+    // gíria de juventude liberada ("novinha", "colegial"): só log, sem o texto. No modelo sem filtro o provedor recebe
+    // "mulher adulta" no lugar (adult-anchor.ts)
+    if (assessment.slang) {
+      this.logger.log(`content-safety: gíria de juventude liberada como adulta (${route}, alvo ${target}, usuário ${userId ?? '-'})`);
     }
 
     // 2b. leitor de sentido (juiz de prompt): a trava pegou a palavra; o juiz pega o sentido. Só bloqueia menor com
