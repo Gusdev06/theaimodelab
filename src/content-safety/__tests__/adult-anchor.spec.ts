@@ -1,4 +1,4 @@
-import { ADULT_ANCHOR, adultAnchorEnabled, adultSafePrompt, neutralizeYouthSlang } from '../adult-anchor';
+import { ADULT_ANCHOR, adultAnchorEnabled, adultSafePrompt, hasAgeSlang, neutralizeYouthSlang } from '../adult-anchor';
 import { assessText } from '../minor-guard';
 
 /**
@@ -71,5 +71,21 @@ describe('adult-anchor', () => {
       if (previous === undefined) delete process.env.ADULT_ANCHOR_ENABLED;
       else process.env.ADULT_ANCHOR_ENABLED = previous;
     }
+  });
+});
+
+describe('hasAgeSlang · gíria que fala da idade × palavra de fantasia', () => {
+  it('gíria de idade conta, em qualquer caixa e com acento', () => {
+    for (const text of ['novinha de biquíni', 'NINFETA loira', 'una jovencita rubia', 'a nymphet in lingerie', 'Novinhas na praia']) {
+      expect(hasAgeSlang(text)).toBe(true);
+    }
+  });
+  it('fantasia não é idade', () => {
+    for (const text of ['vestida de colegial', 'sexy schoolgirl costume', 'colegiala traviesa', 'school girl outfit', 'mulher adulta de lingerie', '', null, undefined]) {
+      expect(hasAgeSlang(text)).toBe(false);
+    }
+  });
+  it('não casa dentro de outra palavra', () => {
+    expect(hasAgeSlang('renovinhando o visual')).toBe(false);
   });
 });

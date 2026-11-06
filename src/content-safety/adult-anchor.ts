@@ -53,6 +53,18 @@ function adultPerson(slang: string): string | null {
   return plural || /is$/.test(slang) ? 'mulheres adultas de uniforme escolar' : 'mulher adulta de uniforme escolar';
 }
 
+/**
+ * Gíria que fala da IDADE da pessoa ("novinha", "ninfeta", "jovencita", "nymphet"), escrita normalmente. "Colegial" e
+ * "schoolgirl" ficam de fora de propósito: são fantasia (roupa), não idade. Num pedido COM foto, a fantasia veste a
+ * pessoa da foto e segue; a gíria de idade descreve a pessoa da foto, e a troca por "mulher adulta" não muda quem está
+ * nela. A forma disfarçada nunca chega aqui: a trava já barrou.
+ */
+const AGE_SLANG = /(?<![\p{L}\p{N}])(?:novi+nh[a-z]*|novin|novynh[a-z]*|ninfet[a-z]*|nymph(?:et|ette)[a-z]*|jovencit[a-z]*)(?![\p{L}\p{N}])/u;
+
+export function hasAgeSlang(text: string | null | undefined): boolean {
+  return typeof text === 'string' && text.length > 0 && AGE_SLANG.test(flatten(text));
+}
+
 export interface NeutralizedPrompt {
   text: string;
   /** gírias trocadas, como estavam escritas (para o log; nunca o prompt inteiro) */

@@ -58,6 +58,7 @@ import {
 } from './unrecoverable.error';
 import { ContentSafetyService } from '../../content-safety/content-safety.service';
 import { assessText } from '../../content-safety/minor-guard';
+import { hasAgeSlang } from '../../content-safety/adult-anchor';
 import {
   ConsentRequiredSafetyError,
   ContentSafetyError,
@@ -2605,7 +2606,8 @@ export class GenerationProcessor extends WorkerHost {
 
   /**
    * O texto da geração pela regra dos modelos sem filtro (minor-guard, alvo 'uncensored'): cita menor de idade
-   * (`blocked`) ou traz gíria de juventude liberada (`slang`)? Erro de banco nunca libera o desvio (conta como se citasse).
+   * (`blocked`) ou traz gíria de idade liberada (`slang`: "novinha", "ninfeta"; fantasia como "colegial" não conta)?
+   * Erro de banco nunca libera o desvio (conta como se citasse).
    */
   private async promptForUncensored(
     generationId: string,
@@ -2616,7 +2618,8 @@ export class GenerationProcessor extends WorkerHost {
         select: { prompt: true },
       });
       const verdict = assessText(generation?.prompt, { target: 'uncensored' });
-      return { blocked: verdict.blocked, slang: Boolean(verdict.slang) };
+      // só a gíria de IDADE segura o desvio com foto; "colegial" e "schoolgirl" são fantasia (roupa)
+      return { blocked: verdict.blocked, slang: Boolean(verdict.slang) && hasAgeSlang(generation?.prompt) };
     } catch (error) {
       this.logger.error(
         `[SAFETY_GUARD] gen=${generationId}: falha ao ler o texto da geração (${(error as Error).message}) — sem desvio para modelo sem censura`,

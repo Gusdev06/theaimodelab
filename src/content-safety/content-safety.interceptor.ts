@@ -4,6 +4,7 @@ import { Observable, tap } from 'rxjs';
 import { BusinessException } from '../common/exceptions/business.exception';
 import { ContentSafetyService } from './content-safety.service';
 import { assessBody, carriesMedia, collectTexts, type GuardTarget } from './minor-guard';
+import { hasAgeSlang } from './adult-anchor';
 import { PromptJudgeService } from './prompt-judge/prompt-judge.service';
 
 /** Marca do juiz na trilha (campo `match` do evento): distingue do termo da trava de palavras. */
@@ -315,8 +316,9 @@ const INSPECTED_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH'])
  *  2. texto livre do pedido que faz referência a menor de idade → recusa (422 CONTENT_POLICY_MINOR). Em modelo sem
  *     filtro (e em toda rota que a guarda não reconhece), qualquer referência; em provedor com filtro próprio, só
  *     pedido sexual que cita menor (guardTargetFor)
- *  2a. gíria de juventude ("novinha", "colegial") com foto no pedido, para modelo sem filtro → recusa sem registro
- *     (422 CONTENT_POLICY_PHOTO_YOUTH_TERM); só com texto, o pedido segue e o provedor recebe "mulher adulta"
+ *  2a. gíria de idade ("novinha", "ninfeta") com foto no pedido, para modelo sem filtro → recusa sem registro
+ *     (422 CONTENT_POLICY_PHOTO_YOUTH_TERM); só com texto, ou com palavra de fantasia ("colegial"), o pedido segue e
+ *     o provedor recebe "mulher adulta"
  *  3. ferramenta de foto de pessoa sem o atestado de consentimento → recusa (400 CONSENT_REQUIRED)
  * A recusa por menor, a falta de atestado e cada atestado aceito ficam na trilha de auditoria
  * (content_safety_events); o atestado é gravado antes do handler (sem registro, sem geração) e depois ligado à
@@ -368,10 +370,12 @@ export class ContentSafetyInterceptor implements NestInterceptor {
       throw new BusinessException('CONTENT_POLICY_MINOR');
     }
 
-    // gíria de juventude + foto, para modelo sem filtro: a troca por "mulher adulta" só vale quando o modelo desenha a
-    // pessoa a partir do texto. Com foto, a palavra descreve a pessoa da foto e nada no texto muda quem está nela:
-    // recusa com instrução de como refazer. Não é registro de menor (não conta para a guarda legal nem a suspensão).
-    if (assessment.slang && target === 'uncensored') {
+    // gíria de IDADE ("novinha", "ninfeta") + foto, para modelo sem filtro: a troca por "mulher adulta" só vale quando
+    // o modelo desenha a pessoa a partir do texto. Com foto, a palavra descreve a pessoa da foto e nada no texto muda
+    // quem está nela: recusa com instrução de como refazer. Não é registro de menor (não conta para a guarda legal nem
+    // a suspensão). Palavra de fantasia ("colegial", "schoolgirl") é roupa e segue com foto (quase todo pedido leva a
+    // foto da modelo da cliente).
+    if (assessment.slang && target === 'uncensored' && collectTexts(body).some((text) => hasAgeSlang(text))) {
       const rule = consentRuleFor(path);
       if (rule ? hasMedia(body, rule.media) : carriesMedia(body)) {
         this.logger.warn(`content-safety: gíria de juventude com foto em modelo sem filtro (${route}, usuário ${userId ?? '-'})`);

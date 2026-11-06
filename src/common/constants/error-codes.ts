@@ -81,7 +81,7 @@ export const ErrorCodes = {
     code: 'CONTENT_POLICY_PHOTO_YOUTH_TERM',
     statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
     message:
-      'Com foto no pedido, descreva a pessoa sem palavras de idade (novinha, ninfeta, colegial…). A foto precisa ser de uma pessoa adulta. Sem a foto, o pedido é gerado com uma mulher adulta.',
+      'Com foto no pedido, descreva a pessoa sem palavras de idade (novinha, ninfeta…). A foto precisa ser de uma pessoa adulta. Sem a foto, o pedido é gerado com uma mulher adulta.',
   },
 } as const;
 
