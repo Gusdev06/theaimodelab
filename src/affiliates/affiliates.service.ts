@@ -29,9 +29,17 @@ import {
   resolvePayout,
   resolveSelfServiceCommissionPercent,
 } from './affiliate-payout';
+import {
+  AFFILIATE_EARNING_LEVEL_DIRECT,
+  AFFILIATE_EARNING_LEVEL_PARENT,
+  resolveSecondLevelPercent,
+} from './affiliate-second-level';
 
 /** Dias até a comissão pendente ficar disponível para saque (janela de reembolso). */
 const AFFILIATE_MATURATION_DAYS = 30;
+
+/** Níveis acima conferidos ao ligar um pai: barra ciclo e árvore funda demais. */
+const AFFILIATE_PARENT_MAX_DEPTH = 10;
 
 type AffiliateCurrencySlice = EarningCurrencySlice & { affiliateId: string };
 
@@ -57,6 +65,10 @@ export class AffiliatesService {
       throw new ConflictException(`Código "${code}" já está em uso`);
     }
 
+    const parentAffiliateId = dto.parentAffiliateCode
+      ? await this.resolveParentAffiliateId(dto.parentAffiliateCode, null)
+      : null;
+
     const affiliate = await this.prisma.affiliate.create({
       data: {
         name: dto.name,
@@ -65,6 +77,7 @@ export class AffiliatesService {
         userId: dto.userId ?? null,
         discountPercent: dto.discountPercent ?? null,
         discountAppliesTo: dto.discountAppliesTo ?? AffiliateDiscountScope.FIRST_PURCHASE,
+        ...(parentAffiliateId && { parentAffiliateId }),
       },
     });
 
@@ -93,8 +106,9 @@ export class AffiliatesService {
     const affiliates = await this.prisma.affiliate.findMany({
       orderBy: { createdAt: 'desc' },
       include: {
-        _count: { select: { earnings: true } },
+        _count: { select: { earnings: true, children: true } },
         user: { select: { id: true, email: true, name: true } },
+        parent: { select: { code: true } },
       },
     });
 
@@ -145,6 +159,8 @@ export class AffiliatesService {
         ),
         referralsCount: affiliate._count.earnings,
         referredUsersCount: referredUsersByCode.get(affiliate.code) ?? 0,
+        parentAffiliateCode: affiliate.parent?.code ?? null,
+        childrenCount: affiliate._count.children,
       };
     });
   }
@@ -154,6 +170,8 @@ export class AffiliatesService {
       where: { id },
       include: {
         user: { select: { id: true, email: true, name: true } },
+        parent: { select: { code: true } },
+        _count: { select: { children: true } },
       },
     });
 
@@ -161,16 +179,29 @@ export class AffiliatesService {
       throw new NotFoundException('Afiliado não encontrado');
     }
 
-    return affiliate;
+    return {
+      ...affiliate,
+      parentAffiliateCode: affiliate.parent?.code ?? null,
+      childrenCount: affiliate._count.children,
+    };
   }
 
   async getEarnings(affiliateId: string) {
-    const affiliate = await this.prisma.affiliate.findUnique({
+    const affiliateRow = await this.prisma.affiliate.findUnique({
       where: { id: affiliateId },
+      include: {
+        parent: { select: { code: true } },
+        _count: { select: { children: true } },
+      },
     });
-    if (!affiliate) {
+    if (!affiliateRow) {
       throw new NotFoundException('Afiliado não encontrado');
     }
+    const affiliate = {
+      ...affiliateRow,
+      parentAffiliateCode: affiliateRow.parent?.code ?? null,
+      childrenCount: affiliateRow._count.children,
+    };
 
     const earnings = await this.prisma.affiliateEarning.findMany({
       where: { affiliateId },
@@ -200,7 +231,8 @@ export class AffiliatesService {
 
     return {
       affiliate,
-      earnings,
+      // Comissão antiga não tem nível gravado: conta como direta.
+      earnings: earnings.map((earning) => ({ ...earning, level: earning.level ?? AFFILIATE_EARNING_LEVEL_DIRECT })),
       summary: {
         totalRevenueCents: totals._sum.amountCents ?? 0,
         totalCommissionCents: totals._sum.commissionCents ?? 0,
@@ -317,6 +349,11 @@ export class AffiliatesService {
       throw new NotFoundException('Afiliado não encontrado');
     }
 
+    const parentProvided = dto.parentAffiliateCode !== undefined;
+    const parentAffiliateId = parentProvided && dto.parentAffiliateCode
+      ? await this.resolveParentAffiliateId(dto.parentAffiliateCode, id)
+      : null;
+
     const oldDiscount = affiliate.discountPercent ?? null;
     const discountProvided = dto.discountPercent !== undefined;
     const newDiscount = discountProvided ? dto.discountPercent : oldDiscount;
@@ -359,11 +396,50 @@ export class AffiliatesService {
           stripeCouponId: newCouponId,
           stripePromotionCodeId: newPromotionCodeId,
         }),
+        ...(parentProvided && { parentAffiliateId }),
       },
       include: {
         user: { select: { id: true, email: true, name: true } },
       },
     });
+  }
+
+  /**
+   * Código do pai (segundo nível) → id. 404 se não existir; 400 se for o próprio afiliado
+   * ou se fechar ciclo (o pai não pode ser descendente do filho). Sobe no máximo
+   * AFFILIATE_PARENT_MAX_DEPTH níveis: árvore mais funda que isso também é recusada.
+   */
+  private async resolveParentAffiliateId(parentAffiliateCode: string, selfId: string | null): Promise<string> {
+    const code = parentAffiliateCode.trim().toUpperCase();
+    const parent = await this.prisma.affiliate.findUnique({
+      where: { code },
+      select: { id: true, parentAffiliateId: true },
+    });
+    if (!parent) {
+      throw new NotFoundException(`Afiliado pai "${code}" não encontrado`);
+    }
+    if (selfId && parent.id === selfId) {
+      throw new BadRequestException('Um afiliado não pode ser pai de si mesmo');
+    }
+
+    let ancestorId = parent.parentAffiliateId;
+    for (let depth = 1; ancestorId; depth++) {
+      if (selfId && ancestorId === selfId) {
+        throw new BadRequestException('Esse pai já é indicado deste afiliado (ciclo)');
+      }
+      if (depth >= AFFILIATE_PARENT_MAX_DEPTH) {
+        throw new BadRequestException(
+          `Árvore de afiliados com mais de ${AFFILIATE_PARENT_MAX_DEPTH} níveis não é permitida`,
+        );
+      }
+      const ancestor = await this.prisma.affiliate.findUnique({
+        where: { id: ancestorId },
+        select: { parentAffiliateId: true },
+      });
+      ancestorId = ancestor?.parentAffiliateId ?? null;
+    }
+
+    return parent.id;
   }
 
   async toggleActive(id: string) {
@@ -420,7 +496,7 @@ export class AffiliatesService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { name: true, email: true, emailVerified: true },
+      select: { name: true, email: true, emailVerified: true, referredByCode: true },
     });
     if (!user) {
       throw new NotFoundException('Usuário não encontrado');
@@ -437,6 +513,10 @@ export class AffiliatesService {
       process.env.AFFILIATE_SELF_SERVICE_PERCENT,
     );
 
+    // Segundo nível: quem se cadastrou pelo link de um afiliado ativo vira filho dele.
+    // Só por essa regra; o autoatendimento não escolhe pai.
+    const parentAffiliateId = await this.resolveSelfServiceParentId(user.referredByCode, userId);
+
     const displayName = user.name?.trim() || user.email.split('@')[0];
 
     for (let attempt = 0; attempt < 8; attempt++) {
@@ -452,6 +532,7 @@ export class AffiliatesService {
             code,
             commissionPercent,
             userId,
+            ...(parentAffiliateId && { parentAffiliateId }),
             ...this.payoutColumns(payout),
           },
         });
@@ -510,6 +591,20 @@ export class AffiliatesService {
         pixKeyType: true,
       },
     });
+  }
+
+  private async resolveSelfServiceParentId(
+    referredByCode: string | null | undefined,
+    userId: string,
+  ): Promise<string | null> {
+    if (!referredByCode) return null;
+    const parent = await this.prisma.affiliate.findUnique({
+      where: { code: referredByCode },
+      select: { id: true, userId: true, isActive: true },
+    });
+    if (!parent?.isActive) return null;
+    if (parent.userId && parent.userId === userId) return null;
+    return parent.id;
   }
 
   /** Afiliado desativado pelo admin não troca o destino do dinheiro (comissão pendente pode estar em análise). */
@@ -622,6 +717,8 @@ export class AffiliatesService {
       await this.loadCurrencySlices({ affiliateId: affiliate.id }, maturationDate),
     );
 
+    const secondLevel = await this.loadSecondLevelSummary(affiliate.id, maturationDate);
+
     const earningRows = await this.prisma.affiliateEarning.findMany({
       where: { affiliateId: affiliate.id },
       orderBy: { createdAt: 'desc' },
@@ -634,6 +731,8 @@ export class AffiliatesService {
         status: true,
         paidAt: true,
         createdAt: true,
+        level: true,
+        sourceEarningId: true,
         user: { select: { name: true, email: true } },
         payment: {
           select: {
@@ -651,14 +750,23 @@ export class AffiliatesService {
       },
     });
 
+    const childCodeBySourceEarningId = await this.loadChildCodes(earningRows);
+
     // O afiliado vê quem comprou, mas não o nome completo nem o e-mail inteiro do cliente.
-    const earnings = earningRows.map((earning) => ({
-      ...earning,
-      currency: resolveEarningCurrency(earning.currency, earning.payment?.currency),
-      user: earning.user
-        ? { name: abbreviateCustomerName(earning.user.name), email: maskEmail(earning.user.email) }
-        : earning.user,
-    }));
+    const earnings = earningRows.map(({ sourceEarningId, ...earning }) => {
+      const level = earning.level ?? AFFILIATE_EARNING_LEVEL_DIRECT;
+      const childCode = sourceEarningId ? childCodeBySourceEarningId.get(sourceEarningId) : undefined;
+      return {
+        ...earning,
+        level,
+        currency: resolveEarningCurrency(earning.currency, earning.payment?.currency),
+        user: earning.user
+          ? { name: abbreviateCustomerName(earning.user.name), email: maskEmail(earning.user.email) }
+          : earning.user,
+        // Nível 2: de qual filho veio a comissão (só o código, nunca e-mail).
+        ...(level === AFFILIATE_EARNING_LEVEL_PARENT && { fromAffiliate: { code: childCode ?? null } }),
+      };
+    });
 
     return {
       affiliate: {
@@ -691,9 +799,54 @@ export class AffiliatesService {
         commissionWindow: resolveAffiliateRecurringWindow(process.env.AFFILIATE_RECURRING_MONTHS),
         netOfFees: true,
         byCurrency,
+        secondLevel,
       },
       earnings,
     };
+  }
+
+  /**
+   * Resumo do segundo nível para o painel do afiliado. Os totais antigos (`totalCommissionCents`
+   * etc.) seguem somando os dois níveis: o que se paga ao afiliado não muda.
+   */
+  private async loadSecondLevelSummary(affiliateId: string, maturationDate: Date) {
+    const percent = resolveSecondLevelPercent(process.env.AFFILIATE_SECOND_LEVEL_PERCENT);
+    const levelWhere: Prisma.AffiliateEarningWhereInput = {
+      affiliateId,
+      level: AFFILIATE_EARNING_LEVEL_PARENT,
+    };
+
+    // Em sequência, como o resto do arquivo: paralelo estoura o pool do Supabase em session mode.
+    const childrenCount = await this.prisma.affiliate.count({ where: { parentAffiliateId: affiliateId } });
+    const totals = await this.prisma.affiliateEarning.aggregate({
+      where: levelWhere,
+      _sum: { commissionCents: true },
+    });
+    const slices = await this.loadCurrencySlices(levelWhere, maturationDate);
+
+    return {
+      enabled: percent > 0,
+      percent,
+      childrenCount,
+      commissionCents: totals._sum.commissionCents ?? 0,
+      byCurrency: summarizeByCurrency(slices),
+    };
+  }
+
+  /** Código do filho de cada comissão de nível 2 (pela comissão direta que a originou). */
+  private async loadChildCodes(
+    rows: Array<{ level: number | null; sourceEarningId: string | null }>,
+  ): Promise<Map<string, string>> {
+    const sourceIds = rows
+      .filter((row) => row.level === AFFILIATE_EARNING_LEVEL_PARENT && row.sourceEarningId)
+      .map((row) => row.sourceEarningId as string);
+    if (sourceIds.length === 0) return new Map();
+
+    const sources = await this.prisma.affiliateEarning.findMany({
+      where: { id: { in: sourceIds } },
+      select: { id: true, affiliate: { select: { code: true } } },
+    });
+    return new Map(sources.map((source) => [source.id, source.affiliate.code]));
   }
 
   private maturationCutoff(): Date {

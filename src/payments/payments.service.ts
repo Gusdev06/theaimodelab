@@ -8,6 +8,12 @@ import { StripeService } from './stripe.service';
 import { MetaConversionsService } from '../meta/meta-conversions.service';
 import { renewalEarnsCommission, resolveAffiliateRecurringWindow } from '../affiliates/affiliate-recurring';
 import { computeAffiliateNetCents, warnDiscardedAffiliateGatewayFees } from '../affiliates/affiliate-net';
+import {
+  AFFILIATE_EARNING_LEVEL_DIRECT,
+  AFFILIATE_EARNING_LEVEL_PARENT,
+  computeSecondLevelCommissionCents,
+  resolveSecondLevelPercent,
+} from '../affiliates/affiliate-second-level';
 
 const ULTRA_BASIC_WELCOME_FREE_GENERATIONS = 2;
 
@@ -1484,7 +1490,7 @@ export class PaymentsService {
 
     const affiliate = await tx.affiliate.findUnique({
       where: { code: referredByCode },
-      select: { id: true, userId: true, isActive: true, commissionPercent: true },
+      select: { id: true, userId: true, isActive: true, commissionPercent: true, parentAffiliateId: true },
     });
 
     if (!affiliate?.isActive) return;
@@ -1508,7 +1514,7 @@ export class PaymentsService {
 
     if (commissionCents <= 0) return;
 
-    await tx.affiliateEarning.create({
+    const directEarning = await tx.affiliateEarning.create({
       data: {
         affiliateId: affiliate.id,
         paymentId: payment.id,
@@ -1518,11 +1524,75 @@ export class PaymentsService {
         currency,
         provider,
         status: 'PENDING',
+        level: AFFILIATE_EARNING_LEVEL_DIRECT,
       },
     });
 
     this.logger.log(
       `Affiliate earning recorded: ${commissionCents} centavos${currency ? ` ${currency}` : ''} for affiliate ${affiliate.id} (${affiliate.commissionPercent}% of net ${netAmountCents}, original ${amountCents}, ${rule === 'gateway-percent' ? `${provider} fee` : 'stripe fee'} ${feeCents})`,
+    );
+
+    await this.recordSecondLevelEarning(tx, {
+      buyerUserId: userId,
+      paymentId: payment.id,
+      parentAffiliateId: affiliate.parentAffiliateId,
+      directEarningId: directEarning?.id ?? null,
+      directCommissionCents: commissionCents,
+      netAmountCents,
+      currency,
+      provider,
+    });
+  }
+
+  /**
+   * Segundo nível: o afiliado que trouxe o afiliado desta venda recebe uma fatia da
+   * comissão direta, paga pela casa. Só um nível acima; desligado sem a env
+   * AFFILIATE_SECOND_LEVEL_PERCENT. Ver affiliate-second-level.ts.
+   */
+  private async recordSecondLevelEarning(
+    tx: Parameters<Parameters<typeof this.prisma.$transaction>[0]>[0],
+    input: {
+      buyerUserId: string;
+      paymentId: string;
+      parentAffiliateId: string | null;
+      directEarningId: string | null;
+      directCommissionCents: number;
+      netAmountCents: number;
+      currency: string | null;
+      provider: string | null;
+    },
+  ): Promise<void> {
+    const percent = resolveSecondLevelPercent(process.env.AFFILIATE_SECOND_LEVEL_PERCENT);
+    if (percent <= 0 || !input.parentAffiliateId) return;
+
+    const parent = await tx.affiliate.findUnique({
+      where: { id: input.parentAffiliateId },
+      select: { id: true, userId: true, isActive: true },
+    });
+    if (!parent?.isActive) return;
+    // O pai que é o próprio comprador não ganha pela própria compra.
+    if (parent.userId && parent.userId === input.buyerUserId) return;
+
+    const secondLevelCents = computeSecondLevelCommissionCents(input.directCommissionCents, percent);
+    if (secondLevelCents <= 0) return;
+
+    await tx.affiliateEarning.create({
+      data: {
+        affiliateId: parent.id,
+        paymentId: input.paymentId,
+        userId: input.buyerUserId,
+        amountCents: input.netAmountCents,
+        commissionCents: secondLevelCents,
+        currency: input.currency,
+        provider: input.provider,
+        status: 'PENDING',
+        level: AFFILIATE_EARNING_LEVEL_PARENT,
+        sourceEarningId: input.directEarningId,
+      },
+    });
+
+    this.logger.log(
+      `Affiliate second-level earning recorded: ${secondLevelCents} centavos${input.currency ? ` ${input.currency}` : ''} for parent affiliate ${parent.id} (${percent}% of direct commission ${input.directCommissionCents})`,
     );
   }
 }

@@ -374,8 +374,14 @@ describe('AffiliatesService · forma de recebimento', () => {
       const prisma = {
         affiliate: {
           findFirst: jest.fn(async () => affiliate),
-          findUnique: jest.fn(async () => ({ ...affiliate, user: { id: 'user-1', email: 'ana@example.com', name: 'Ana' } })),
-          findMany: jest.fn(async () => [{ ...affiliate, _count: { earnings: 0 }, user: null }]),
+          findUnique: jest.fn(async () => ({
+            ...affiliate,
+            user: { id: 'user-1', email: 'ana@example.com', name: 'Ana' },
+            parent: null,
+            _count: { children: 0 },
+          })),
+          findMany: jest.fn(async () => [{ ...affiliate, _count: { earnings: 0, children: 0 }, user: null, parent: null }]),
+          count: jest.fn(async () => 0),
         },
         affiliateEarning: {
           aggregate: jest.fn(async () => ({ _sum: { amountCents: null, commissionCents: null }, _count: 0 })),

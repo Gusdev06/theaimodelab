@@ -788,6 +788,7 @@ function baseSeed(): Seed {
         payoutMethod: 'PAYPAL',
         payoutEmail: 'maria.paypal@example.com',
         isActive: true,
+        parentAffiliateId: 'aff-pai',
       },
     ],
     subscription: [
@@ -1216,6 +1217,7 @@ describe('AccountErasureService', () => {
       ),
     ).toMatchObject({ userId: U, abandonedAt: expect.any(Date) });
     // afiliado: sem PIX, sem conta PayPal/Wise e desativado; o código fica (comissões e indicações)
+    // e a ligação com o pai do segundo nível também (é só um id, não é dado pessoal)
     expect(rowById(tables.affiliate, 'aff-1')).toMatchObject({
       name: ERASED_AFFILIATE_NAME,
       pixKey: null,
@@ -1224,6 +1226,7 @@ describe('AccountErasureService', () => {
       payoutEmail: null,
       isActive: false,
       code: 'MARIA10',
+      parentAffiliateId: 'aff-pai',
     });
 
     expect(report.deleted).toMatchObject({
