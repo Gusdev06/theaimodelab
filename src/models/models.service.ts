@@ -8,6 +8,7 @@ import {
 import { AiModel, AiModelProvider, AiModelType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MULTIPLE_ANGLES_MODEL, MULTIPLE_ANGLES_SLUG } from '../generations/multiple-angles.constants';
+import { TALKING_AVATAR_MODEL, TALKING_AVATAR_SLUG } from '../generations/talking-avatar.constants';
 
 const CACHE_TTL_MS = 60_000; // 60s
 
@@ -119,6 +120,33 @@ export class ModelsService implements OnModuleInit {
     } catch (err) {
       this.logger.warn(
         `Failed to ensure 'wan-animate' AiModel row: ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
+    }
+
+    // Avatar falante (POST /generations/talking-avatar, OmniHuman 2.0). Só existia no seed, que não roda em produção:
+    // sem a linha a rota responde MODEL_NOT_FOUND e o site nunca mostra a "Fala v2". Nasce DESLIGADO; o dono liga em
+    // /admin/modelos. update vazio preserva o interruptor do admin.
+    try {
+      await this.prisma.aiModel.upsert({
+        where: { slug: TALKING_AVATAR_SLUG },
+        update: {},
+        create: {
+          slug: TALKING_AVATAR_SLUG,
+          label: 'Avatar falante (OmniHuman 2.0)',
+          description:
+            'A pessoa da foto diz o texto, com voz e boca sincronizada (TTS Inworld + OmniHuman 2.0 na WaveSpeed). Cobra por segundo de fala, sem geração grátis; planos liberados pela env TALKING_AVATAR_PLANS.',
+          provider: AiModelProvider.WAVESPEED,
+          modelVariant: TALKING_AVATAR_MODEL,
+          sortOrder: 103,
+          type: AiModelType.VIDEO,
+          isActive: false,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to ensure '${TALKING_AVATAR_SLUG}' AiModel row: ${
           err instanceof Error ? err.message : err
         }`,
       );
