@@ -1,4 +1,3 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { assessText } from '../../content-safety/minor-guard';
@@ -8,7 +7,6 @@ import {
   adultEnhancerMessage,
   composeEnhanced,
   deterministicEnhancement,
-  ENHANCEMENT_SCHEMA,
   parseEnhancement,
   type AdultEnhancement,
   type AdultEnhancerContext,
@@ -20,28 +18,58 @@ export interface AdultEnhanceResult {
   negativePrompt: string;
   /** 1 frase no idioma da cliente dizendo o que foi acrescentado (o site mostra no toast); vazia no fallback */
   note: string;
-  /** model = reescrito pelo Claude; fallback = bloco fixo do estudo (modelo indisponível, recusou ou saiu do contrato) */
+  /** model = reescrito pelo modelo do OpenRouter; fallback = bloco fixo do estudo (indisponível, recusou ou saiu do contrato) */
   source: 'model' | 'fallback';
 }
 
-/** Só o que o melhorador usa do cliente da Anthropic (os testes passam um falso por este token). */
+/** Uma chamada de chat ao OpenRouter: devolve o texto da resposta (os testes passam um falso por este token). */
 export interface EnhancerClient {
-  messages: {
-    create(params: Anthropic.MessageCreateParamsNonStreaming, options?: Anthropic.RequestOptions): Promise<Anthropic.Message>;
-  };
+  complete(params: { model: string; system: string; user: string; maxTokens: number; timeoutMs: number }): Promise<string>;
 }
 
 export const ADULT_ENHANCER_CLIENT = Symbol('ADULT_ENHANCER_CLIENT');
 
 /**
- * Regra do dono: produto chama o modelo mais avançado. Teste de 02/11 em 20 prompts reais do Unlocked (10 explícitos):
- * Fable 5.1 reescreveu 19/20 (1 cortado pelo max_tokens antigo), p50 12 s, US$ 0,048 por pedido; Opus 5.5 20/20,
- * p50 9 s, US$ 0,017. Nenhuma recusa nos dois. PROMPT_ENHANCER_MODEL troca sem deploy.
+ * Por que OpenRouter e não Claude: a política de uso da Anthropic proíbe usar o Claude para gerar conteúdo sexualmente
+ * explícito ("Do Not Generate Sexually Explicit Content", sem exceção), e este melhorador reescreve pedidos explícitos
+ * sem suavizar. O Claude segue na plataforma só lendo e classificando (juiz de prompt, pré-voo do site). Grok 4.3 é o
+ * mesmo modelo que o Clone de Prompt 18+ já usa pelo OpenRouter (descreve nudez adulta sem recusar, teste de 20/10);
+ * a lista troca sem deploy (OPENROUTER_ENHANCER_MODELS, em ordem; o primeiro que responder no contrato vale).
  */
-export const ADULT_ENHANCER_DEFAULT_MODEL = 'claude-fable-5-1';
+export const ADULT_ENHANCER_DEFAULT_MODELS = 'x-ai/grok-4.3';
 const DEFAULT_TIMEOUT_MS = 60_000;
-/** o raciocínio do Fable/Opus conta no teto; 1.200 cortou um prompt de 300 palavras no teste */
+/** um prompt de 320 palavras + lista "evitar" + nota cabe com folga */
 const MAX_TOKENS = 2400;
+
+/** Cliente de texto do OpenRouter (mesmo endpoint e cabeçalhos do cliente de visão do Clone de Prompt). */
+export class OpenRouterTextClient implements EnhancerClient {
+  constructor(private readonly apiKey: string) {}
+
+  async complete({ model, system, user, maxTokens, timeoutMs }: { model: string; system: string; user: string; maxTokens: number; timeoutMs: number }): Promise<string> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json', 'X-Title': 'The AI Model Lab' },
+        body: JSON.stringify({
+          model,
+          max_tokens: maxTokens,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+        }),
+        signal: controller.signal,
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: { message?: string }; choices?: { message?: { content?: string | null } }[] };
+      if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+      return data?.choices?.[0]?.message?.content ?? '';
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
 
 /**
  * "Melhorar prompt com IA" dos modelos sem filtro. O melhorador de sempre (Gemini) recusa cena sensível e devolve
@@ -62,17 +90,19 @@ export class AdultPromptEnhancerService {
     this.client = injectedClient ?? null;
   }
 
-  /** Sem chave da Anthropic o melhorador sem filtro não existe: o site mantém o botão escondido pelo flag dele. */
+  /** Sem chave do OpenRouter o melhorador sem filtro não existe: o site mantém o botão escondido pelo flag dele. */
   enabled(): boolean {
-    return Boolean(this.apiKey());
+    return Boolean(this.apiKey()) && this.models().length > 0;
   }
 
-  model(): string {
-    return (this.config.get<string>('PROMPT_ENHANCER_MODEL') ?? ADULT_ENHANCER_DEFAULT_MODEL).trim() || ADULT_ENHANCER_DEFAULT_MODEL;
+  models(): string[] {
+    const raw = this.config.get<string>('OPENROUTER_ENHANCER_MODELS') ?? ADULT_ENHANCER_DEFAULT_MODELS;
+    const list = raw.split(',').map((model) => model.trim()).filter(Boolean);
+    return list.length ? list : [ADULT_ENHANCER_DEFAULT_MODELS];
   }
 
   private apiKey(): string | null {
-    const key = this.config.get<string>('ANTHROPIC_API_KEY')?.trim();
+    const key = this.config.get<string>('OPENROUTER_API_KEY')?.trim();
     return key ? key : null;
   }
 
@@ -85,7 +115,7 @@ export class AdultPromptEnhancerService {
     if (this.client) return this.client;
     const apiKey = this.apiKey();
     if (!apiKey) return null;
-    this.client = new Anthropic({ apiKey, maxRetries: 1 });
+    this.client = new OpenRouterTextClient(apiKey);
     return this.client;
   }
 
@@ -93,12 +123,12 @@ export class AdultPromptEnhancerService {
   async enhance(prompt: string, context: AdultEnhancerContext): Promise<AdultEnhanceResult> {
     const original = prompt.trim();
     if (!original) throw new Error('prompt vazio');
-    const model = this.model();
     const started = Date.now();
 
-    const fromModel = await this.askModel(original, context, model);
-    const enhancement = fromModel ?? deterministicEnhancement(original, context);
+    const fromModel = await this.askModels(original, context);
+    const enhancement = fromModel?.enhancement ?? deterministicEnhancement(original, context);
     const source: AdultEnhanceResult['source'] = fromModel ? 'model' : 'fallback';
+    const model = fromModel?.model ?? 'bloco fixo';
 
     // o texto que volta para a cliente vai virar o prompt da geração: tem que passar na mesma trava que o pedido passou
     const composed = composeEnhanced(enhancement);
@@ -117,39 +147,33 @@ export class AdultPromptEnhancerService {
     return { enhancedPrompt: composed, negativePrompt: '', note: enhancement.note, source };
   }
 
-  private async askModel(prompt: string, context: AdultEnhancerContext, model: string): Promise<AdultEnhancement | null> {
+  /** Tenta os modelos em ordem; o primeiro que responde no contrato vale. Nenhum = null (bloco fixo). */
+  private async askModels(prompt: string, context: AdultEnhancerContext): Promise<{ enhancement: AdultEnhancement; model: string } | null> {
     // sem chave não há modelo, mesmo com cliente injetado (testes): só o bloco fixo
     const client = this.enabled() ? this.clientOrNull() : null;
     if (!client) return null;
-    try {
-      const response = await client.messages.create(
-        {
+    for (const model of this.models()) {
+      try {
+        const text = await client.complete({
           model,
-          max_tokens: MAX_TOKENS,
-          system: [{ type: 'text', text: ADULT_ENHANCER_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-          messages: [{ role: 'user', content: adultEnhancerMessage(prompt, context) }],
-          // Fable/Opus: raciocínio sempre ligado (desligar dá 400); esforço baixo basta para reescrita; resposta presa ao esquema
-          output_config: { effort: 'low', format: { type: 'json_schema', schema: ENHANCEMENT_SCHEMA as unknown as Record<string, unknown> } },
-        },
-        { timeout: this.timeoutMs(), maxRetries: 1 },
-      );
-      if (response.stop_reason === 'refusal') {
-        this.logger.warn(`[ADULT_ENHANCER] recusa do modelo (${model})`);
-        return null;
+          system: ADULT_ENHANCER_SYSTEM_PROMPT,
+          user: adultEnhancerMessage(prompt, context),
+          maxTokens: MAX_TOKENS,
+          timeoutMs: this.timeoutMs(),
+        });
+        const parsed = parseEnhancement(text);
+        if (!parsed) {
+          this.logger.warn(`[ADULT_ENHANCER] resposta fora do contrato (${model})`);
+          continue;
+        }
+        // o modelo devolveu o pedido intacto (regra da política para pedido sobre menor): não há o que melhorar
+        if (parsed.prompt.trim() === prompt.trim() && !parsed.avoid) return null;
+        return { enhancement: parsed, model };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`[ADULT_ENHANCER] indisponível (${model}): ${reason.slice(0, 160)}`);
       }
-      const text = response.content.map((block) => (block.type === 'text' ? block.text : '')).join('');
-      const parsed = parseEnhancement(text);
-      if (!parsed) {
-        this.logger.warn(`[ADULT_ENHANCER] resposta fora do contrato (${model}, stop=${response.stop_reason})`);
-        return null;
-      }
-      // o modelo devolveu o pedido intacto (regra da política para pedido sobre menor): não há o que melhorar
-      if (parsed.prompt.trim() === prompt.trim() && !parsed.avoid) return null;
-      return parsed;
-    } catch (error) {
-      const reason = error instanceof Anthropic.APIError ? `${error.status ?? 'rede'} ${error.name}` : error instanceof Error ? error.message : String(error);
-      this.logger.warn(`[ADULT_ENHANCER] indisponível (${model}): ${reason.slice(0, 160)}`);
-      return null;
     }
+    return null;
   }
 }
