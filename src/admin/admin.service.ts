@@ -11,6 +11,9 @@ import { PaginationDto } from '../common/dto/pagination.dto';
 import { PaginatedResponseDto } from '../common/dto/paginated-response.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { ListGenerationsQueryDto } from './dto/list-generations-query.dto';
+import { ListUserTransactionsQueryDto } from './dto/list-user-transactions-query.dto';
+import { ListUserPaymentsQueryDto } from './dto/list-user-payments-query.dto';
+import { buildCreatedAtRange } from './admin-date-filter';
 import { ListPromptTemplatesQueryDto } from './dto/list-prompt-templates-query.dto';
 import {
   AdminStatsResponseDto,
@@ -46,6 +49,7 @@ const PROMPT_THUMB_HEIGHT = 500;
  *   real ligado. "Ativa" adiciona status ACTIVE (feito em cada query).
  */
 const DEFAULT_FX_USD_BRL = 5.4;
+const FX_USD_BRL_KEY = 'fx_usd_brl';
 
 const REAL_PAYMENTS_CTE = Prisma.sql`real_payments AS (
   SELECT pay.*,
@@ -184,7 +188,7 @@ export class AdminService {
 
   /** Câmbio USD→BRL de app_settings.fx_usd_brl; ausente/inválido → 5.40. */
   private async getFxUsdBrl(): Promise<number> {
-    const row = await this.prisma.appSetting.findUnique({ where: { key: 'fx_usd_brl' } });
+    const row = await this.prisma.appSetting.findUnique({ where: { key: FX_USD_BRL_KEY } });
     const fx = row ? parseFloat(row.value.replace(',', '.')) : NaN;
     return Number.isFinite(fx) && fx > 0 ? fx : DEFAULT_FX_USD_BRL;
   }
@@ -368,6 +372,11 @@ export class AdminService {
             planSlug: user.subscriptions[0].plan.slug,
             planName: user.subscriptions[0].plan.name,
             status: user.subscriptions[0].status,
+            // Gateway e fim do período: o cockpit só oferece troca de plano por checkout a quem paga na Perfect Pay
+            // (a troca cancela a recorrência antiga sozinha) e só quando os créditos acabam antes da renovação.
+            paymentProvider: user.subscriptions[0].paymentProvider ?? null,
+            currentPeriodEnd: user.subscriptions[0].currentPeriodEnd,
+            cancelAtPeriodEnd: user.subscriptions[0].cancelAtPeriodEnd,
           }
         : null,
       credits: user.creditBalance
@@ -434,6 +443,7 @@ export class AdminService {
             currentPeriodStart: user.subscriptions[0].currentPeriodStart,
             currentPeriodEnd: user.subscriptions[0].currentPeriodEnd,
             cancelAtPeriodEnd: user.subscriptions[0].cancelAtPeriodEnd,
+            paymentProvider: user.subscriptions[0].paymentProvider ?? null,
           }
         : null,
       credits: user.creditBalance
@@ -627,6 +637,9 @@ export class AdminService {
     if (query.type) where.type = query.type;
     if (query.status) where.status = query.status;
     if (query.model) where.modelUsed = query.model;
+    if (query.errorCode) where.errorCode = query.errorCode;
+    const createdAt = buildCreatedAtRange(query.from, query.to);
+    if (createdAt) where.createdAt = createdAt;
     const search = query.search?.trim();
     if (search) {
       where.user = {
@@ -664,12 +677,128 @@ export class AdminService {
       creditsConsumed: gen.creditsConsumed,
       outputUrls: gen.outputs?.map((o) => o.url) ?? [],
       errorMessage: gen.errorMessage,
+      errorCode: gen.errorCode,
       processingTimeMs: gen.processingTimeMs,
       createdAt: gen.createdAt,
       completedAt: gen.completedAt,
     }));
 
     return new PaginatedResponseDto(data, total, query.page, query.limit);
+  }
+
+  /**
+   * Extrato de créditos de um usuário (mais novo primeiro), com filtro de tipo e período e o resumo do
+   * período filtrado inteiro (não só da página): `spent` = soma das saídas, `received` = soma das entradas.
+   */
+  async getUserTransactions(userId: string, query: ListUserTransactionsQueryDto) {
+    await this.assertUserExists(userId);
+
+    const where: Prisma.CreditTransactionWhereInput = { userId };
+    if (query.type) where.type = query.type;
+    const createdAt = buildCreatedAtRange(query.startDate, query.endDate);
+    if (createdAt) where.createdAt = createdAt;
+
+    const [transactions, total, debits, credits] = await Promise.all([
+      this.prisma.creditTransaction.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: query.skip,
+        take: query.limit,
+        select: {
+          id: true,
+          type: true,
+          amount: true,
+          source: true,
+          description: true,
+          generationId: true,
+          paymentId: true,
+          metadata: true,
+          createdAt: true,
+        },
+      }),
+      this.prisma.creditTransaction.count({ where }),
+      this.prisma.creditTransaction.aggregate({
+        where: { AND: [where, { amount: { lt: 0 } }] },
+        _sum: { amount: true },
+      }),
+      this.prisma.creditTransaction.aggregate({
+        where: { AND: [where, { amount: { gt: 0 } }] },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const spent = Math.abs(debits._sum.amount ?? 0);
+    const received = credits._sum.amount ?? 0;
+    const page = new PaginatedResponseDto(transactions, total, query.page, query.limit);
+    return { ...page, summary: { spent, received, net: received - spent } };
+  }
+
+  /** Pagamentos de um usuário (mais novo primeiro), com o pacote/assinatura ligados quando houver. */
+  async getUserPayments(userId: string, query: ListUserPaymentsQueryDto) {
+    await this.assertUserExists(userId);
+
+    const where: Prisma.PaymentWhereInput = { userId };
+    if (query.status) where.status = query.status;
+
+    const [payments, total] = await Promise.all([
+      this.prisma.payment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: query.skip,
+        take: query.limit,
+        select: {
+          id: true,
+          type: true,
+          provider: true,
+          status: true,
+          amountCents: true,
+          currency: true,
+          externalPaymentId: true,
+          externalInvoiceId: true,
+          subscriptionId: true,
+          creditPackageId: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      this.prisma.payment.count({ where }),
+    ]);
+
+    return new PaginatedResponseDto(payments, total, query.page, query.limit);
+  }
+
+  /** Câmbio USD→BRL em uso pelas estatísticas (`source: 'default'` quando ainda não foi salvo). */
+  async getFxSetting(): Promise<{ fxUsdBrl: number; source: 'app_settings' | 'default'; updatedAt: Date | null }> {
+    const row = await this.prisma.appSetting.findUnique({ where: { key: FX_USD_BRL_KEY } });
+    const stored = row ? parseFloat(row.value.replace(',', '.')) : NaN;
+    if (row && Number.isFinite(stored) && stored > 0) {
+      return { fxUsdBrl: stored, source: 'app_settings', updatedAt: row.updatedAt };
+    }
+    return { fxUsdBrl: DEFAULT_FX_USD_BRL, source: 'default', updatedAt: null };
+  }
+
+  /**
+   * Grava o câmbio USD→BRL. As estatísticas leem `app_settings` a cada chamada (não há cache dessa chave),
+   * então o valor novo vale a partir da próxima requisição.
+   */
+  async updateFxSetting(fxUsdBrl: number) {
+    if (!Number.isFinite(fxUsdBrl) || fxUsdBrl <= 0 || fxUsdBrl >= 100) {
+      throw new BadRequestException('Câmbio deve ser maior que 0 e menor que 100');
+    }
+    const value = String(fxUsdBrl);
+    const row = await this.prisma.appSetting.upsert({
+      where: { key: FX_USD_BRL_KEY },
+      create: { key: FX_USD_BRL_KEY, value },
+      update: { value },
+    });
+    return { fxUsdBrl, source: 'app_settings' as const, updatedAt: row.updatedAt };
+  }
+
+  private async assertUserExists(userId: string): Promise<void> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+    if (!user) {
+      throw new NotFoundException('Usuário não encontrado');
+    }
   }
 
   /** Lista os modelos distintos já usados em gerações (para filtros do admin). */

@@ -252,6 +252,15 @@ export interface TalkingAvatarJobData extends BaseJobData {
   speed?: number;
 }
 
+/** Ângulos (Qwen Multiple Angles): a saída guardada da geração de origem vista de outro ângulo; roda direto, sem fila. */
+export interface MultipleAnglesJobData extends BaseJobData {
+  /** URL pública da NOSSA cópia da foto de origem (nunca bytes do pedido) */
+  imageUrl: string;
+  horizontalAngle: number;
+  verticalAngle: number;
+  distance: number;
+}
+
 export interface TextToSpeechJobData extends BaseJobData {
   text: string;
   voiceId: string;

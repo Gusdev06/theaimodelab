@@ -9,9 +9,12 @@ import {
   inputImageUrlsOfJob,
   LINEAGE_MATCH,
   lineageByOrigin,
+  lineageSourceIdsOf,
   OwnMediaProvenance,
+  recheckOwnSource,
   substituteImageUrls,
   thumbDifference,
+  withLineageSources,
 } from '../own-media';
 
 /** Imagem de teste determinística: blocos de cor "aleatórios" por semente, ampliados (estrutura de foto real). */
@@ -124,6 +127,39 @@ describe('own-media · regras', () => {
     expect(lineageByOrigin({ type: GenerationType.VIRTUAL_TRY_ON, inputImageCount: 2, prompt: null })).toBe('not_clean');
   });
 
+  it('prompt que a trava de menor barra hoje nunca é limpo (só texto ou com foto), nem o que ela não consegue ler', () => {
+    const minor = 'a cinematic photo of a teen girl in soft window light';
+    expect(lineageByOrigin({ type: GenerationType.TEXT_TO_IMAGE, inputImageCount: 0, prompt: minor })).toBe('not_clean');
+    expect(lineageByOrigin({ type: GenerationType.IMAGE_TO_IMAGE, inputImageCount: 1, prompt: minor })).toBe('not_clean');
+    expect(lineageByOrigin({ type: GenerationType.TEXT_TO_IMAGE, inputImageCount: 0, prompt: 'नग्न महिला' })).toBe('not_clean');
+    // negação e o prompt vazio seguem como antes
+    expect(lineageByOrigin({ type: GenerationType.TEXT_TO_IMAGE, inputImageCount: 0, prompt: 'adult woman, no kids in the scene' })).toBe('clean');
+    expect(lineageByOrigin({ type: GenerationType.TEXT_TO_IMAGE, inputImageCount: 0, prompt: null })).toBe('clean');
+  });
+
+  it('trilha da linhagem: lê só ids válidos; grava sem perder os outros parâmetros', () => {
+    const id = 'cmtrailgeneration00000001';
+    expect(lineageSourceIdsOf({ lineageSourceIds: [id, id] })).toEqual([id]);
+    expect(lineageSourceIdsOf({})).toBeNull();
+    expect(lineageSourceIdsOf(null)).toBeNull();
+    expect(lineageSourceIdsOf({ lineageSourceIds: [] })).toBeNull();
+    expect(lineageSourceIdsOf({ lineageSourceIds: [id, '../etc'] })).toBeNull();
+    expect(lineageSourceIdsOf({ lineageSourceIds: Array.from({ length: 17 }, () => id) })).toBeNull();
+    expect(withLineageSources({ mimeType: 'image/png' }, [id, id])).toEqual({ mimeType: 'image/png', lineageSourceIds: [id] });
+    expect(withLineageSources(null, [id])).toEqual({ lineageSourceIds: [id] });
+  });
+
+  it('releitura da origem: texto barrado hoje, bloqueio por menor e imagem a partir de foto sem trilha não valem', () => {
+    const textOnly = { type: GenerationType.TEXT_TO_IMAGE, prompt: 'mulher adulta', parameters: {} };
+    expect(recheckOwnSource(textOnly, false)).toBeNull();
+    expect(recheckOwnSource({ ...textOnly, prompt: 'a cinematic photo of a teen girl' }, false)).toBe('text');
+    expect(recheckOwnSource({ ...textOnly, prompt: '[reference_override] mulher' }, false)).toBe('text');
+    expect(recheckOwnSource(textOnly, true)).toBe('minor_event');
+    const fromPhoto = { type: GenerationType.IMAGE_TO_IMAGE, prompt: 'mulher adulta', parameters: {} };
+    expect(recheckOwnSource(fromPhoto, false)).toBe('untraceable');
+    expect(recheckOwnSource({ ...fromPhoto, parameters: { lineageSourceIds: ['cmtrailgeneration00000001'] } }, false)).toBeNull();
+  });
+
   it('fotos do job: junta os campos de imagem; vídeo, áudio ou formato estranho = não confere', () => {
     expect(inputImageUrlsOfJob({ imageUrl: 'https://a/1.jpg', imageUrls: ['https://a/2.jpg', 'https://a/1.jpg'] })).toEqual([
       'https://a/1.jpg',
@@ -173,7 +209,22 @@ describe('OwnMediaProvenance', () => {
   });
   afterEach(() => fetchSpy.mockRestore());
 
-  function prismaWith(state: { fingerprints: any[]; generation?: any; backfill?: any[] }) {
+  /**
+   * `sources`: gerações relidas quando a impressão casa (por id; null = não existe). Sem entrada, a geração vem da lista
+   * do backfill ou, por padrão, como pedido só de texto limpo. `events`: bloqueios por menor ainda não liberados.
+   */
+  function prismaWith(state: {
+    fingerprints: any[];
+    generation?: any;
+    backfill?: any[];
+    sources?: Record<string, any>;
+    events?: Array<{ generationId: string }>;
+  }) {
+    const sourceOf = (id: string) => {
+      if (state.sources && id in state.sources) return state.sources[id];
+      const old = state.backfill?.find((row) => row.id === id);
+      return { id, type: GenerationType.TEXT_TO_IMAGE, prompt: old?.prompt ?? 'mulher adulta', parameters: old?.parameters ?? {} };
+    };
     return {
       mediaFingerprint: {
         findMany: jest.fn(async ({ where }: any) =>
@@ -183,13 +234,31 @@ describe('OwnMediaProvenance', () => {
           state.fingerprints.push(create);
           return create;
         }),
+        updateMany: jest.fn(async ({ where, data }: any) => {
+          const rows = state.fingerprints.filter(
+            (row) => row.userId === where.userId && where.generationId.in.includes(row.generationId) && row.cleanLineage === where.cleanLineage,
+          );
+          for (const row of rows) Object.assign(row, data);
+          return { count: rows.length };
+        }),
       },
       generationOutput: {
         findFirst: jest.fn(async ({ where }: any) => ({ url: `https://s3/${where.generationId}/${where.order}.png` })),
       },
       generation: {
         findUnique: jest.fn(async () => state.generation ?? null),
-        findMany: jest.fn(async () => state.backfill ?? []),
+        findMany: jest.fn(async ({ where }: any) =>
+          where.id?.in ? where.id.in.map(sourceOf).filter(Boolean) : (state.backfill ?? []),
+        ),
+        update: jest.fn(async ({ data }: any) => {
+          state.generation = { ...state.generation, ...data };
+          return state.generation;
+        }),
+      },
+      contentSafetyEvent: {
+        findMany: jest.fn(async ({ where }: any) =>
+          (state.events ?? []).filter((event) => where.generationId.in.includes(event.generationId)),
+        ),
       },
     };
   }
@@ -257,7 +326,9 @@ describe('OwnMediaProvenance', () => {
     });
 
     await expect(own.matchOwnClean('u1', ['https://cdn/foto-de-fora.jpg'])).resolves.toBeNull();
-    expect(prisma.generation.findMany).toHaveBeenCalledTimes(1);
+    // a outra leitura de gerações é a releitura da origem que casou (por id), não um 2º backfill
+    const backfillReads = prisma.generation.findMany.mock.calls.filter(([args]: any[]) => !args.where.id);
+    expect(backfillReads).toHaveLength(1);
   });
 
   it('geração antiga feita com busca do Google: ganha impressão, mas suja', async () => {
@@ -271,6 +342,80 @@ describe('OwnMediaProvenance', () => {
       new OwnMediaProvenance(prismaWith(state) as any).matchOwnClean('u1', ['https://cdn/entrada-modelo.jpg']),
     ).resolves.toBeNull();
     expect(state.fingerprints[0]).toMatchObject({ generationId: 'g-google', cleanLineage: false });
+  });
+
+  it('geração antiga com prompt que a trava barra hoje: ganha impressão, mas suja (não vira foto própria no desvio)', async () => {
+    const state: any = {
+      fingerprints: [],
+      backfill: [
+        {
+          id: 'g-antes-da-trava',
+          prompt: 'a cinematic photo of a teen girl in soft window light',
+          parameters: {},
+          outputs: [{ url: 'https://cdn/saida-modelo.png', order: 0 }],
+        },
+      ],
+    };
+    await expect(
+      new OwnMediaProvenance(prismaWith(state) as any).matchOwnClean('u1', ['https://cdn/entrada-modelo.jpg']),
+    ).resolves.toBeNull();
+    expect(state.fingerprints[0]).toMatchObject({ generationId: 'g-antes-da-trava', cleanLineage: false });
+  });
+
+  describe('releitura da origem que casou', () => {
+    const minor = 'a cinematic photo of a teen girl in soft window light';
+    const TRAIL_ID = 'cmtrailgeneration00000001';
+
+    it('impressão limpa gravada antes da regra, de pedido que a trava barra hoje: não casa e a impressão fica suja', async () => {
+      const state: any = {
+        fingerprints: [await known()],
+        sources: { 'g-modelo': { id: 'g-modelo', type: GenerationType.TEXT_TO_IMAGE, prompt: minor, parameters: {} } },
+      };
+      const prisma = prismaWith(state);
+      await expect(new OwnMediaProvenance(prisma as any).matchOwnClean('u1', ['https://cdn/entrada-modelo.jpg'])).resolves.toBeNull();
+      expect(prisma.mediaFingerprint.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'u1', generationId: { in: ['g-modelo'] }, cleanLineage: true },
+        data: { cleanLineage: false },
+      });
+      expect(state.fingerprints[0].cleanLineage).toBe(false);
+      // a próxima foto igual nem chega a casar (a impressão já é suja)
+      await expect(new OwnMediaProvenance(prisma as any).matchOwnClean('u1', ['https://cdn/entrada-modelo.jpg'])).resolves.toBeNull();
+    });
+
+    it('bloqueio por menor ainda não liberado ligado à origem: não casa, sem mexer na impressão (o jurídico pode liberar)', async () => {
+      const state: any = { fingerprints: [await known()], events: [{ generationId: 'g-modelo' }] };
+      const prisma = prismaWith(state);
+      await expect(new OwnMediaProvenance(prisma as any).matchOwnClean('u1', ['https://cdn/entrada-modelo.jpg'])).resolves.toBeNull();
+      expect(prisma.mediaFingerprint.updateMany).not.toHaveBeenCalled();
+      expect(state.fingerprints[0].cleanLineage).toBe(true);
+    });
+
+    it('imagem feita a partir de foto: casa só com a trilha das fotos de entrada (sem ela, a origem não dá para conferir)', async () => {
+      const noTrail: any = {
+        fingerprints: [await known()],
+        sources: { 'g-modelo': { id: 'g-modelo', type: GenerationType.IMAGE_TO_IMAGE, prompt: 'mulher adulta no café', parameters: {} } },
+      };
+      const prisma = prismaWith(noTrail);
+      await expect(new OwnMediaProvenance(prisma as any).matchOwnClean('u1', ['https://cdn/entrada-modelo.jpg'])).resolves.toBeNull();
+      expect(prisma.mediaFingerprint.updateMany).not.toHaveBeenCalled();
+
+      const withTrail: any = {
+        fingerprints: [await known()],
+        sources: {
+          'g-modelo': { id: 'g-modelo', type: GenerationType.IMAGE_TO_IMAGE, prompt: 'mulher adulta no café', parameters: { lineageSourceIds: [TRAIL_ID] } },
+        },
+      };
+      await expect(
+        new OwnMediaProvenance(prismaWith(withTrail) as any).matchOwnClean('u1', ['https://cdn/entrada-modelo.jpg']),
+      ).resolves.toEqual([expect.objectContaining({ generationId: 'g-modelo' })]);
+    });
+
+    it('origem que sumiu da conta entre a impressão e a releitura: não casa', async () => {
+      const state: any = { fingerprints: [await known()], sources: { 'g-modelo': null } };
+      await expect(
+        new OwnMediaProvenance(prismaWith(state) as any).matchOwnClean('u1', ['https://cdn/entrada-modelo.jpg']),
+      ).resolves.toBeNull();
+    });
   });
 
   it('download que falha, sem https ou saída sem link público: não casa, sem lançar', async () => {
@@ -327,6 +472,70 @@ describe('OwnMediaProvenance', () => {
       const google: any = { fingerprints: [], generation: generation({ parameters: { google_search: true } }) };
       await new OwnMediaProvenance(prismaWith(google) as any).recordGeneration('g4');
       expect(google.fingerprints.at(-1)).toMatchObject({ generationId: 'g4', cleanLineage: false });
+    });
+
+    it('prompt barrado pela trava: suja, mesmo só de texto ou a partir de foto da própria modelo', async () => {
+      const minor = 'a cinematic photo of a teen girl in soft window light';
+      const textOnly: any = { fingerprints: [], generation: generation({ prompt: minor }) };
+      await new OwnMediaProvenance(prismaWith(textOnly) as any).recordGeneration('g7');
+      expect(textOnly.fingerprints.at(-1)).toMatchObject({ generationId: 'g7', cleanLineage: false });
+
+      const fromOwn: any = {
+        fingerprints: [await known()],
+        generation: generation({ prompt: minor, type: GenerationType.IMAGE_TO_IMAGE, inputImages: [{ url: 'https://cdn/entrada-modelo.jpg' }] }),
+      };
+      await new OwnMediaProvenance(prismaWith(fromOwn) as any).recordGeneration('g8');
+      expect(fromOwn.fingerprints.at(-1)).toMatchObject({ generationId: 'g8', cleanLineage: false });
+    });
+
+    it('a partir de foto da própria modelo: grava a trilha (a geração com que a foto bateu) antes da impressão', async () => {
+      const state: any = {
+        fingerprints: [await known()],
+        generation: generation({
+          type: GenerationType.IMAGE_TO_IMAGE,
+          parameters: { mimeType: 'image/png' },
+          inputImages: [{ url: 'https://cdn/entrada-modelo.jpg' }],
+        }),
+      };
+      const prisma = prismaWith(state);
+      await new OwnMediaProvenance(prisma as any).recordGeneration('g9');
+
+      expect(prisma.generation.update).toHaveBeenCalledWith({
+        where: { id: 'g9' },
+        data: { parameters: { mimeType: 'image/png', lineageSourceIds: ['g-modelo'] } },
+      });
+      expect(prisma.generation.update.mock.invocationCallOrder[0]).toBeLessThan(prisma.mediaFingerprint.upsert.mock.invocationCallOrder[0]);
+      expect(state.fingerprints.at(-1)).toMatchObject({ generationId: 'g9', cleanLineage: true });
+
+      // só texto ou suja: sem trilha
+      const textOnly = prismaWith({ fingerprints: [], generation: generation({}) });
+      await new OwnMediaProvenance(textOnly as any).recordGeneration('g10');
+      expect(textOnly.generation.update).not.toHaveBeenCalled();
+    });
+
+    it('foto nova a partir de uma foto antiga cujo pedido a trava barra hoje: suja, sem trilha, e a antiga também fica suja', async () => {
+      const state: any = {
+        fingerprints: [await known({ generationId: 'g-antiga' })],
+        sources: { 'g-antiga': { id: 'g-antiga', type: GenerationType.TEXT_TO_IMAGE, prompt: 'a cinematic photo of a teen girl in soft window light', parameters: {} } },
+        generation: generation({ type: GenerationType.IMAGE_TO_IMAGE, inputImages: [{ url: 'https://cdn/entrada-modelo.jpg' }] }),
+      };
+      const prisma = prismaWith(state);
+      await new OwnMediaProvenance(prisma as any).recordGeneration('g11');
+
+      expect(prisma.generation.update).not.toHaveBeenCalled();
+      expect(state.fingerprints.find((row: any) => row.generationId === 'g11')).toMatchObject({ cleanLineage: false });
+      expect(state.fingerprints.find((row: any) => row.generationId === 'g-antiga')).toMatchObject({ cleanLineage: false });
+    });
+
+    it('trilha que não grava (banco): a impressão também não é gravada', async () => {
+      const state: any = {
+        fingerprints: [await known()],
+        generation: generation({ type: GenerationType.IMAGE_TO_IMAGE, inputImages: [{ url: 'https://cdn/entrada-modelo.jpg' }] }),
+      };
+      const prisma = prismaWith(state);
+      prisma.generation.update.mockRejectedValue(new Error('db down') as never);
+      await expect(new OwnMediaProvenance(prisma as any).recordGeneration('g12')).resolves.toBeUndefined();
+      expect(state.fingerprints.find((row: any) => row.generationId === 'g12')).toBeUndefined();
     });
 
     it('troca de rosto, vídeo ou geração que não concluiu: não grava nada', async () => {

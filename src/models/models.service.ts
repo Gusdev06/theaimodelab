@@ -7,6 +7,8 @@ import {
 } from '@nestjs/common';
 import { AiModel, AiModelProvider, AiModelType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { MULTIPLE_ANGLES_MODEL, MULTIPLE_ANGLES_SLUG } from '../generations/multiple-angles.constants';
+import { TALKING_AVATAR_MODEL, TALKING_AVATAR_SLUG } from '../generations/talking-avatar.constants';
 
 const CACHE_TTL_MS = 60_000; // 60s
 
@@ -123,6 +125,33 @@ export class ModelsService implements OnModuleInit {
       );
     }
 
+    // Avatar falante (POST /generations/talking-avatar, OmniHuman 2.0). Só existia no seed, que não roda em produção:
+    // sem a linha a rota responde MODEL_NOT_FOUND e o site nunca mostra a "Fala v2". Nasce DESLIGADO; o dono liga em
+    // /admin/modelos. update vazio preserva o interruptor do admin.
+    try {
+      await this.prisma.aiModel.upsert({
+        where: { slug: TALKING_AVATAR_SLUG },
+        update: {},
+        create: {
+          slug: TALKING_AVATAR_SLUG,
+          label: 'Avatar falante (OmniHuman 2.0)',
+          description:
+            'A pessoa da foto diz o texto, com voz e boca sincronizada (TTS Inworld + OmniHuman 2.0 na WaveSpeed). Cobra por segundo de fala, sem geração grátis; planos liberados pela env TALKING_AVATAR_PLANS.',
+          provider: AiModelProvider.WAVESPEED,
+          modelVariant: TALKING_AVATAR_MODEL,
+          sortOrder: 103,
+          type: AiModelType.VIDEO,
+          isActive: false,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to ensure '${TALKING_AVATAR_SLUG}' AiModel row: ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
+    }
+
     // Wan 3.0 reference-to-video (engine wan3-reference): a cena do vídeo gerada de novo com a pessoa da foto.
     // Nasce DESLIGADO: o dono liga em /admin/modelos depois de conferir que o conteúdo 18+ passa no provedor.
     try {
@@ -144,6 +173,32 @@ export class ModelsService implements OnModuleInit {
     } catch (err) {
       this.logger.warn(
         `Failed to ensure 'wan3-reference' AiModel row: ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
+    }
+
+    // Ângulos da mesma foto (POST /generations/multiple-angles, o "giro 360" do hub da modelo). Nasce DESLIGADO aqui
+    // (o deploy não roda o seed, e o seed sobrescreve planos e pacotes): o dono liga em /admin/modelos depois do teste.
+    try {
+      await this.prisma.aiModel.upsert({
+        where: { slug: MULTIPLE_ANGLES_SLUG },
+        update: {},
+        create: {
+          slug: MULTIPLE_ANGLES_SLUG,
+          label: 'Ângulos (Qwen Multiple Angles)',
+          description:
+            'Giro 360 do hub da modelo: a mesma foto vista de outro ângulo de câmera. Só aceita foto que a modelo de IA nasceu na plataforma, e o texto da origem passa pela trava de menor. WaveSpeed, 100 créditos por foto, sem geração grátis. Ligar só depois de testar com a chave.',
+          provider: AiModelProvider.WAVESPEED,
+          modelVariant: MULTIPLE_ANGLES_MODEL,
+          sortOrder: 50,
+          type: AiModelType.IMAGE,
+          isActive: false,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to ensure '${MULTIPLE_ANGLES_SLUG}' AiModel row: ${
           err instanceof Error ? err.message : err
         }`,
       );

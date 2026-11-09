@@ -1,7 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { IMAGE_DECLARATION_VERSION_MESSAGE, ImageDeclarationResponseDto } from './dto/image-declaration.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserProfileResponseDto } from './dto/user-profile-response.dto';
+import { isKnownImageDeclarationVersion, recordImageDeclaration } from './image-declaration';
 import { resolveShownTermsVersion } from './terms.constants';
 
 function maskTaxId(taxId: string | null): string | null {
@@ -48,6 +50,7 @@ export class UsersService {
       hasCompletedOnboarding: user.hasCompletedOnboarding,
       termsAcceptedAt: user.termsAcceptedAt,
       termsVersion: user.termsVersion,
+      imageDeclarationAt: user.imageDeclarationAt ?? null,
       country: user.country,
       locale: user.locale,
       currency: user.currency,
@@ -80,6 +83,7 @@ export class UsersService {
           currentPeriodStart: activeSubscription.currentPeriodStart,
           currentPeriodEnd: activeSubscription.currentPeriodEnd,
           cancelAtPeriodEnd: activeSubscription.cancelAtPeriodEnd,
+          paymentProvider: activeSubscription.paymentProvider ?? null,
         }
         : null,
       feedbackSubmitted: !!user.feedback,
@@ -140,6 +144,39 @@ export class UsersService {
     }
 
     return this.getProfile(userId);
+  }
+
+  /**
+   * Registra na conta a declaração de responsabilidade pelas imagens (a cliente marca uma vez, na primeira criação
+   * com foto). Idempotente: quem já declarou fica com a data e a versão da primeira vez. Depois disso a API deixa de
+   * exigir `consent_confirmed` a cada pedido desta conta (ver ContentSafetyInterceptor).
+   */
+  async declareImages(userId: string, version: string): Promise<ImageDeclarationResponseDto> {
+    if (!isKnownImageDeclarationVersion(version)) {
+      throw new BadRequestException({
+        code: 'IMAGE_DECLARATION_VERSION',
+        message: IMAGE_DECLARATION_VERSION_MESSAGE,
+      });
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId, isActive: true },
+      select: { id: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Usuário não encontrado');
+    }
+
+    const declaration = await recordImageDeclaration(this.prisma, userId, version);
+    if (!declaration) {
+      throw new NotFoundException('Usuário não encontrado');
+    }
+
+    return {
+      imageDeclarationAt: declaration.imageDeclarationAt,
+      imageDeclarationVersion: declaration.imageDeclarationVersion,
+    };
   }
 
   async completeOnboarding(userId: string): Promise<UserProfileResponseDto> {

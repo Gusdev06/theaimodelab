@@ -22,6 +22,11 @@ export class SubscriptionInfoDto {
   @ApiProperty() currentPeriodStart: Date;
   @ApiProperty() currentPeriodEnd: Date;
   @ApiProperty() cancelAtPeriodEnd: boolean;
+  @ApiPropertyOptional({
+    description:
+      'Gateway da assinatura (perfectpay, cakto, stripe, asaas, admin). O site só oferece o upgrade direto pelo checkout quando a troca de plano cancela a recorrência antiga sozinha (perfectpay); nos outros, a cliente pagaria duas vezes.',
+  })
+  paymentProvider?: string | null;
 }
 
 export class UserProfileResponseDto {
@@ -37,6 +42,12 @@ export class UserProfileResponseDto {
   termsAcceptedAt: Date | null;
   @ApiPropertyOptional({ description: "Versão do termo aceita (ex: 2026-09-03)." })
   termsVersion: string | null;
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Quando a conta declarou a responsabilidade pelas imagens enviadas (uma vez só). Null = ainda não declarou.',
+  })
+  imageDeclarationAt: Date | null;
   @ApiPropertyOptional() country: string | null;
   @ApiProperty() locale: string;
   @ApiProperty() currency: string;

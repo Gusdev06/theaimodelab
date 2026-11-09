@@ -34,6 +34,7 @@ import {
   SAFETY_OVERRIDE_REASON_MIN_LENGTH,
   assertSafetyOverride,
 } from './account-erasure.service';
+import { AdminThrottle } from '../common/decorators/admin-throttle.decorator';
 
 export class EraseAccountDto {
   @ApiProperty({
@@ -71,6 +72,7 @@ export class EraseAccountDto {
 
 @ApiTags('admin')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/users')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')

@@ -6,6 +6,7 @@ import {
   ForbiddenException,
   HttpException,
   HttpStatus,
+  Optional,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -18,8 +19,13 @@ import {
 import { PlansService } from '../plans/plans.service';
 import { ModelsService } from '../models/models.service';
 import { VoicesService } from '../voices/voices.service';
+import { ContentSafetyService } from '../content-safety/content-safety.service';
+import { safetyExcerpt } from '../content-safety/content-safety.interceptor';
+import { PromptJudgeService } from '../content-safety/prompt-judge/prompt-judge.service';
+import { BusinessException } from '../common/exceptions/business.exception';
 import {
   AiModelType,
+  ContentSafetyEventKind,
   FreeGenerationType,
   GenerationType,
   GenerationStatus,
@@ -79,6 +85,23 @@ import { GenerateMinimaxH3ImageToVideoDto } from './dto/videos/generate-minimax-
 import { GenerateMinimaxH3ReferenceToVideoDto } from './dto/videos/generate-minimax-h3-reference-to-video.dto';
 import { GenerateTextToSpeechDto } from './dto/generate-text-to-speech.dto';
 import { GenerateTalkingAvatarDto } from './dto/generate-talking-avatar.dto';
+import { GenerateMultipleAnglesDto } from './dto/generate-multiple-angles.dto';
+import {
+  MULTIPLE_ANGLES_CREDITS,
+  MULTIPLE_ANGLES_JUDGE_MATCH,
+  MULTIPLE_ANGLES_MODEL,
+  MULTIPLE_ANGLES_ROUTE,
+  MULTIPLE_ANGLES_SLUG,
+  MULTIPLE_ANGLES_SOURCE_MATCH_PREFIX,
+  MULTIPLE_ANGLES_SOURCE_MESSAGE,
+  type MultipleAnglesLineage,
+  type MultipleAnglesSourceProblem,
+  multipleAnglesJudgeTexts,
+  multipleAnglesPrompt,
+  multipleAnglesSafety,
+  multipleAnglesSourceProblem,
+  resolveMultipleAnglesLineage,
+} from './multiple-angles.constants';
 import {
   TALKING_AVATAR_MODEL,
   TALKING_AVATAR_SLUG,
@@ -150,6 +173,7 @@ import {
   OmniVideoClipData,
   SeedanceVideoJobData,
   TalkingAvatarJobData,
+  MultipleAnglesJobData,
   TextToSpeechJobData,
   VoiceCloneJobData,
 } from './queue/generation-queue.constants';
@@ -200,6 +224,8 @@ export class GenerationsService {
     private readonly unlimitedQueue: Queue,
     private readonly generationProcessor: GenerationProcessor,
     private readonly unlimitedService: UnlimitedService,
+    private readonly contentSafety: ContentSafetyService,
+    @Optional() private readonly promptJudge?: PromptJudgeService,
   ) {}
 
   private isSeedream(model: string | undefined | null): boolean {
@@ -223,6 +249,17 @@ export class GenerationsService {
       .catch((err) =>
         this.logger.error(
           `Talking avatar direct run failed for ${data.generationId}: ${(err as Error).message}`,
+          (err as Error).stack,
+        ),
+      );
+  }
+
+  private runMultipleAnglesDirectly(data: MultipleAnglesJobData): void {
+    this.generationProcessor
+      .runMultipleAnglesDirectly(data)
+      .catch((err) =>
+        this.logger.error(
+          `Multiple angles direct run failed for ${data.generationId}: ${(err as Error).message}`,
           (err as Error).stack,
         ),
       );
@@ -3510,6 +3547,249 @@ CRITICAL REQUIREMENTS:
       status: GenerationStatus.PROCESSING,
       creditsConsumed: creditsRequired,
     };
+  }
+
+  /**
+   * Ângulos (Qwen Multiple Angles na WaveSpeed): uma foto pronta da conta vista de outro ângulo. A foto que vai ao
+   * provedor é a NOSSA cópia da geração de origem (nunca bytes do pedido), a origem precisa ter linhagem limpa e o
+   * texto guardado dela e de toda a linhagem (ângulos, fotos feitas a partir de foto, até o pedido de texto) passa pela
+   * trava de menor antes de qualquer cobrança (multiple-angles.constants.ts). 100 créditos por foto, cobrados no envio;
+   * falhou = estorno pelo handleFailure.
+   */
+  async generateMultipleAngles(
+    userId: string,
+    dto: GenerateMultipleAnglesDto,
+  ): Promise<CreateGenerationResponseDto> {
+    const type = GenerationType.IMAGE_TO_IMAGE;
+    const resolution = Resolution.RES_1K;
+    const creditsRequired = MULTIPLE_ANGLES_CREDITS;
+    const outputOrder = dto.source_output ?? 0;
+    const horizontal = dto.horizontal_angle;
+    const vertical = dto.vertical_angle ?? 0;
+    const distance = dto.distance ?? 1;
+
+    await this.modelsService.assertActiveBySlug(MULTIPLE_ANGLES_SLUG, AiModelType.IMAGE);
+
+    const source = await this.prisma.generation.findFirst({
+      where: { id: dto.source_generation_id, userId },
+      select: {
+        status: true,
+        type: true,
+        isDeleted: true,
+        expiresAt: true,
+        prompt: true,
+        negativePrompt: true,
+        parameters: true,
+        aspectRatio: true,
+        _count: { select: { inputImages: true } },
+        outputs: { where: { order: outputOrder }, select: { url: true }, take: 1 },
+        mediaFingerprints: { where: { outputOrder }, select: { cleanLineage: true }, take: 1 },
+      },
+    });
+    const problem = multipleAnglesSourceProblem(
+      source
+        ? {
+            status: source.status,
+            type: source.type,
+            isDeleted: source.isDeleted,
+            expiresAt: source.expiresAt,
+            prompt: source.prompt,
+            parameters: source.parameters,
+            inputImageCount: source._count.inputImages,
+            outputUrl: source.outputs[0]?.url ?? null,
+            cleanLineage: source.mediaFingerprints[0]?.cleanLineage ?? null,
+          }
+        : null,
+    );
+    if (!source) throw this.multipleAnglesSourceError('not_found');
+    if (problem && problem !== 'not_own') throw this.multipleAnglesSourceError(problem);
+
+    // a trava vem antes da linhagem: origem com texto de menor é recusada (e registrada) como menor, não como "não é sua"
+    const lineage = await resolveMultipleAnglesLineage(
+      {
+        id: dto.source_generation_id,
+        type: source.type,
+        prompt: source.prompt,
+        negativePrompt: source.negativePrompt,
+        parameters: source.parameters,
+      },
+      (generationIds) =>
+        this.prisma.generation.findMany({
+          where: { id: { in: generationIds }, userId },
+          select: { id: true, type: true, prompt: true, negativePrompt: true, parameters: true },
+        }),
+    );
+    await this.assertMultipleAnglesLineageSafe(userId, lineage, problem);
+
+    const imageUrl = source.outputs[0]!.url;
+    const rootGenerationId = lineage.chainRootId;
+
+    await this.checkConcurrentLimit(userId);
+    await this.ensureSufficientBalance(userId, creditsRequired);
+
+    const generation = await this.prisma.generation.create({
+      data: {
+        userId,
+        type,
+        status: GenerationStatus.PROCESSING,
+        prompt: multipleAnglesPrompt(horizontal, vertical, distance),
+        modelUsed: MULTIPLE_ANGLES_MODEL,
+        resolution,
+        aspectRatio: source.aspectRatio,
+        quantity: 1,
+        creditsConsumed: creditsRequired,
+        usedFreeGeneration: false,
+        parameters: {
+          provider: 'wavespeed',
+          mode: 'multiple_angles',
+          sourceGenerationId: dto.source_generation_id,
+          rootGenerationId,
+          sourceOutput: outputOrder,
+          horizontalAngle: horizontal,
+          verticalAngle: vertical,
+          distance,
+        },
+      },
+    });
+
+    // a foto de entrada é a saída guardada da geração de origem (fica no lugar dela: nada em inputs/ para apagar)
+    await this.prisma.generationInputImage.createMany({
+      data: [{ generationId: generation.id, role: GenerationImageRole.REFERENCE, order: 0, url: imageUrl }],
+    });
+
+    await this.debitCredits(userId, creditsRequired, generation.id, type, resolution);
+
+    this.runMultipleAnglesDirectly({
+      generationId: generation.id,
+      userId,
+      creditsConsumed: creditsRequired,
+      imageUrl,
+      horizontalAngle: horizontal,
+      verticalAngle: vertical,
+      distance,
+    });
+
+    return {
+      id: generation.id,
+      status: GenerationStatus.PROCESSING,
+      creditsConsumed: creditsRequired,
+    };
+  }
+
+  private multipleAnglesSourceError(problem: MultipleAnglesSourceProblem): HttpException {
+    if (problem === 'not_found') {
+      return new NotFoundException({ code: 'MULTIPLE_ANGLES_SOURCE_NOT_FOUND', message: MULTIPLE_ANGLES_SOURCE_MESSAGE.not_found });
+    }
+    return new HttpException(
+      { code: `MULTIPLE_ANGLES_SOURCE_${problem.toUpperCase()}`, message: MULTIPLE_ANGLES_SOURCE_MESSAGE[problem] },
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+
+  /**
+   * O pedido dos ângulos não tem texto, então o interceptor da trava não vê nada: aqui a origem e toda a linhagem dela
+   * passam pela mesma recusa, antes de qualquer cobrança. Ordem:
+   *  1. alguma geração da linhagem com bloqueio por menor ainda não liberado (filtro de texto, recusa do provedor ou um
+   *     toque anterior aqui) → 422 CONTENT_POLICY_MINOR sem registro novo (o toque repetido não escala a suspensão);
+   *  2. texto de alguma geração relida com referência a menor → registro MINOR_BLOCKED ligado àquela geração (no
+   *     máximo um por geração, liberado ou não) e 422 CONTENT_POLICY_MINOR;
+   *  3. conta na guarda legal por menor (a que a suspensão automática não pega: admin, suspensão desligada, guarda
+   *     anterior a ela) → 422 CONTENT_POLICY_MINOR sem registro novo;
+   *  4. alfabeto sem lista ou texto grande demais → 422 MULTIPLE_ANGLES_SOURCE_POLICY, sem registro de abuso;
+   *  5. foto que não é a modelo da conta (impressão suja) → 422 MULTIPLE_ANGLES_SOURCE_NOT_OWN;
+   *  6. linhagem que não dá para reler até o pedido de texto (sem trilha, geração faltando, funda demais) → 422
+   *     MULTIPLE_ANGLES_SOURCE_POLICY;
+   *  7. juiz de prompt sobre os pedidos da linhagem (alvo sem filtro): menor com confiança alta no modo enforce →
+   *     registro (um por foto de origem da cadeia) e 422 CONTENT_POLICY_MINOR; no shadow, só log.
+   * O log nunca leva o texto.
+   */
+  private async assertMultipleAnglesLineageSafe(
+    userId: string,
+    lineage: MultipleAnglesLineage,
+    sourceProblem: MultipleAnglesSourceProblem | null,
+  ): Promise<void> {
+    const generationIds = lineage.nodes.map((node) => node.id);
+    const who = `[SAFETY_GUARD] multiple-angles user=${userId} origem=${generationIds[0]}`;
+
+    const flagged = await this.prisma.contentSafetyEvent.findFirst({
+      where: { generationId: { in: generationIds }, kind: ContentSafetyEventKind.MINOR_BLOCKED, releasedAt: null },
+      select: { generationId: true },
+    });
+    if (flagged) {
+      this.logger.warn(`${who}: a geração ${flagged.generationId} tem bloqueio por menor`);
+      throw new BusinessException('CONTENT_POLICY_MINOR');
+    }
+
+    const safety = multipleAnglesSafety(lineage.nodes);
+    if (safety.kind === 'minor') {
+      await this.recordMultipleAnglesMinor(userId, safety.node.id, safety.match, safety.node.prompt);
+      this.logger.warn(`${who}: texto da geração ${safety.node.id} barrado por menor`);
+      throw new BusinessException('CONTENT_POLICY_MINOR');
+    }
+
+    if (await this.contentSafety.isUnderMinorHold(userId)) {
+      this.logger.warn(`${who}: conta na guarda legal por menor`);
+      throw new BusinessException('CONTENT_POLICY_MINOR');
+    }
+    if (safety.kind === 'unreadable') {
+      this.logger.warn(`${who}: texto da linhagem sem conferência`);
+      throw this.multipleAnglesSourceError('policy');
+    }
+    if (sourceProblem) throw this.multipleAnglesSourceError(sourceProblem);
+    if (lineage.gap) {
+      this.logger.warn(`${who}: linhagem sem releitura completa (${lineage.gap}, ${lineage.nodes.length} geração(ões) relida(s))`);
+      throw this.multipleAnglesSourceError('policy');
+    }
+
+    await this.judgeMultipleAnglesLineage(userId, lineage, who);
+  }
+
+  /** Registro do bloqueio por menor ligado à geração relida, uma vez só por geração (liberado ou não). */
+  private async recordMultipleAnglesMinor(
+    userId: string,
+    generationId: string,
+    match: string,
+    prompt: string | null,
+  ): Promise<void> {
+    const alreadyRecorded = await this.prisma.contentSafetyEvent.findFirst({
+      where: {
+        generationId,
+        kind: ContentSafetyEventKind.MINOR_BLOCKED,
+        match: { startsWith: MULTIPLE_ANGLES_SOURCE_MATCH_PREFIX },
+      },
+      select: { id: true },
+    });
+    if (alreadyRecorded) return;
+    await this.contentSafety.record({
+      userId,
+      kind: ContentSafetyEventKind.MINOR_BLOCKED,
+      route: MULTIPLE_ANGLES_ROUTE,
+      match,
+      excerpt: safetyExcerpt({ prompt }),
+      generationId,
+    });
+  }
+
+  /**
+   * O juiz de prompt (PR #16) lê os pedidos da linhagem como leria o pedido original num modelo sem filtro (o Qwen não
+   * tem filtro). Desligado, sem chave ou fora do ar: segue. Nunca lança por conta própria.
+   */
+  private async judgeMultipleAnglesLineage(userId: string, lineage: MultipleAnglesLineage, who: string): Promise<void> {
+    if (!this.promptJudge?.enabled()) return;
+    const texts = multipleAnglesJudgeTexts(lineage.nodes);
+    if (texts.length === 0) return;
+    const outcome = await this.promptJudge.review(texts, { uncensored: true });
+    const verdict = outcome.verdict;
+    if (!verdict || verdict.category !== 'minor' || verdict.confidence !== 'high') return;
+    const detail = `${verdict.reason} · ${outcome.model} ${outcome.latencyMs} ms`;
+    if (this.promptJudge.mode() !== 'enforce') {
+      this.logger.warn(`${who}: [PROMPT_JUDGE] shadow: menor/high na linhagem (${detail})`);
+      return;
+    }
+    // o juiz lê os pedidos juntos: o registro fica na foto que originou a cadeia, com o trecho dos pedidos lidos
+    await this.recordMultipleAnglesMinor(userId, lineage.chainRootId, MULTIPLE_ANGLES_JUDGE_MATCH, texts.join(' · '));
+    this.logger.warn(`${who}: [PROMPT_JUDGE] bloqueado: menor na linhagem (${detail})`);
+    throw new BusinessException('CONTENT_POLICY_MINOR');
   }
 
   async generateTextToSpeech(
