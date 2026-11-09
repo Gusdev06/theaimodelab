@@ -110,6 +110,7 @@ import {
   MinimaxH3ImageToVideoJobData,
   MinimaxH3ReferenceToVideoJobData,
   TalkingAvatarJobData,
+  MultipleAnglesJobData,
   TextToSpeechJobData,
   VoiceCloneJobData,
   GenerationJobData,
@@ -927,6 +928,21 @@ export class GenerationProcessor extends WorkerHost {
   async runTalkingAvatarDirectly(data: TalkingAvatarJobData): Promise<void> {
     try {
       await this.processTalkingAvatar(data);
+    } catch (error) {
+      await this.handleFailure(
+        data.generationId,
+        data.userId,
+        data.creditsConsumed,
+        error as Error,
+        data.usedFreeGeneration,
+      );
+    }
+  }
+
+  /** Ângulos (Qwen Multiple Angles na WaveSpeed). Falhou = estorno pelo handleFailure. */
+  async runMultipleAnglesDirectly(data: MultipleAnglesJobData): Promise<void> {
+    try {
+      await this.processMultipleAngles(data);
     } catch (error) {
       await this.handleFailure(
         data.generationId,
@@ -2343,6 +2359,25 @@ export class GenerationProcessor extends WorkerHost {
       id: data.generationId,
       imageUrl: data.imageUrl,
       audioUrl,
+    });
+
+    await this.completeGeneration(data.generationId, result, startTime);
+  }
+
+  private async processMultipleAngles(data: MultipleAnglesJobData): Promise<void> {
+    const startTime = Date.now();
+    await this.markProcessingStarted(data.generationId);
+
+    this.logger.log(
+      `[MULTIPLE_ANGLES] ${data.generationId} h=${data.horizontalAngle} v=${data.verticalAngle} d=${data.distance}`,
+    );
+
+    const result = await this.wavespeedVideoProvider.generateMultipleAngles({
+      id: data.generationId,
+      imageUrl: data.imageUrl,
+      horizontalAngle: data.horizontalAngle,
+      verticalAngle: data.verticalAngle,
+      distance: data.distance,
     });
 
     await this.completeGeneration(data.generationId, result, startTime);

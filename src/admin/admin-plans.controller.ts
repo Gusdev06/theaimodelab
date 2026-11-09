@@ -13,9 +13,11 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { AdminPlansService } from './admin-plans.service';
 import { UpsertPlanDto } from './dto/upsert-plan.dto';
+import { AdminThrottle } from '../common/decorators/admin-throttle.decorator';
 
 @ApiTags('admin')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/plans')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')

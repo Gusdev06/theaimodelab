@@ -4,9 +4,11 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { ListMarketingLeadsQueryDto } from './dto/list-marketing-leads-query.dto';
 import { MarketingLeadsService } from './marketing-leads.service';
+import { AdminThrottle } from '../common/decorators/admin-throttle.decorator';
 
 @ApiTags('admin')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/marketing-leads')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')

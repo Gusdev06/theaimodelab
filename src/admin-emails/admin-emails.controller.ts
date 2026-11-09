@@ -30,9 +30,11 @@ import { CreateBroadcastDto } from './dto/create-broadcast.dto';
 import { RecipientSelectionDto } from './dto/recipient-filter.dto';
 import { SendTestDto } from './dto/send-test.dto';
 import { UpdateSequenceSettingsDto } from './dto/update-sequence-settings.dto';
+import { AdminThrottle } from '../common/decorators/admin-throttle.decorator';
 
 @ApiTags('admin-emails')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/emails')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')

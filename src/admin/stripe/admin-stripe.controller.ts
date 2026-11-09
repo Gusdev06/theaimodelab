@@ -36,9 +36,11 @@ import {
   UpdateProductDto,
 } from './dto/mutations.dto';
 import type Stripe from 'stripe';
+import { AdminThrottle } from '../../common/decorators/admin-throttle.decorator';
 
 @ApiTags('admin/stripe')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/stripe')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')

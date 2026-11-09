@@ -28,6 +28,13 @@ export class UserResponseDto {
   @ApiProperty({ required: false, nullable: true })
   termsVersion?: string | null;
 
+  @ApiProperty({
+    required: false,
+    nullable: true,
+    description: 'Quando a conta declarou a responsabilidade pelas imagens enviadas. Null = ainda não declarou.',
+  })
+  imageDeclarationAt?: Date | null;
+
   @ApiProperty()
   createdAt: Date;
 }
