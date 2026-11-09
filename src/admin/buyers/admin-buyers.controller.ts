@@ -17,6 +17,7 @@ import { IsInt, IsOptional, Max, Min } from 'class-validator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { AdminBuyersService } from './admin-buyers.service';
+import { AdminThrottle } from '../../common/decorators/admin-throttle.decorator';
 
 export class BuyersQueryDto {
   @ApiPropertyOptional({ default: 90, minimum: 1, maximum: 365 })
@@ -30,6 +31,7 @@ export class BuyersQueryDto {
 
 @ApiTags('admin')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/stats')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')
