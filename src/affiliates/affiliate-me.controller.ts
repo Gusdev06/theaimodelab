@@ -2,6 +2,7 @@ import { Body, Controller, Get, Patch, Post } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { AffiliatesService } from './affiliates.service';
 import { UpdatePixKeyDto } from './dto/update-pix-key.dto';
+import { UpdatePayoutDto } from './dto/update-payout.dto';
 import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
 
 @ApiTags('affiliates')
@@ -20,9 +21,18 @@ export class AffiliateMeController {
   @ApiOperation({ summary: 'Criar link de afiliado para o usuário logado' })
   async createMyAffiliate(
     @CurrentUser() user: JwtPayload,
-    @Body() dto: UpdatePixKeyDto,
+    @Body() dto: UpdatePayoutDto,
   ) {
     return this.affiliatesService.createForUser(user.sub, dto);
+  }
+
+  @Patch('me/payout')
+  @ApiOperation({ summary: 'Atualizar a forma de recebimento do afiliado logado (PIX, PayPal ou Wise)' })
+  async updateMyPayout(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: UpdatePayoutDto,
+  ) {
+    return this.affiliatesService.updateMyPayout(user.sub, dto);
   }
 
   @Patch('me/pix-key')
