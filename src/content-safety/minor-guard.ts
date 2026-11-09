@@ -674,6 +674,32 @@ function maskSecundaria(text: string): string | null {
   return out;
 }
 
+/**
+ * "chiquito/chiquita" em espanhol também é tamanho de roupa ou de coisa ("traje de baño chiquito", "tanga chiquita").
+ * Passa só quando cada ocorrência vem logo depois de uma peça de roupa ou de um objeto; "una chiquita" e "chiquita
+ * desnuda" barram. Parte do corpo fica de fora de propósito.
+ */
+const CHIQUITO_TERM = /^chiquit[ao]s?$/;
+const CHIQUITO_OK = new Set([
+  'bano', 'banho', 'traje', 'trajes', 'bikini', 'bikinis', 'biquini', 'biquinis', 'tanga', 'tangas', 'hilo', 'short', 'shorts', 'falda', 'faldas',
+  'minifalda', 'vestido', 'vestidos', 'top', 'tops', 'bra', 'brasier', 'sosten', 'calzon', 'calzones', 'bragas', 'braga', 'panty', 'panties', 'lenceria',
+  'ropa', 'blusa', 'camiseta', 'playera', 'body', 'bodysuit', 'corset', 'corse', 'tacon', 'tacones', 'toalla', 'bata', 'kimono', 'delantal', 'bolso',
+  'cartera', 'cuarto', 'habitacion', 'departamento', 'apartamento', 'casa', 'cama', 'sofa', 'perro', 'perrito', 'gato', 'tatuaje', 'lunar', 'arete',
+  'aretes', 'collar', 'anillo', 'piercing', 'sombrero', 'gorro', 'lentes', 'gafas',
+]);
+
+function maskChiquito(text: string): string | null {
+  const flat = flatten(text);
+  const spans: Array<[number, number]> = [];
+  for (const match of flat.matchAll(/(?<![\p{L}\p{N}])chiquit[ao]s?(?![\p{L}\p{N}])/gu)) {
+    const start = match.index ?? 0;
+    const previous = words(flat.slice(Math.max(0, start - 40), start)).pop();
+    if (!previous || !CHIQUITO_OK.has(previous)) return null;
+    spans.push([start, start + match[0].length]);
+  }
+  return spans.length ? blank(text, spans) : null;
+}
+
 /* ------------------------------------------------------------------ conferência */
 
 /** Alfabetos que a trava lê (os de SCRIPT_GUARDS) mais o latino, a pontuação e os sinais comuns. */
@@ -789,7 +815,12 @@ function assessStrict(source: string, literal = false): MinorAssessment {
     if (verdict.reason !== 'minor' && verdict.reason !== 'childlike' && verdict.reason !== 'drawnTerm') return passed;
     const term = verdict.term;
     const isAge = AGE_LIKE.test(term);
-    const masked = SECUNDARIA_TERM.test(canonical(term).trim()) ? maskSecundaria(working) : maskIfExempt(working, term, isAge, adultRequest);
+    const plainTerm = canonical(term).trim();
+    const masked = SECUNDARIA_TERM.test(plainTerm)
+      ? maskSecundaria(working)
+      : CHIQUITO_TERM.test(plainTerm)
+        ? (maskChiquito(working) ?? maskIfExempt(working, term, isAge, adultRequest))
+        : maskIfExempt(working, term, isAge, adultRequest);
     if (masked === null || masked === working) return { blocked: true, reason: isAge ? 'age' : 'term', match: term.slice(0, 80) };
     working = masked;
   }
