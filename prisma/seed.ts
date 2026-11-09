@@ -794,6 +794,15 @@ async function main() {
     { slug: 'seedream-5-lite', label: 'Seedream Lite', provider: 'KIE' as const, modelVariant: 'SEEDREAM_LITE', sortOrder: 0 },
     { slug: 'sem-censura', label: 'The AI Model Lab Unlocked', provider: 'THEAIMODELAB' as const, modelVariant: 'SEM_CENSURA', sortOrder: 1 },
     { slug: 'deepdeep', label: 'DeepDeep', provider: 'KIE' as const, modelVariant: 'DEEPDEEP', sortOrder: 2 },
+    {
+      // ângulos da mesma foto (POST /generations/multiple-angles): nasce DESLIGADO, liga no admin depois do 1º teste
+      slug: 'multiple-angles',
+      label: 'Ângulos (Qwen Multiple Angles)',
+      provider: 'WAVESPEED' as const,
+      modelVariant: 'wavespeed-ai/qwen-image/edit-multiple-angles',
+      sortOrder: 50,
+      isActive: false,
+    },
   ];
 
   for (const model of imageModels) {
@@ -807,7 +816,7 @@ async function main() {
         modelVariant: model.modelVariant,
         sortOrder: model.sortOrder,
         type: 'IMAGE',
-        isActive: true,
+        isActive: model.isActive ?? true,
       },
     });
   }

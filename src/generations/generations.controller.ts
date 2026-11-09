@@ -56,6 +56,7 @@ import { GenerateMinimaxH3ImageToVideoDto } from './dto/videos/generate-minimax-
 import { GenerateMinimaxH3ReferenceToVideoDto } from './dto/videos/generate-minimax-h3-reference-to-video.dto';
 import { GenerateTextToSpeechDto } from './dto/generate-text-to-speech.dto';
 import { GenerateTalkingAvatarDto, TalkingAvatarAccessResponseDto } from './dto/generate-talking-avatar.dto';
+import { GenerateMultipleAnglesDto } from './dto/generate-multiple-angles.dto';
 import { GenerateVoiceCloneDto } from './dto/generate-voice-clone.dto';
 import { UnlimitedStatusResponseDto } from './dto/unlimited-status.dto';
 import { UseInterceptors } from '@nestjs/common';
@@ -421,6 +422,20 @@ export class GenerationsController {
     @Body() dto: GenerateTalkingAvatarDto,
   ): Promise<CreateGenerationResponseDto> {
     return this.generationsService.generateTalkingAvatar(userId, dto);
+  }
+
+  @Post('multiple-angles')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @ApiOperation({
+    summary:
+      'Ângulos: uma foto pronta da conta (a modelo de IA feita aqui) vista de outro ângulo de câmera (Qwen Multiple Angles na WaveSpeed); 100 créditos por foto',
+  })
+  @ApiResponse({ status: 201, type: CreateGenerationResponseDto })
+  async multipleAngles(
+    @CurrentUser('sub') userId: string,
+    @Body() dto: GenerateMultipleAnglesDto,
+  ): Promise<CreateGenerationResponseDto> {
+    return this.generationsService.generateMultipleAngles(userId, dto);
   }
 
   @Post('text-to-speech')

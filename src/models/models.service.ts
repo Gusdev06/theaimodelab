@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { AiModel, AiModelProvider, AiModelType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { MULTIPLE_ANGLES_MODEL, MULTIPLE_ANGLES_SLUG } from '../generations/multiple-angles.constants';
 
 const CACHE_TTL_MS = 60_000; // 60s
 
@@ -144,6 +145,32 @@ export class ModelsService implements OnModuleInit {
     } catch (err) {
       this.logger.warn(
         `Failed to ensure 'wan3-reference' AiModel row: ${
+          err instanceof Error ? err.message : err
+        }`,
+      );
+    }
+
+    // Ângulos da mesma foto (POST /generations/multiple-angles, o "giro 360" do hub da modelo). Nasce DESLIGADO aqui
+    // (o deploy não roda o seed, e o seed sobrescreve planos e pacotes): o dono liga em /admin/modelos depois do teste.
+    try {
+      await this.prisma.aiModel.upsert({
+        where: { slug: MULTIPLE_ANGLES_SLUG },
+        update: {},
+        create: {
+          slug: MULTIPLE_ANGLES_SLUG,
+          label: 'Ângulos (Qwen Multiple Angles)',
+          description:
+            'Giro 360 do hub da modelo: a mesma foto vista de outro ângulo de câmera. Só aceita foto que a modelo de IA nasceu na plataforma, e o texto da origem passa pela trava de menor. WaveSpeed, 100 créditos por foto, sem geração grátis. Ligar só depois de testar com a chave.',
+          provider: AiModelProvider.WAVESPEED,
+          modelVariant: MULTIPLE_ANGLES_MODEL,
+          sortOrder: 50,
+          type: AiModelType.IMAGE,
+          isActive: false,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to ensure '${MULTIPLE_ANGLES_SLUG}' AiModel row: ${
           err instanceof Error ? err.message : err
         }`,
       );
