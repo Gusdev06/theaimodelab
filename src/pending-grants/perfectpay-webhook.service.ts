@@ -21,6 +21,14 @@ import {
   parseProductLocales,
   resolvePerfectpayBuyerLocale,
 } from './buyer-locale';
+import {
+  encodeAffiliateRef,
+  extractPerfectpayAffiliateRef,
+  isPackAffiliateBridgeEnabled,
+  isPackBridgeLinkCodesEnabled,
+  isPackProductAllowed,
+  parseOwnAccountEmails,
+} from './perfectpay-affiliate';
 
 /**
  * Webhook do Perfect Pay (https://www.perfectpay.com.br).
@@ -235,6 +243,7 @@ export class PerfectpayWebhookService {
       bundle: PERFECTPAY_COURSE_BUNDLE,
       source: 'perfectpay',
       externalEventId: this.extractSaleEventId(payload) ?? externalEventId,
+      affiliateRef: this.packAffiliateRef(payload),
     });
 
     this.logger.log(
@@ -253,6 +262,30 @@ export class PerfectpayWebhookService {
     }
 
     return { processed: true };
+  }
+
+  /**
+   * Ponte Pack → plataforma, desligada por padrão (PACK_AFFILIATE_BRIDGE_ENABLED=true liga):
+   * referência do afiliado da Perfect Pay que vendeu a isca, para a conta do comprador nascer
+   * com o afiliado da plataforma. PERFECTPAY_PACK_PRODUCTS limita aos produtos listados e
+   * PERFECTPAY_OWN_ACCOUNT_EMAILS tira as contas próprias (produtor/coprodutor) da leitura.
+   * O código posto no link (`convite:CODIGO`) só entra com PACK_AFFILIATE_BRIDGE_LINK_CODES=true
+   * e em venda sem afiliado da Perfect Pay.
+   */
+  private packAffiliateRef(payload: any): string | null {
+    if (!isPackAffiliateBridgeEnabled(this.configService.get<string>('PACK_AFFILIATE_BRIDGE_ENABLED'))) {
+      return null;
+    }
+    if (!isPackProductAllowed(payload?.product?.code, this.configService.get<string>('PERFECTPAY_PACK_PRODUCTS'))) {
+      return null;
+    }
+    const ownEmails = parseOwnAccountEmails(
+      this.configService.get<string>('PERFECTPAY_OWN_ACCOUNT_EMAILS'),
+    );
+    const allowLinkCodes = isPackBridgeLinkCodesEnabled(
+      this.configService.get<string>('PACK_AFFILIATE_BRIDGE_LINK_CODES'),
+    );
+    return encodeAffiliateRef(extractPerfectpayAffiliateRef(payload, { ownEmails, allowLinkCodes }));
   }
 
   /**

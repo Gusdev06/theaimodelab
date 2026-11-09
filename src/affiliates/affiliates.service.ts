@@ -57,16 +57,24 @@ export class AffiliatesService {
       throw new ConflictException(`Código "${code}" já está em uso`);
     }
 
-    const affiliate = await this.prisma.affiliate.create({
-      data: {
-        name: dto.name,
-        code,
-        commissionPercent: dto.commissionPercent ?? 30,
-        userId: dto.userId ?? null,
-        discountPercent: dto.discountPercent ?? null,
-        discountAppliesTo: dto.discountAppliesTo ?? AffiliateDiscountScope.FIRST_PURCHASE,
-      },
-    });
+    const perfectpayAffiliateEmail = dto.perfectpayAffiliateEmail?.trim().toLowerCase() || null;
+    const perfectpayAffiliateCode = dto.perfectpayAffiliateCode?.trim().toUpperCase() || null;
+    await this.assertPerfectpayIdentityFree({ perfectpayAffiliateEmail, perfectpayAffiliateCode });
+
+    const affiliate = await this.prisma.affiliate
+      .create({
+        data: {
+          name: dto.name,
+          code,
+          commissionPercent: dto.commissionPercent ?? 30,
+          userId: dto.userId ?? null,
+          ...(perfectpayAffiliateEmail && { perfectpayAffiliateEmail }),
+          ...(perfectpayAffiliateCode && { perfectpayAffiliateCode }),
+          discountPercent: dto.discountPercent ?? null,
+          discountAppliesTo: dto.discountAppliesTo ?? AffiliateDiscountScope.FIRST_PURCHASE,
+        },
+      })
+      .catch((err: unknown) => this.rethrowUniqueAsConflict(err));
 
     if (dto.discountPercent && dto.discountPercent > 0) {
       try {
@@ -322,6 +330,18 @@ export class AffiliatesService {
     const newDiscount = discountProvided ? dto.discountPercent : oldDiscount;
     const discountChanged = discountProvided && newDiscount !== oldDiscount;
 
+    const perfectpayEmailProvided = dto.perfectpayAffiliateEmail !== undefined;
+    const perfectpayAffiliateEmail = dto.perfectpayAffiliateEmail?.trim().toLowerCase() || null;
+    const perfectpayCodeProvided = dto.perfectpayAffiliateCode !== undefined;
+    const perfectpayAffiliateCode = dto.perfectpayAffiliateCode?.trim().toUpperCase() || null;
+    await this.assertPerfectpayIdentityFree(
+      {
+        perfectpayAffiliateEmail: perfectpayEmailProvided ? perfectpayAffiliateEmail : null,
+        perfectpayAffiliateCode: perfectpayCodeProvided ? perfectpayAffiliateCode : null,
+      },
+      id,
+    );
+
     let newCouponId = affiliate.stripeCouponId;
     let newPromotionCodeId = affiliate.stripePromotionCodeId;
 
@@ -347,23 +367,74 @@ export class AffiliatesService {
       }
     }
 
-    return this.prisma.affiliate.update({
-      where: { id },
-      data: {
-        ...(dto.name !== undefined && { name: dto.name }),
-        ...(dto.commissionPercent !== undefined && { commissionPercent: dto.commissionPercent }),
-        ...(dto.userId !== undefined && { userId: dto.userId || null }),
-        ...(discountProvided && { discountPercent: newDiscount ?? null }),
-        ...(dto.discountAppliesTo !== undefined && { discountAppliesTo: dto.discountAppliesTo }),
-        ...(discountChanged && {
-          stripeCouponId: newCouponId,
-          stripePromotionCodeId: newPromotionCodeId,
-        }),
-      },
-      include: {
-        user: { select: { id: true, email: true, name: true } },
-      },
-    });
+    return this.prisma.affiliate
+      .update({
+        where: { id },
+        data: {
+          ...(dto.name !== undefined && { name: dto.name }),
+          ...(dto.commissionPercent !== undefined && { commissionPercent: dto.commissionPercent }),
+          ...(dto.userId !== undefined && { userId: dto.userId || null }),
+          ...(discountProvided && { discountPercent: newDiscount ?? null }),
+          ...(dto.discountAppliesTo !== undefined && { discountAppliesTo: dto.discountAppliesTo }),
+          ...(perfectpayEmailProvided && { perfectpayAffiliateEmail }),
+          ...(perfectpayCodeProvided && { perfectpayAffiliateCode }),
+          ...(discountChanged && {
+            stripeCouponId: newCouponId,
+            stripePromotionCodeId: newPromotionCodeId,
+          }),
+        },
+        include: {
+          user: { select: { id: true, email: true, name: true } },
+        },
+      })
+      .catch((err: unknown) => this.rethrowUniqueAsConflict(err));
+  }
+
+  /**
+   * O e-mail e o código do afiliado na Perfect Pay decidem para quem vai o cliente que comprou
+   * o Pack por afiliado: um e-mail, um afiliado; um código, um afiliado. Só o admin grava
+   * (nunca o autoatendimento, que permitiria sequestrar as vendas de outro afiliado).
+   */
+  private async assertPerfectpayIdentityFree(
+    identity: { perfectpayAffiliateEmail: string | null; perfectpayAffiliateCode: string | null },
+    ownAffiliateId?: string,
+  ): Promise<void> {
+    if (identity.perfectpayAffiliateEmail) {
+      const holder = await this.prisma.affiliate.findUnique({
+        where: { perfectpayAffiliateEmail: identity.perfectpayAffiliateEmail },
+        select: { id: true, code: true },
+      });
+      if (holder && holder.id !== ownAffiliateId) {
+        throw new ConflictException(`Este e-mail da Perfect Pay já está no afiliado "${holder.code}"`);
+      }
+    }
+    if (identity.perfectpayAffiliateCode) {
+      const holder = await this.prisma.affiliate.findUnique({
+        where: { perfectpayAffiliateCode: identity.perfectpayAffiliateCode },
+        select: { id: true, code: true },
+      });
+      if (holder && holder.id !== ownAffiliateId) {
+        throw new ConflictException(`Este código da Perfect Pay já está no afiliado "${holder.code}"`);
+      }
+    }
+  }
+
+  /**
+   * Dois admins gravando o mesmo e-mail/código da Perfect Pay ao mesmo tempo passam os dois
+   * pela checagem acima; quem chega depois bate no índice único (P2002) e recebe 409, não 500.
+   */
+  private rethrowUniqueAsConflict(err: unknown): never {
+    if (!this.isUniqueConstraintError(err)) throw err;
+
+    const target = (err as { meta?: { target?: unknown } }).meta?.target;
+    const fields = Array.isArray(target) ? target.join(',') : String(target ?? '');
+    if (fields.includes('perfectpay_affiliate_email') || fields.includes('perfectpayAffiliateEmail')) {
+      throw new ConflictException('Este e-mail da Perfect Pay já está em outro afiliado');
+    }
+    if (fields.includes('perfectpay_affiliate_code') || fields.includes('perfectpayAffiliateCode')) {
+      throw new ConflictException('Este código da Perfect Pay já está em outro afiliado');
+    }
+    throw new ConflictException('Já existe um afiliado com estes dados (código, conta ou identificação da Perfect Pay)');
   }
 
   async toggleActive(id: string) {
