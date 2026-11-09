@@ -410,7 +410,7 @@ function negatedBefore(clause: string, sameKind: (word: string) => boolean = (wo
     if (NEGATORS.has(word)) return 'negation';
     if (REMOVAL_VERBS.has(word)) return 'removal';
     if (ACTION_VERBS.has(word)) return negatedAction(list, index) ? 'negation' : null;
-    if (SKIPPABLE.has(word) || PEOPLE.has(word) || sameKind(word)) {
+    if (SKIPPABLE.has(word) || PEOPLE.has(word) || LIST_DESCRIPTORS.has(word) || sameKind(word)) {
       skipped++;
       continue;
     }
