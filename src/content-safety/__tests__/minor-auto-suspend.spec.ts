@@ -138,7 +138,8 @@ describe('ContentSafetyService: suspensão automática da conta na guarda legal 
   let error: jest.SpyInstance;
 
   beforeEach(() => {
-    delete process.env.MINOR_AUTO_SUSPEND_ENABLED;
+    // os casos abaixo testam a suspensão LIGADA (só com o env explícito); o padrão desligado tem teste próprio
+    process.env.MINOR_AUTO_SUSPEND_ENABLED = 'true';
     warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     error = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
   });
@@ -257,7 +258,22 @@ describe('ContentSafetyService: suspensão automática da conta na guarda legal 
 
     expect(fake.events).toHaveLength(3);
     expect(fake.user.isActive).toBe(true);
-    expect(fake.prisma.contentSafetyEvent.findMany).not.toHaveBeenCalled();
+    expect(fake.prisma.$transaction).not.toHaveBeenCalled();
+    // a conta chegou à guarda: não é suspensa, mas o caso fica no log para o dono decidir
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('decisão do dono'));
+  });
+
+  it('sem o env (padrão): 3 tentativas não suspendem a conta', async () => {
+    delete process.env.MINOR_AUTO_SUSPEND_ENABLED;
+    const fake = createFake();
+
+    for (const excerpt of ['um', 'dois', 'três']) {
+      await fake.textBlock(excerpt);
+      fake.tick();
+    }
+
+    expect(fake.user.isActive).toBe(true);
+    expect(fake.prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('falha ao suspender vira log e não derruba o registro do bloqueio', async () => {
@@ -299,10 +315,11 @@ describe('regras puras da suspensão automática', () => {
     expect(minorHoldReached({ recent: 0, recentAttempts: 0, provider: 1 })).toBe(true);
   });
 
-  it('minorAutoSuspendEnabled: ligado por padrão, só "false" desliga', () => {
-    expect(minorAutoSuspendEnabled({})).toBe(true);
-    expect(minorAutoSuspendEnabled({ MINOR_AUTO_SUSPEND_ENABLED: 'true' })).toBe(true);
-    expect(minorAutoSuspendEnabled({ MINOR_AUTO_SUSPEND_ENABLED: ' FALSE ' })).toBe(false);
-    expect(minorAutoSuspendEnabled({ MINOR_AUTO_SUSPEND_ENABLED: '0' })).toBe(true);
+  it('minorAutoSuspendEnabled: desligado por padrão, só "true" liga (regra do dono: nunca suspender sozinho)', () => {
+    expect(minorAutoSuspendEnabled({})).toBe(false);
+    expect(minorAutoSuspendEnabled({ MINOR_AUTO_SUSPEND_ENABLED: '' })).toBe(false);
+    expect(minorAutoSuspendEnabled({ MINOR_AUTO_SUSPEND_ENABLED: ' TRUE ' })).toBe(true);
+    expect(minorAutoSuspendEnabled({ MINOR_AUTO_SUSPEND_ENABLED: 'false' })).toBe(false);
+    expect(minorAutoSuspendEnabled({ MINOR_AUTO_SUSPEND_ENABLED: '1' })).toBe(false);
   });
 });

@@ -1,3 +1,4 @@
+import { SkipThrottle } from '@nestjs/throttler';
 import {
   Body,
   Controller,
@@ -12,6 +13,9 @@ import { Public } from '../common/decorators';
 import { HotmartWebhookService } from './hotmart-webhook.service';
 
 @ApiTags('webhooks')
+// postback de gateway chega em rajada do mesmo IP (retentativas, Black November): o limite global de 30/min por IP
+// recusaria venda paga. A autenticação continua (token/assinatura conferido no serviço).
+@SkipThrottle()
 @Controller('api/v1/webhooks')
 export class HotmartWebhookController {
   private readonly logger = new Logger(HotmartWebhookController.name);
