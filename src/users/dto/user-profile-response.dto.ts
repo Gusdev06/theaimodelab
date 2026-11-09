@@ -22,6 +22,11 @@ export class SubscriptionInfoDto {
   @ApiProperty() currentPeriodStart: Date;
   @ApiProperty() currentPeriodEnd: Date;
   @ApiProperty() cancelAtPeriodEnd: boolean;
+  @ApiPropertyOptional({
+    description:
+      'Gateway da assinatura (perfectpay, cakto, stripe, asaas, admin). O site só oferece o upgrade direto pelo checkout quando a troca de plano cancela a recorrência antiga sozinha (perfectpay); nos outros, a cliente pagaria duas vezes.',
+  })
+  paymentProvider?: string | null;
 }
 
 export class UserProfileResponseDto {

@@ -80,6 +80,7 @@ export class UsersService {
           currentPeriodStart: activeSubscription.currentPeriodStart,
           currentPeriodEnd: activeSubscription.currentPeriodEnd,
           cancelAtPeriodEnd: activeSubscription.cancelAtPeriodEnd,
+          paymentProvider: activeSubscription.paymentProvider ?? null,
         }
         : null,
       feedbackSubmitted: !!user.feedback,

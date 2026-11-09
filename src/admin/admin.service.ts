@@ -368,6 +368,11 @@ export class AdminService {
             planSlug: user.subscriptions[0].plan.slug,
             planName: user.subscriptions[0].plan.name,
             status: user.subscriptions[0].status,
+            // Gateway e fim do período: o cockpit só oferece troca de plano por checkout a quem paga na Perfect Pay
+            // (a troca cancela a recorrência antiga sozinha) e só quando os créditos acabam antes da renovação.
+            paymentProvider: user.subscriptions[0].paymentProvider ?? null,
+            currentPeriodEnd: user.subscriptions[0].currentPeriodEnd,
+            cancelAtPeriodEnd: user.subscriptions[0].cancelAtPeriodEnd,
           }
         : null,
       credits: user.creditBalance
@@ -434,6 +439,7 @@ export class AdminService {
             currentPeriodStart: user.subscriptions[0].currentPeriodStart,
             currentPeriodEnd: user.subscriptions[0].currentPeriodEnd,
             cancelAtPeriodEnd: user.subscriptions[0].cancelAtPeriodEnd,
+            paymentProvider: user.subscriptions[0].paymentProvider ?? null,
           }
         : null,
       credits: user.creditBalance

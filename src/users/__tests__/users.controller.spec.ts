@@ -43,6 +43,7 @@ const mockProfile: UserProfileResponseDto = {
     currentPeriodStart: now,
     currentPeriodEnd: now,
     cancelAtPeriodEnd: false,
+    paymentProvider: 'perfectpay',
   },
   feedbackSubmitted: false,
   hasTaxIdOnFile: false,
