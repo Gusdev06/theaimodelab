@@ -737,6 +737,8 @@ model Affiliate {
   discountPercent       Int?                   @map("discount_percent")
   stripeCouponId        String?                @map("stripe_coupon_id")
   stripePromotionCodeId String?                @map("stripe_promotion_code_id")
+  payoutMethod          String?                @map("payout_method")
+  payoutEmail           String?                @map("payout_email")
   earnings              AffiliateEarning[]
   user                  User?                  @relation(fields: [userId], references: [id])
 
@@ -754,6 +756,8 @@ model AffiliateEarning {
   status          AffiliateEarningStatus @default(PENDING)
   paidAt          DateTime?              @map("paid_at")
   createdAt       DateTime               @default(now()) @map("created_at")
+  currency        String?
+  provider        String?
   affiliate       Affiliate              @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
   payment         Payment                @relation(fields: [paymentId], references: [id], onDelete: Cascade)
   user            User                   @relation("referred_user_earnings", fields: [userId], references: [id], onDelete: Cascade)

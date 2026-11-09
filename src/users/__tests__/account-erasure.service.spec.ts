@@ -785,6 +785,8 @@ function baseSeed(): Seed {
         name: 'Maria Souza',
         pixKey: '12345678901',
         pixKeyType: 'CPF',
+        payoutMethod: 'PAYPAL',
+        payoutEmail: 'maria.paypal@example.com',
         isActive: true,
       },
     ],
@@ -1213,11 +1215,13 @@ describe('AccountErasureService', () => {
         (row) => row.subscriptionId === 'sub-stripe-pastdue',
       ),
     ).toMatchObject({ userId: U, abandonedAt: expect.any(Date) });
-    // afiliado: sem PIX e desativado; o código fica (comissões e indicações)
+    // afiliado: sem PIX, sem conta PayPal/Wise e desativado; o código fica (comissões e indicações)
     expect(rowById(tables.affiliate, 'aff-1')).toMatchObject({
       name: ERASED_AFFILIATE_NAME,
       pixKey: null,
       pixKeyType: null,
+      payoutMethod: null,
+      payoutEmail: null,
       isActive: false,
       code: 'MARIA10',
     });

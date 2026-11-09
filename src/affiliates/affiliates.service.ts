@@ -1,13 +1,39 @@
-import { Injectable, ConflictException, Logger, NotFoundException } from '@nestjs/common';
-import { PixKeyType } from '@prisma/client';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { PixKeyType, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { StripeService } from '../payments/stripe.service';
 import { EmailService } from '../email/email.service';
 import { CreateAffiliateDto } from './dto/create-affiliate.dto';
 import { UpdateAffiliateDto } from './dto/update-affiliate.dto';
 import { UpdatePixKeyDto } from './dto/update-pix-key.dto';
+import { UpdatePayoutDto } from './dto/update-payout.dto';
 import { MarkEarningsPaidDto } from './dto/mark-paid.dto';
 import { AffiliateDiscountScope } from '@prisma/client';
+import {
+  EarningCurrencySlice,
+  resolveEarningCurrency,
+  summarizeByCurrency,
+} from './affiliate-currency';
+import { abbreviateCustomerName, maskEmail } from './mask-email';
+import { resolveAffiliateRecurringWindow } from './affiliate-recurring';
+import {
+  PayoutData,
+  PayoutInput,
+  resolvePayout,
+  resolveSelfServiceCommissionPercent,
+} from './affiliate-payout';
+
+/** Dias até a comissão pendente ficar disponível para saque (janela de reembolso). */
+const AFFILIATE_MATURATION_DAYS = 30;
+
+type AffiliateCurrencySlice = EarningCurrencySlice & { affiliateId: string };
 
 @Injectable()
 export class AffiliatesService {
@@ -104,12 +130,19 @@ export class AffiliatesService {
       }
     }
 
+    const currencySlices = await this.loadCurrencySlices({
+      affiliateId: { in: affiliates.map((a) => a.id) },
+    });
+
     return affiliates.map((affiliate) => {
       const totals = totalsByAffiliate.get(affiliate.id) ?? { total: 0, pending: 0 };
       return {
         ...affiliate,
         totalEarningsCents: totals.total,
         pendingEarningsCents: totals.pending,
+        byCurrency: summarizeByCurrency(
+          currencySlices.filter((slice) => slice.affiliateId === affiliate.id),
+        ),
         referralsCount: affiliate._count.earnings,
         referredUsersCount: referredUsersByCode.get(affiliate.code) ?? 0,
       };
@@ -144,7 +177,7 @@ export class AffiliatesService {
       orderBy: { createdAt: 'desc' },
       include: {
         user: { select: { id: true, email: true, name: true } },
-        payment: { select: { id: true, type: true, amountCents: true, createdAt: true } },
+        payment: { select: { id: true, type: true, amountCents: true, currency: true, createdAt: true } },
       },
     });
 
@@ -163,6 +196,8 @@ export class AffiliatesService {
       _sum: { commissionCents: true },
     });
 
+    const byCurrency = summarizeByCurrency(await this.loadCurrencySlices({ affiliateId }));
+
     return {
       affiliate,
       earnings,
@@ -171,6 +206,7 @@ export class AffiliatesService {
         totalCommissionCents: totals._sum.commissionCents ?? 0,
         pendingCommissionCents: pendingTotals._sum.commissionCents ?? 0,
         paidCommissionCents: paidTotals._sum.commissionCents ?? 0,
+        byCurrency,
       },
     };
   }
@@ -184,13 +220,16 @@ export class AffiliatesService {
       select: {
         id: true,
         commissionCents: true,
+        currency: true,
         createdAt: true,
+        payment: { select: { currency: true } },
         affiliate: {
           select: {
             id: true,
             name: true,
             pixKey: true,
             pixKeyType: true,
+            payoutMethod: true,
             user: { select: { email: true, name: true } },
           },
         },
@@ -208,10 +247,17 @@ export class AffiliatesService {
       },
     });
 
-    // Group by affiliate and dispatch one email per affiliate
+    // Um e-mail por afiliado e por moeda: somar centavos de real com centavos de dólar daria um valor que não existe.
     const byAffiliate = new Map<
       string,
-      { email: string; name: string; totalCents: number; count: number }
+      {
+        email: string;
+        name: string;
+        currency: string;
+        payoutMethod: string | null;
+        totalCents: number;
+        count: number;
+      }
     >();
 
     for (const earning of earnings) {
@@ -222,15 +268,19 @@ export class AffiliatesService {
         );
         continue;
       }
-      const current = byAffiliate.get(earning.affiliate.id) ?? {
+      const currency = resolveEarningCurrency(earning.currency, earning.payment?.currency);
+      const groupKey = `${earning.affiliate.id}:${currency}`;
+      const current = byAffiliate.get(groupKey) ?? {
         email,
         name: earning.affiliate.user?.name || earning.affiliate.name,
+        currency,
+        payoutMethod: earning.affiliate.payoutMethod ?? null,
         totalCents: 0,
         count: 0,
       };
       current.totalCents += earning.commissionCents;
       current.count += 1;
-      byAffiliate.set(earning.affiliate.id, current);
+      byAffiliate.set(groupKey, current);
     }
 
     const attachment =
@@ -249,6 +299,8 @@ export class AffiliatesService {
           name: info.name,
           totalCents: info.totalCents,
           earningsCount: info.count,
+          currency: info.currency,
+          payoutMethod: info.payoutMethod,
           attachment,
         }),
       ),
@@ -356,7 +408,7 @@ export class AffiliatesService {
     };
   }
 
-  async createForUser(userId: string, dto: UpdatePixKeyDto) {
+  async createForUser(userId: string, dto: UpdatePayoutDto | UpdatePixKeyDto) {
     const existing = await this.prisma.affiliate.findFirst({
       where: { userId },
     });
@@ -364,13 +416,26 @@ export class AffiliatesService {
       throw new ConflictException('Você já possui um link de afiliado');
     }
 
+    const payout = this.requirePayout(dto);
+
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { name: true, email: true },
+      select: { name: true, email: true, emailVerified: true },
     });
     if (!user) {
       throw new NotFoundException('Usuário não encontrado');
     }
+    // Comissão é dinheiro: conta sem e-mail confirmado não vira afiliada (barra cadastro descartável em série).
+    if (!user.emailVerified) {
+      throw new ForbiddenException({
+        message: 'Confirme seu e-mail antes de criar o link de afiliado',
+        code: 'EMAIL_NOT_VERIFIED',
+      });
+    }
+
+    const commissionPercent = resolveSelfServiceCommissionPercent(
+      process.env.AFFILIATE_SELF_SERVICE_PERCENT,
+    );
 
     const displayName = user.name?.trim() || user.email.split('@')[0];
 
@@ -385,10 +450,9 @@ export class AffiliatesService {
           data: {
             name: displayName,
             code,
-            commissionPercent: 20,
+            commissionPercent,
             userId,
-            pixKey: dto.pixKey.trim(),
-            pixKeyType: dto.pixKeyType as PixKeyType,
+            ...this.payoutColumns(payout),
           },
         });
       } catch (err: unknown) {
@@ -407,19 +471,73 @@ export class AffiliatesService {
     if (!affiliate) {
       throw new NotFoundException('Você ainda não é afiliado');
     }
+    this.assertAffiliateActive(affiliate);
+
+    const payout = this.requirePayout({ payoutMethod: 'PIX', pixKey: dto.pixKey, pixKeyType: dto.pixKeyType });
 
     return this.prisma.affiliate.update({
       where: { id: affiliate.id },
-      data: {
-        pixKey: dto.pixKey.trim(),
-        pixKeyType: dto.pixKeyType as PixKeyType,
-      },
+      data: this.payoutColumns(payout),
       select: {
         id: true,
         pixKey: true,
         pixKeyType: true,
+        payoutMethod: true,
       },
     });
+  }
+
+  /** Troca a forma de recebimento do afiliado logado (PIX, PayPal ou Wise). */
+  async updateMyPayout(userId: string, dto: UpdatePayoutDto) {
+    const affiliate = await this.prisma.affiliate.findFirst({
+      where: { userId },
+    });
+    if (!affiliate) {
+      throw new NotFoundException('Você ainda não é afiliado');
+    }
+    this.assertAffiliateActive(affiliate);
+
+    const payout = this.requirePayout(dto);
+
+    return this.prisma.affiliate.update({
+      where: { id: affiliate.id },
+      data: this.payoutColumns(payout),
+      select: {
+        id: true,
+        payoutMethod: true,
+        payoutEmail: true,
+        pixKey: true,
+        pixKeyType: true,
+      },
+    });
+  }
+
+  /** Afiliado desativado pelo admin não troca o destino do dinheiro (comissão pendente pode estar em análise). */
+  private assertAffiliateActive(affiliate: { isActive?: boolean | null }): void {
+    if (affiliate.isActive === false) {
+      throw new ForbiddenException({
+        message: 'Seu link de afiliado está desativado. Fale com o suporte para alterar o recebimento',
+        code: 'AFFILIATE_INACTIVE',
+      });
+    }
+  }
+
+  /** O DTO já valida na rota; aqui é a mesma regra para quem chama o serviço direto. */
+  private requirePayout(input: PayoutInput): PayoutData {
+    const payout = resolvePayout(input);
+    if (!payout.ok) {
+      throw new BadRequestException(payout.reason);
+    }
+    return payout.data;
+  }
+
+  private payoutColumns(payout: PayoutData) {
+    return {
+      payoutMethod: payout.payoutMethod,
+      payoutEmail: payout.payoutEmail,
+      pixKey: payout.pixKey,
+      pixKeyType: payout.pixKeyType as PixKeyType | null,
+    };
   }
 
   private buildAffiliateCodeCandidate(name: string, email: string, attempt: number): string {
@@ -460,8 +578,7 @@ export class AffiliatesService {
       _count: true,
     });
 
-    const maturationDate = new Date();
-    maturationDate.setDate(maturationDate.getDate() - 30);
+    const maturationDate = this.maturationCutoff();
 
     const pendingTotals = await this.prisma.affiliateEarning.aggregate({
       where: { affiliateId: affiliate.id, status: 'PENDING' },
@@ -495,7 +612,17 @@ export class AffiliatesService {
       where: { referredByCode: affiliate.code },
     });
 
-    const earnings = await this.prisma.affiliateEarning.findMany({
+    // Clientes distintos que já geraram comissão (indicado que só se cadastrou não conta).
+    const payingUserRows = await this.prisma.affiliateEarning.groupBy({
+      by: ['userId'],
+      where: { affiliateId: affiliate.id },
+    });
+
+    const byCurrency = summarizeByCurrency(
+      await this.loadCurrencySlices({ affiliateId: affiliate.id }, maturationDate),
+    );
+
+    const earningRows = await this.prisma.affiliateEarning.findMany({
       where: { affiliateId: affiliate.id },
       orderBy: { createdAt: 'desc' },
       take: 50,
@@ -503,6 +630,7 @@ export class AffiliatesService {
         id: true,
         amountCents: true,
         commissionCents: true,
+        currency: true,
         status: true,
         paidAt: true,
         createdAt: true,
@@ -511,6 +639,7 @@ export class AffiliatesService {
           select: {
             type: true,
             amountCents: true,
+            currency: true,
             subscription: {
               select: { plan: { select: { name: true, slug: true } } },
             },
@@ -521,6 +650,15 @@ export class AffiliatesService {
         },
       },
     });
+
+    // O afiliado vê quem comprou, mas não o nome completo nem o e-mail inteiro do cliente.
+    const earnings = earningRows.map((earning) => ({
+      ...earning,
+      currency: resolveEarningCurrency(earning.currency, earning.payment?.currency),
+      user: earning.user
+        ? { name: abbreviateCustomerName(earning.user.name), email: maskEmail(earning.user.email) }
+        : earning.user,
+    }));
 
     return {
       affiliate: {
@@ -533,10 +671,14 @@ export class AffiliatesService {
         discountAppliesTo: affiliate.discountAppliesTo,
         pixKey: affiliate.pixKey,
         pixKeyType: affiliate.pixKeyType,
+        // Afiliado anterior a este campo só tem a chave Pix: conta como PIX.
+        payoutMethod: affiliate.payoutMethod ?? (affiliate.pixKey ? 'PIX' : null),
+        payoutEmail: affiliate.payoutEmail ?? null,
         createdAt: affiliate.createdAt,
       },
       summary: {
         referredUsers,
+        payingUsers: payingUserRows.length,
         totalPayments: totals._count,
         totalRevenueCents: totals._sum.amountCents ?? 0,
         totalCommissionCents: totals._sum.commissionCents ?? 0,
@@ -544,10 +686,84 @@ export class AffiliatesService {
         availableCommissionCents: availableTotals._sum.commissionCents ?? 0,
         maturingCommissionCents: maturingTotals._sum.commissionCents ?? 0,
         paidCommissionCents: paidTotals._sum.commissionCents ?? 0,
-        maturationDays: 30,
+        maturationDays: AFFILIATE_MATURATION_DAYS,
+        // Para o site dizer a verdade: se a renovação paga comissão e que a base é o valor líquido.
+        commissionWindow: resolveAffiliateRecurringWindow(process.env.AFFILIATE_RECURRING_MONTHS),
+        netOfFees: true,
+        byCurrency,
       },
       earnings,
     };
+  }
+
+  private maturationCutoff(): Date {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - AFFILIATE_MATURATION_DAYS);
+    return cutoff;
+  }
+
+  /**
+   * Fatias de comissão por afiliado, moeda, status e maturação, para o `byCurrency`.
+   * Tudo sai agregado do banco. Comissão antiga (sem moeda gravada) usa a moeda do
+   * pagamento ligado: primeiro as moedas que existem entre esses pagamentos (poucas),
+   * depois uma soma por moeda. Nenhuma comissão é lida linha a linha.
+   */
+  private async loadCurrencySlices(
+    where: Prisma.AffiliateEarningWhereInput,
+    maturationDate: Date = this.maturationCutoff(),
+  ): Promise<AffiliateCurrencySlice[]> {
+    const slices: AffiliateCurrencySlice[] = [];
+    const maturationWindows = [
+      { matured: true, createdAt: { lte: maturationDate } },
+      { matured: false, createdAt: { gt: maturationDate } },
+    ];
+
+    for (const { matured, createdAt } of maturationWindows) {
+      const groups = await this.prisma.affiliateEarning.groupBy({
+        by: ['affiliateId', 'currency', 'status'],
+        where: { ...where, currency: { not: null }, createdAt },
+        _sum: { amountCents: true, commissionCents: true },
+      });
+      for (const group of groups) {
+        slices.push({
+          affiliateId: group.affiliateId,
+          currency: group.currency,
+          status: group.status,
+          matured,
+          amountCents: group._sum.amountCents ?? 0,
+          commissionCents: group._sum.commissionCents ?? 0,
+        });
+      }
+    }
+
+    const legacyWhere: Prisma.AffiliateEarningWhereInput = { ...where, currency: null };
+    const legacyPaymentCurrencies = await this.prisma.payment.groupBy({
+      by: ['currency'],
+      where: { affiliateEarnings: { some: legacyWhere } },
+    });
+
+    for (const { currency: paymentCurrency } of legacyPaymentCurrencies) {
+      for (const { matured, createdAt } of maturationWindows) {
+        const groups = await this.prisma.affiliateEarning.groupBy({
+          by: ['affiliateId', 'status'],
+          where: { ...legacyWhere, payment: { currency: paymentCurrency }, createdAt },
+          _sum: { amountCents: true, commissionCents: true },
+        });
+        for (const group of groups) {
+          slices.push({
+            affiliateId: group.affiliateId,
+            currency: null,
+            paymentCurrency,
+            status: group.status,
+            matured,
+            amountCents: group._sum.amountCents ?? 0,
+            commissionCents: group._sum.commissionCents ?? 0,
+          });
+        }
+      }
+    }
+
+    return slices;
   }
 
   async getReferredUsers(affiliateId: string) {
@@ -610,6 +826,8 @@ export class AffiliatesService {
       where: { referredByCode: { not: null } },
     });
 
+    const byCurrency = summarizeByCurrency(await this.loadCurrencySlices({}));
+
     return {
       totalAffiliates,
       activeAffiliates,
@@ -619,6 +837,7 @@ export class AffiliatesService {
       totalCommissionCents: totalEarnings._sum.commissionCents ?? 0,
       pendingCommissionCents: pendingEarnings._sum.commissionCents ?? 0,
       paidCommissionCents: paidEarnings._sum.commissionCents ?? 0,
+      byCurrency,
     };
   }
 }
