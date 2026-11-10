@@ -123,7 +123,7 @@ export const CONSENT_RULES: Readonly<Record<string, ConsentRule>> = {
   // provador virtual: a "influencer" pode ser a foto de uma pessoa real; se o Gemini bloqueia, cai no Seedream sem censura com a foto
   'virtual-try-on': { require: 'always', media: ['influencer_image', 'clothing_image'] },
   // motion control (Kling 2.6): põe a pessoa da foto enviada no lugar de quem está no vídeo (troca de identidade em vídeo)
-  'motion-control': { require: 'always', media: ['image', 'video'] },
+  'motion-control': { require: 'always', media: ['image', 'video', 'extra_images'] },
   // avatar falante (OmniHuman 2.0): põe fala e boca na pessoa da foto enviada (identidade em vídeo)
   'talking-avatar': { require: 'always', media: ['image'] },
   // imagem: deepdeep (despir) sempre; "sem-censura" (Unlocked) com foto vai direto ao Seedream sem filtro

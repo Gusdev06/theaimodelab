@@ -82,6 +82,8 @@ export interface MotionControlJobData extends BaseJobData {
   durationSeconds?: number;
   /** só no Wan */
   prompt?: string | null;
+  /** só no Wan 3.0: fotos das outras pessoas da cena ("Image 2", "Image 3"), URLs públicas na ordem */
+  extraImageUrls?: string[];
 }
 
 export interface VirtualTryOnJobData extends BaseJobData {
