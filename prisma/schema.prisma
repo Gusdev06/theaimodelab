@@ -739,10 +739,14 @@ model Affiliate {
   stripePromotionCodeId String?                @map("stripe_promotion_code_id")
   payoutMethod          String?                @map("payout_method")
   payoutEmail           String?                @map("payout_email")
+  parentAffiliateId     String?                @map("parent_affiliate_id")
   earnings              AffiliateEarning[]
   user                  User?                  @relation(fields: [userId], references: [id])
+  parent                Affiliate?             @relation("affiliate_parent", fields: [parentAffiliateId], references: [id], onDelete: SetNull)
+  children              Affiliate[]            @relation("affiliate_parent")
 
   @@index([code])
+  @@index([parentAffiliateId])
   @@map("affiliates")
 }
 
@@ -758,6 +762,8 @@ model AffiliateEarning {
   createdAt       DateTime               @default(now()) @map("created_at")
   currency        String?
   provider        String?
+  level           Int?                   @map("level")
+  sourceEarningId String?                @map("source_earning_id")
   affiliate       Affiliate              @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
   payment         Payment                @relation(fields: [paymentId], references: [id], onDelete: Cascade)
   user            User                   @relation("referred_user_earnings", fields: [userId], references: [id], onDelete: Cascade)

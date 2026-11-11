@@ -54,6 +54,8 @@ function fakePrisma(rows: EarningRow[], affiliates: Array<Record<string, unknown
     if (where.payment?.currency !== undefined && row.payment.currency !== where.payment.currency) return false;
     if (where.createdAt?.lte && row.createdAt.getTime() > where.createdAt.lte.getTime()) return false;
     if (where.createdAt?.gt && row.createdAt.getTime() <= where.createdAt.gt.getTime()) return false;
+    // Comissão sem nível gravado é direta: o filtro do segundo nível não a pega.
+    if (where.level !== undefined && ((row as { level?: number }).level ?? 1) !== where.level) return false;
     return true;
   };
   const sum = (list: EarningRow[], field: 'amountCents' | 'commissionCents') =>
@@ -62,8 +64,13 @@ function fakePrisma(rows: EarningRow[], affiliates: Array<Record<string, unknown
   const prisma = {
     affiliate: {
       findFirst: jest.fn(async ({ where }: any) => affiliates.find((a) => a.userId === where.userId) ?? null),
-      findUnique: jest.fn(async ({ where }: any) => affiliates.find((a) => a.id === where.id) ?? null),
-      findMany: jest.fn(async () => affiliates.map((a) => ({ ...a, _count: { earnings: 0 }, user: null }))),
+      findUnique: jest.fn(async ({ where }: any) => {
+        const found = affiliates.find((a) => a.id === where.id);
+        return found ? { ...found, parent: null, _count: { children: 0 } } : null;
+      }),
+      findMany: jest.fn(async () =>
+        affiliates.map((a) => ({ ...a, _count: { earnings: 0, children: 0 }, user: null, parent: null })),
+      ),
       count: jest.fn(async () => affiliates.length),
     },
     affiliateEarning: {

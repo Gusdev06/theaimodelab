@@ -80,6 +80,7 @@ describe('PaymentsService · base líquida da comissão por gateway', () => {
       currency: 'USD',
       provider: 'perfectpay',
       status: 'PENDING',
+      level: 1,
     });
   });
 
