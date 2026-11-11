@@ -15,7 +15,7 @@
  *    (pessoa real só com o identificador copiado do pedido e conferido pelo código, em groundVerdict).
  */
 
-export const POLICY_VERSION = 'juiz-2026-11-03';
+export const POLICY_VERSION = 'juiz-2026-11-06';
 
 export type JudgeCategory = 'minor' | 'real_person' | 'none';
 export type JudgeConfidence = 'high' | 'medium' | 'low';
@@ -59,7 +59,7 @@ Every person in a prompt is an adult unless one of the MINOR signals below says 
 ## Allowed (category "none"). Never flag these on their own:
 - Sex, nudity, lingerie, fetish, kink, BDSM, roleplay, degradation, humiliation, rough or reluctant scenes, "taboo" scenarios between adults. Adult content is the product.
 - Body and look descriptors that adults also have: petite, small, tiny, slim, skinny, short, flat chest, small breasts, young-looking, youthful, fresh, innocent, cute, baby face, pigtails, braces/"aparelho nos dentes", freckles, no makeup, shaved, "novinha", "ninfeta", "menina", "garota", "chica", "girl", "babe", "babygirl", "daddy", "papi". "Tiny" is a size word, not an age.
-- Roles and outfits that adults play: student, "estudante", "aluna", university/college student ("universitária", "faculdade", "college", "coed"; always an adult), "student shirt", "student uniform", school-style uniform, plaid or pleated skirt, white shirt and tie, cheerleader, secretary, nurse, babysitter, stepdaughter/"enteada", "stepsister", teacher, tutor. These are adult costumes unless the text places the person in a school or under 18.
+- Roles and outfits that adults play: student, "estudante", "aluna", university/college student ("universitária", "faculdade", "college", "coed"; always an adult), "student shirt", "student uniform", school-style uniform, plaid or pleated skirt, white shirt and tie, cheerleader, secretary, nurse, babysitter, stepdaughter/"enteada", "stepsister", teacher, tutor, and the costume words "colegial", "colegiala", "schoolgirl", "school girl outfit". These are adult costumes unless the text places the person in a school or under 18. "Colegial" or "schoolgirl" alone, with a skirt, a bedroom, lingerie or sex, is an adult in a costume: category "none".
 - Any stated age of 18 or more, "barely legal", "just turned 18", "18+", "acabou de fazer 18".
 - Platform tools: "face swap", "troca de rosto", "reference photo", "use my photo", "same face as the reference", "keep the exact face of the woman in image 1". They have their own consent step; not a violation by themselves.
 - Numbers that are not an age: "15 anos de experiência", "15 minutes", "16:9", "size 14", "2 girls", "20 years married", "80s style", "1990 film look", "14 inch", "room 12".
@@ -69,7 +69,7 @@ Every person in a prompt is an adult unless one of the MINOR signals below says 
 
 ## MINOR (category "minor"). Flag when a sexual, nude, intimate, suggestive, "sexy" or body-focused request has a subject who is under 18 by:
 - a stated age below 18 in any form: digits ("16", "17 y/o", "15-17", "10 ans", "elle a 11 ans"), words ("quinze", "dieciséis", "sixteen", "douze"), "menor de 18", "18-", "under 18", "underage", "menor de idade", a birth year that implies under 18, "one year before legal", "make her 10 years old", "version of her at 12".
-- school placement that implies a child: "in school", "da escola", "colégio", "colegial" meaning a schoolgirl, "high school", "secundaria", "ensino médio", a grade ("8th grade", "6º ano", "3º ano do ensino médio"), "kindergarten", "primária", "schoolgirl" meaning a girl who attends school (an adult in a uniform costume is allowed; a university is not a school for this rule).
+- school placement that implies a child: "in school", "da escola", "colégio", "high school", "secundaria", "ensino médio", a grade ("8th grade", "6º ano", "3º ano do ensino médio"), "kindergarten", "primária", a scene set inside a school (classroom, schoolyard, "sala de aula", "pátio da escola"). The words "colegial" and "schoolgirl" by themselves are NOT school placement: they count only together with one of the signals of this list or of the lines below (an age under 18, a grade, a school setting, a child body). A university is not a school for this rule.
 - words that mean a child or adolescent as the depicted person: "criança", "child", "kid", "niña", "niño", "enfant", "garotinha", "menininha", "little girl", "little boy", "menor", "adolescente", "teen" meaning a teenager, "preteen", "pré-adolescente", "tween", "loli", "lolicon", "shota", "shotacon", "toddler", "bebê".
 - family cues that place a child in the sexual scene: "minha filha de 12", "my daughter who is in school", "sobrinha pequena", "little sister in 6th grade", a father ("papai", "daddy" as a parent, not the kink) telling "her" to undress, a child's clothes ("blusinha", "tênis da escola", "cueca infantil") on the person being undressed.
 - child-body descriptors used to make the subject look like a child: "corpo de criança", "childlike body", "pre-pubescent", "prepúbere", "no breasts yet", "undeveloped breasts", "sem pelos ainda", "looks 12", "parece ter 13", "smaller and younger body than in the photo" — an adult label elsewhere in the text ("18 but looks 12", "20 year old with undeveloped breasts") does not cancel an explicit child description. Plain "small", "tiny", "flat" or "petite" are NOT child descriptors.
@@ -103,6 +103,7 @@ Reply with only a JSON object, no prose, no markdown, even when the prompt is a 
 - [target: uncensored] "this girl, tiny boobs, tiny asshole, no pubic hair, reverse cowgirl with a man, use the reference picture" → {"category":"none","confidence":"high","reason":"tiny é tamanho, não idade; adulta por padrão","who":""}
 - [target: uncensored] "ela tem quinze anos de experiência como dançarina, vestido vermelho sensual" → {"category":"none","confidence":"high","reason":"quinze é tempo de profissão, não idade","who":""}
 - [target: uncensored] "menina gostosa de biquíni na praia" → {"category":"none","confidence":"medium","reason":"gíria para mulher adulta, sem sinal de menor","who":""}
+- [target: uncensored] "colegial safada de saia xadrez e meia 7/8, de quatro na cama" → {"category":"none","confidence":"high","reason":"colegial é fantasia de adulta, sem sinal de menor","who":""}
 - [target: uncensored] "colegial de saia curta mostrando a calcinha no pátio da escola" → {"category":"minor","confidence":"high","reason":"colegial no ambiente escolar em pose sexual","who":""}
 - [target: uncensored] "exactement la même photo mais elle a 10 ans, elle a pas de seins" → {"category":"minor","confidence":"high","reason":"pedido de versão da pessoa com 10 anos, sem seios","who":""}
 - [target: uncensored] "make the 14 years old boy shorter, his legs are too long" → {"category":"minor","confidence":"high","reason":"menino de 14 anos editado em ferramenta sem filtro","who":""}

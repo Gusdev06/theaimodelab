@@ -3,6 +3,14 @@ import { ConfigService } from '@nestjs/config';
 import { UploadsService } from '../../uploads/uploads.service';
 import { GenerationResult } from './theaimodelab.provider';
 import { ProviderFailureError } from '../errors/failure-reason';
+import { adultSafePrompt } from '../../content-safety/adult-anchor';
+
+/**
+ * Teto do prompt que vai à WaveSpeed (o mesmo dos DTOs de vídeo): a âncora de adulto entra no fim sem passar dele.
+ * Todo vídeo daqui sai num modelo sem filtro ou que aceita cena adulta (LTX Spicy, Seedance Spicy, MiniMax H3, Wan):
+ * a âncora vai em todos.
+ */
+const PROMPT_MAX_WITH_ANCHOR = 2500;
 
 /**
  * WaveSpeed — LTX 2.3 Spicy (image-to-video, NSFW).
@@ -324,7 +332,7 @@ export class WavespeedVideoProvider {
 
     const predictionId = await this.createPrediction(LTX_MODEL, {
       image: input.imageUrl,
-      prompt: input.prompt,
+      prompt: adultSafePrompt(input.prompt, PROMPT_MAX_WITH_ANCHOR),
       preset: input.preset ?? 'tuned',
       resolution: input.resolution,
       duration,
@@ -359,7 +367,7 @@ export class WavespeedVideoProvider {
 
     const body: Record<string, unknown> = {
       image: input.imageUrl,
-      prompt: input.prompt,
+      prompt: adultSafePrompt(input.prompt, PROMPT_MAX_WITH_ANCHOR),
       resolution: input.resolution,
       duration,
       generate_audio: input.generateAudio,
@@ -394,7 +402,7 @@ export class WavespeedVideoProvider {
     );
 
     const body: Record<string, unknown> = {
-      prompt: input.prompt,
+      prompt: adultSafePrompt(input.prompt, PROMPT_MAX_WITH_ANCHOR),
       resolution: input.resolution,
       duration,
       seed: -1,
@@ -430,7 +438,7 @@ export class WavespeedVideoProvider {
     );
 
     const body: Record<string, unknown> = {
-      prompt: input.prompt,
+      prompt: adultSafePrompt(input.prompt, PROMPT_MAX_WITH_ANCHOR),
       image: input.imageUrl,
       resolution: input.resolution,
       duration,
@@ -472,7 +480,7 @@ export class WavespeedVideoProvider {
       resolution: input.resolution,
       seed: -1,
     };
-    if (input.prompt) body.prompt = input.prompt;
+    if (input.prompt) body.prompt = adultSafePrompt(input.prompt, PROMPT_MAX_WITH_ANCHOR);
 
     const predictionId = await this.createPrediction(WAN_ANIMATE_MODEL, body);
     this.logger.log(`[WAN_ANIMATE] prediction created: ${predictionId}`);
@@ -495,7 +503,7 @@ export class WavespeedVideoProvider {
       `[WAN3_REF] gen=${input.id} resolution=${input.resolution} aspect=${input.aspectRatio} duration=${duration}s images=${input.imageUrls.length} videos=${input.videoUrls.length} prompt="${input.prompt.slice(0, 80)}"`,
     );
     const body: Record<string, unknown> = {
-      prompt: input.prompt,
+      prompt: adultSafePrompt(input.prompt, PROMPT_MAX_WITH_ANCHOR),
       resolution: input.resolution,
       aspect_ratio: input.aspectRatio,
       duration,
@@ -530,7 +538,7 @@ export class WavespeedVideoProvider {
     );
 
     const body: Record<string, unknown> = {
-      prompt: input.prompt,
+      prompt: adultSafePrompt(input.prompt, PROMPT_MAX_WITH_ANCHOR),
       resolution: input.resolution,
       duration,
       seed: -1,

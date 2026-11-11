@@ -1,12 +1,26 @@
-import { canonical, checkAdultOnly, hasAdultTerms } from './adult-only-rules';
+import { canonical, checkAdultOnly, findYouthSlang, hasAdultTerms } from './adult-only-rules';
 
 /**
  * Guarda de conteúdo com MENORES — camada da própria plataforma, independente do filtro de cada provedor de IA.
  *
  * Por que existe: o único bloqueio de menores que havia era o código de erro do provedor (Google) mapeado em
  * content-safety.error.ts. Nos modelos sem censura (WaveSpeed Spicy, ComfyDeploy, Unlocked) a proteção dependia
- * 100% do filtro de terceiros. Numa plataforma +18 isso é inegociável: qualquer pedido que faça referência a
- * menor de idade é recusado ANTES de chegar a qualquer provedor, em qualquer tipo de geração (com ou sem nudez).
+ * 100% do filtro de terceiros. Numa plataforma +18 isso é inegociável: pedido que faz referência a menor de idade é
+ * recusado ANTES de chegar ao provedor.
+ *
+ * A regra depende de PARA ONDE o pedido vai (decisão do dono, 06/11, com os bloqueios reais de 25/10 a 05/11 na mão):
+ *  - alvo sem filtro ('uncensored': Unlocked, Spicy, despir, MiniMax H3, e todo pedido cujo alvo a guarda não conhece):
+ *    qualquer referência a menor barra, com ou sem palavra sexual (a ferramenta em si é sexual). Nesse alvo toda pessoa
+ *    gerada é adulta: a âncora de adulto (adult-anchor.ts) vai em todo prompt;
+ *  - alvo com filtro próprio ('filtered': Veo, Nano Banana, GPT Image, Kling…): criança em cena comum passa (foto de
+ *    família, cena de filme, miniatura de vídeo); barra quando o pedido é sexual E cita menor, e sempre nos termos que
+ *    já são sexuais sozinhos (loli, "child porn"). Se o provedor bloquear e a geração for desviada para o modelo sem
+ *    filtro, o processor confere o texto de novo como 'uncensored' antes do desvio.
+ *
+ * A palavra sozinha não decide. Gíria de juventude que no conteúdo adulto fala de mulher adulta ("novinha", "ninfeta",
+ * "colegial" de fantasia, "schoolgirl", "jovencita") não barra na escrita normal: no modelo sem filtro o provedor
+ * recebe "mulher adulta" no lugar (adult-anchor.ts). Segue barrando com idade abaixo de 18, série, lugar de escola,
+ * corpo de criança, no desenhado e quando vem ofuscada.
  *
  * A conferência de cada texto é a trava do construtor de modelo do site (adult-only-rules.ts, cópia de
  * lib/influencer-safety.ts com o corpus de 1.099 casos do red team) no modo de pedido livre (`free`, piso 18):
@@ -16,10 +30,28 @@ import { canonical, checkAdultOnly, hasAdultTerms } from './adult-only-rules';
  *    recusa, sem registrar como menor, o alfabeto que ninguém confere ('script');
  *  - pega os termos centrais de francês, alemão, italiano, holandês e polonês;
  *  - não conta o que é negação, remoção ou condição ("no kids", "remove the children", "kids, if present: remove",
- *    "mother of 2 kids", "avoid: underage") — só quando o termo aparece escrito por extenso (ofuscado nunca é exceção);
+ *    "mother of 2 kids", "avoid: underage") — só quando o termo aparece escrito por extenso (ofuscado nunca é exceção).
+ *    Desde 06/11 a remoção vale também em pedido de nudez da adulta ("remove every man and every child" é cuidado de
+ *    quem edita foto, não criança na cena); deixa de valer quando o pedido volta a falar da criança ("and make them
+ *    naked") ou mexe na roupa ou no corpo dela;
  *  - deixa "cor secundária" e "personagem secundário" passarem, mas não "de secundaria" ou "ensino secundário".
  * Calibrada contra prompts reais do histórico (só contagens). Função pura: sem rede, sem banco.
  */
+
+/** Para onde o pedido vai: modelo sem filtro (ou alvo desconhecido) ou provedor com filtro próprio. */
+export type GuardTarget = 'uncensored' | 'filtered';
+
+export interface GuardOptions {
+  /** padrão 'uncensored' (a regra mais dura): quem não sabe o alvo não afrouxa nada */
+  target?: GuardTarget;
+  /**
+   * De quem é o texto. 'request' (padrão) = o pedido que a cliente escreveu: gíria de juventude, "menina" e
+   * "babysitter" são lidas como ela usa (mulher adulta). 'description' = texto que um modelo escreveu sobre uma foto
+   * ou no lugar da cliente (análise do Clonar prompt, saída do melhorador, texto de denúncia): aí a palavra vale ao pé
+   * da letra e barra, porque "novinha" na descrição de uma foto é o que o modelo VIU nela.
+   */
+  source?: 'request' | 'description';
+}
 
 export interface MinorAssessment {
   blocked: boolean;
@@ -30,6 +62,8 @@ export interface MinorAssessment {
   reason?: 'term' | 'age' | 'size' | 'script';
   /** o termo ou a idade que disparou, para o registro de abuso */
   match?: string;
+  /** pedido liberado com gíria de juventude ("novinha", "colegial"): o provedor sem filtro recebe "mulher adulta" */
+  slang?: string;
 }
 
 /** Idade legal de toda geração na API (o construtor de modelo usa 25 como piso da personagem). */
@@ -99,6 +133,9 @@ const ADULT_PHRASES: ReadonlyArray<[RegExp, string]> = [
   [/(?<![\p{L}\p{N}])de\s+(?:quatro|4)(?![\p{L}\p{N}])(?!\s*(?:anos?|aninhos?|years?))/giu, 'em quatro apoios'],
   [/(?<![\p{L}\p{N}])(azul|rosa|celeste|verde|amarelo|amarillo|lil[aá]s?|lila|branco|blanco)[\s-]+beb[eêé](?![\p{L}\p{N}])/giu, '$1 claro'],
   [/(?<![\p{L}\p{N}])baby[\s-]+(blue|pink|yellow|green|purple|lilac)(?![\p{L}\p{N}])/giu, 'light $1'],
+  // "wide childbearing hips" é quadril largo; "childfree" e "childless" são "sem filhos"
+  [/(?<![\p{L}\p{N}])child[\s-]?bearing(?![\p{L}\p{N}])/giu, 'wide'],
+  [/(?<![\p{L}\p{N}])child[\s-]?(?:free|less)(?![\p{L}\p{N}])/giu, ' '],
   // faixa que mede alguma coisa ("2 to 3 meters", "1.5 to 2 meters", "8–9 seconds", "10-12 cm"): não é faixa de idade
   [
     /(?<![\p{L}\p{N}])\d{1,3}(?:[.,]\d+)?\s*(?:-|–|—|to|a|até|ate|ou|or)\s*\d{1,3}(?:[.,]\d+)?\s*(?:seconds?|secs?|segundos?|s|minutes?|minutos?|mins?|hours?|horas?|meters?|metres?|metros?|m|cm|mm|km|feet|ft|foot|inches|inch|in|polegadas?|pulgadas?|kg|kgs|lbs?|pounds?|quilos?|kilos?|%|degrees|graus|grados|frames?|fps)(?![\p{L}\p{N}])/giu,
@@ -112,7 +149,8 @@ const ADULT_PHRASES: ReadonlyArray<[RegExp, string]> = [
  * ("Negative prompt: blurry. A teen girl…") continua sendo lida.
  */
 const NEGATIVE_JSON = /(["'])(?:negative_?prompts?|negatives?|negativeprompt|avoid|evitar|prompt_negativo)\1\s*:\s*(\[[^\]]{0,4000}\]|"[^"\n]{0,2000}")/giu;
-const NEGATIVE_LINE = /(^|\n)([^\S\n]*(?:negative\s+prompts?|negative|negatives|prompt\s+negativo|avoid|evitar|evite)\s*[:：]\s*)([^\n]*)/giu;
+// o cabeçalho abre a linha ou vem depois de um ponto ("…natural skin. Avoid: cartoon, flat teenage body, childlike face.")
+const NEGATIVE_LINE = /(^|\n|[.!?]\s)([^\S\n]*(?:negative\s+prompts?|negative|negatives|prompt\s+negativo|avoid|evitar|evite)\s*[:：]\s*)([^\n]*)/giu;
 
 function shortItems(list: string): boolean {
   const items = list.split(/[,;|]/).map((item) => item.replace(/["'[\]{}()]/g, ' ').trim()).filter(Boolean);
@@ -272,7 +310,7 @@ const LATIN_EXTRA = new RegExp(
 /* ------------------------------------------------------------------ negação, remoção e condição */
 
 /** Mesmo texto, minúsculo e sem acento, com cada caractere na MESMA posição (para achar e apagar o termo). */
-function flatten(text: string): string {
+export function flatten(text: string): string {
   let out = '';
   for (const char of text) {
     const base = char.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
@@ -294,6 +332,8 @@ const REMOVAL_VERBS = new Set([
   'remove', 'removing', 'remova', 'remover', 'removam', 'retire', 'retirar', 'retirem', 'tire', 'tirar', 'quite', 'quitar', 'quita', 'elimina', 'eliminar',
   'elimine', 'eliminate', 'eliminating', 'borra', 'borrar', 'borre', 'erase', 'erasing', 'delete', 'deleting', 'deletar', 'apague', 'apagar', 'crop',
   'cleaned', 'clean',
+  // "where a removed child leaves a gap": a criança já saiu
+  'removed', 'erased', 'deleted', 'eliminated', 'removida', 'removidas', 'removido', 'removidos', 'eliminada', 'eliminadas', 'eliminado', 'eliminados',
 ]);
 /** Verbo que, negado logo antes ("do not include", "não coloque", "never show"), nega o termo. */
 const ACTION_VERBS = new Set([
@@ -302,6 +342,8 @@ const ACTION_VERBS = new Set([
   'ponga', 'poner', 'gere', 'gerar', 'genere', 'generar', 'crie', 'criar', 'cree', 'crear', 'desenhe', 'dibuje', 'insira', 'inserir', 'inserte', 'use', 'usar',
   'tenha', 'tenga', 'apareca', 'aparecer', 'aparezca', 'be', 'ser', 'recreate', 'reproduce', 'invent', 'inventar', 'invente', 'keep', 'manter', 'mantenha',
   'mantener', 'mantenga', 'preserve', 'preservar', 'retain', 'leave', 'deixar', 'deixe', 'dejar', 'deje', 'crop', 'make',
+  // "do not invent, duplicate, or place any new persons (men, women, or children)"
+  'duplicate', 'copy', 'introduce', 'paste', 'spawn',
 ]);
 const NEGATING_AUX = new Set(['not', 'dont', 'never', 'nao', 'nunca', 'no', 'sin', 'sem', 'without', 'cannot', 'cant', 'shouldnt', 'mustnt', 'wont']);
 /**
@@ -330,6 +372,11 @@ const LIST_DESCRIPTORS = new Set([
   'appearance', 'look', 'looks', 'looking', 'features', 'face', 'faces', 'body', 'bodies', 'proportions', 'style', 'vibe', 'vibes', 'aesthetic', 'traits',
   'characteristics', 'figure', 'figures', 'aparencia', 'apariencia', 'aspecto', 'rosto', 'cara', 'corpo', 'cuerpo', 'traços', 'tracos', 'rasgos', 'like',
 ]);
+/** Adjetivo de aparência que vem antes do termo num item da lista do que evitar ("flat teenage body"). */
+const LIST_LEAD_OK = new Set([
+  'flat', 'younger', 'youthful', 'short', 'skinny', 'thin', 'cute', 'immature', 'underdeveloped', 'juvenile', 'looking', 'like', 'kind', 'type', 'style',
+  'overly', 'too', 'very', 'excessively', 'visible', 'fake', 'plastic', 'doll', 'cartoonish', 'jovem', 'joven', 'infantil', 'pequeno', 'pequena',
+]);
 const PARENT_WORDS = new Set([
   'has', 'had', 'have', 'having', 'tem', 'teve', 'tenho', 'tinha', 'tiene', 'tuvo', 'tengo', 'tenia', 'mother', 'mom', 'mum', 'mae', 'madre', 'mama', 'mamae',
   'father', 'dad', 'pai', 'padre', 'papa', 'parent', 'parents', 'pais', 'padres',
@@ -344,7 +391,7 @@ const REMOVAL_AFTER =
 /** Condição com o termo no meio ("if a child is present, remove only the child"): exceção só se o que vem é tirar a criança. */
 const CONDITIONAL_LEAD = new Set(['if', 'se', 'si', 'caso', 'when', 'quando', 'cuando', 'whenever']);
 const CONDITIONAL_PRESENT =
-  /^\s*(?:is|are|appears?|exists?|shows\s+up|esta|estao|estiver|estiverem|aparece|aparecem|aparecer|houver|hay|existe|existem|estan)\s+(?:present|presente|presentes|visible|visivel|visiveis|visibles|in\s+(?:the\s+)?(?:frame|image|photo|picture|scene)|na\s+(?:foto|imagem|cena)|en\s+(?:la\s+)?(?:foto|imagen|escena))?[\s,]*(?:then\s+)?(?:remove|erase|delete|remova|remover|retire|apague|elimine|eliminar|quite|quitar|borre|borrar)\b(?<rest>[^.;\n]{0,60})/;
+  /^\s*(?:is|are|appears?|exists?|shows\s+up|esta|estao|estiver|estiverem|aparece|aparecem|aparecer|houver|hay|existe|existem|estan)\s+(?:present|presente|presentes|visible|visivel|visiveis|visibles|in\s+(?:the\s+)?(?:reference\s+|original\s+|source\s+|input\s+)?(?:frame|image|photo|picture|scene|reference|original|source)|na\s+(?:foto|imagem|cena|referencia)|en\s+(?:la\s+)?(?:foto|imagen|escena|referencia))?[\s,]*(?:then\s+)?(?:remove|erase|delete|remova|remover|retire|apague|elimine|eliminar|quite|quitar|borre|borrar)\b(?<rest>[^.;\n]{0,60})/;
 /** Roupa e corpo: "if a child is present, remove her clothes" NUNCA é exceção. */
 const CLOTHING_OR_BODY =
   /(?<![a-z])(?:cloth\w*|roupa\w*|ropa\w*|dress\w*|vestid\w*|shirt|camis\w*|bikini\w*|biquini\w*|underwear|lingerie|bra|panties|calcinha\w*|top|skirt|saia|falda|pants|calca|jeans|shorts|outfit|uniform\w*|towel|toalha|blanket|her|his|its|their|sua|seu|su|el\s+vestido)(?![a-z])/;
@@ -363,7 +410,7 @@ function negatedBefore(clause: string, sameKind: (word: string) => boolean = (wo
     if (NEGATORS.has(word)) return 'negation';
     if (REMOVAL_VERBS.has(word)) return 'removal';
     if (ACTION_VERBS.has(word)) return negatedAction(list, index) ? 'negation' : null;
-    if (SKIPPABLE.has(word) || PEOPLE.has(word) || sameKind(word)) {
+    if (SKIPPABLE.has(word) || PEOPLE.has(word) || LIST_DESCRIPTORS.has(word) || sameKind(word)) {
       skipped++;
       continue;
     }
@@ -398,6 +445,8 @@ function familySize(clause: string): boolean {
   const list = words(clause);
   const last = list.length - 1;
   if (last < 1 || !SMALL_COUNT.test(list[last])) return false;
+  // "mãe, pai e duas crianças brincando" é lista de quem está na cena, não tamanho de família
+  if (['e', 'and', 'y'].includes(list[last - 1])) return false;
   return list.slice(Math.max(0, last - 3), last).some((word) => PARENT_WORDS.has(word));
 }
 
@@ -410,7 +459,9 @@ function inAvoidList(clause: string, rest: string, sameKind: (word: string) => b
   // cada item da lista é curto e o termo abre um item novo
   const items = between.split(/[,/|]|\band\b|\bor\b|\be\b|\bou\b|\by\b/);
   if (items.some((item) => words(item).length > 4)) return false;
-  if (words(items[items.length - 1]).some((word) => !SKIPPABLE.has(word) && !sameKind(word))) return false;
+  // antes do termo, no mesmo item, só cabem até 2 adjetivos de aparência ("flat teenage body", "overly young face")
+  const lead = words(items[items.length - 1]).filter((word) => !SKIPPABLE.has(word) && !sameKind(word));
+  if (lead.length > 2 || lead.some((word) => !LIST_LEAD_OK.has(word))) return false;
   // o item do termo termina sem outra palavra ("teen girl nude" não é item de lista de evitar; "teenage appearance" é)
   const own = rest.split(/[,;.!?\n/|]/)[0];
   return words(own).every((word) => SKIPPABLE.has(word) || LIST_DESCRIPTORS.has(word) || sameKind(word));
@@ -460,14 +511,30 @@ function conditionalRemoval(clause: string, rest: string): boolean {
   return Boolean(match && !CLOTHING_OR_BODY.test(match.groups?.rest ?? ''));
 }
 
+/**
+ * Depois de "remove the kids…", o pedido volta a falar deles ("and make them naked", "e deixe elas peladas", "y
+ * déjalos desnudos"): aí a remoção não tira a criança da cena e o termo conta.
+ */
+const BACK_TO_THEM =
+  /(?<![a-z])(?:make|makes|leave|show|keep|get|have|turn|render|put|undress|strip|deixe|deixa|deixar|mostre|mostra|faca|faz|fazer|ponha|coloque|deja|dejar|haz|hacer|pon|muestra)\s+(?:[a-z]+\s+){0,2}(?:them|they|elas|eles|ellas|ellos|both|everyone|everybody|todos|todas|ambos|ambas)(?![a-z])|(?<![a-z])(?:deixa|deja|dejar|ponha|pon)(?:los|las|los|nos)(?![a-z])|(?<![a-z])(?:their|seus|suas|sus)\s+(?:cloth[a-z]*|bod(?:y|ies)|roupas?|corpos?|ropas?|cuerpos?)(?![a-z])/;
+
+/** O pedido manda tirar a criança em algum lugar do texto ("remove all kids", "tire as crianças", "quita a los niños"). */
+const REMOVES_MINORS =
+  /(?<![a-z])(?:remov[a-z]*|eras[a-z]*|delet[a-z]*|elimin[a-z]*|tir[ae][a-z]*|retir[a-z]*|apag[a-z]*|quit[a-z]*|borr[a-z]*)\s+(?:[a-z]+\s+){0,5}(?:kids?|child(?:ren)?|bab(?:y|ies)|minors?|criancas?|ninos?|ninas?|bebes?)(?![a-z])/;
+/** Lista de conferência do resultado: "a man or child remains." é o defeito a evitar (a criança que sobrou na foto). */
+const REMAINS_AFTER = /^\s*(?:still\s+)?remains?\s*(?:[.,;:)]|$|in\s+(?:the\s+)?(?:frame|image|photo|picture|scene|output|result))/;
+/** Lista do que o editor vai refazer: "mask clothing, jewelry, kids, and…", "edit body only: clothing, jewelry, kids". */
+const MASK_LIST =
+  /(?:^|[^a-z])(?:mask(?:s|ed|ing)?|inpaint(?:s|ed|ing)?|edit(?:\s+[a-z]+){0,2}\s+only)\s*:?\s*(?:only\s+)?(?:[a-z'-]+(?:\s+[a-z'-]+){0,5}\s*,\s*){1,8}(?:and\s+|or\s+)?$/;
+
 /** O termo de comparação de idade ("under 18", "menos de 18") vem negado ("no one under 18", "ninguém menor de 18"). */
 const COMPARATIVE_AGE = /^(?:under|below|sub|menos de|menor(?:es)? (?:de|que)|abaixo de|younger than|less than|por debajo de)\b/;
 
 /**
- * Toda ocorrência escrita do termo é negação, lista do que evitar, tamanho de família ou (em pedido sem conteúdo
- * adulto) remoção/condição? Então devolve o texto com elas apagadas (para conferir o resto); senão, null. Termo que
- * só aparece ofuscado ("k.i.d.s") nunca é exceção. Foto com criança em pedido de nudez é recusada mesmo com
- * "remova a criança": o modelo trabalha a foto inteira.
+ * Toda ocorrência escrita do termo é negação, lista do que evitar, tamanho de família ou remoção/condição? Então
+ * devolve o texto com elas apagadas (para conferir o resto); senão, null. Termo que só aparece ofuscado ("k.i.d.s")
+ * nunca é exceção. Em pedido de nudez, a remoção deixa de ser exceção quando o pedido volta a falar da criança ou mexe
+ * na roupa ou no corpo dela.
  */
 function maskIfExempt(text: string, term: string, isAge: boolean, adultRequest: () => boolean): string | null {
   const flat = flatten(text);
@@ -493,8 +560,18 @@ function occurrenceExempt(flat: string, start: number, end: number, isAge: boole
   const kind = OWN_CLOTHING_OR_BODY.test(rest) ? null : negatedBefore(clause);
   if (kind === 'negation') return true;
   if (!isAge && (familySize(clause) || inAvoidList(clause, rest))) return true;
-  // remoção e condição só valem em pedido sem conteúdo adulto (a leitura de conteúdo adulto só roda neste caso)
-  if (kind === 'removal' || (!isAge && (removedAfter(rest) || conditionalRemoval(clause, rest)))) return !adultRequest();
+  // remoção e condição: tirar a criança da foto não a põe na cena, nem em pedido de nudez da adulta ("remove every man
+  // and every child" é cuidado de quem edita foto). Em pedido adulto deixa de valer quando o resto da frase volta a
+  // falar dela ("and make them naked"); a roupa e o corpo da criança já ficaram de fora acima
+  if (kind === 'removal' || (!isAge && (removedAfter(rest) || conditionalRemoval(clause, rest)))) {
+    return !adultRequest() || !BACK_TO_THEM.test(rest.split(/[.;!?\n]/)[0]);
+  }
+  // prompt de edição que manda tirar a criança em outro trecho: a mesma criança aparece na lista do que o editor refaz
+  // ("mask clothing, jewelry, kids") e na conferência do resultado ("a man or child remains"). Só com a ordem de tirar
+  // escrita no texto, nunca com a roupa ou o corpo dela, e nunca quando o pedido volta a falar dela
+  if (!isAge && !OWN_CLOTHING_OR_BODY.test(rest) && (REMAINS_AFTER.test(rest) || MASK_LIST.test(clause)) && REMOVES_MINORS.test(flat)) {
+    return !BACK_TO_THEM.test(rest.split(/[.;!?\n]/)[0]);
+  }
   return false;
 }
 
@@ -555,6 +632,9 @@ function hasUnnegated(flat: string, pattern: RegExp): boolean {
   return false;
 }
 
+/** Traço que já puxa a personagem para o infantil: aí uma pista fraca só ("petite", "cute") barra no pedido sexual. */
+const ANIME_STYLE = /(?<![a-z])(?:anime|hentai|manga|manhwa|chibi|waifu|ecchi|vtuber|kawaii)(?![a-z])/g;
+
 /** Desenhado de verdade: estilo de desenho pedido, sem negação, e (fora os estilos que são desenho por definição) sem pedido de foto realista. */
 function isDrawnStyle(text: string): boolean {
   const flat = flatten(text);
@@ -594,14 +674,98 @@ function maskSecundaria(text: string): string | null {
   return out;
 }
 
+/**
+ * "chiquito/chiquita" em espanhol também é tamanho de roupa ou de coisa ("traje de baño chiquito", "tanga chiquita").
+ * Passa só quando cada ocorrência vem logo depois de uma peça de roupa ou de um objeto; "una chiquita" e "chiquita
+ * desnuda" barram. Parte do corpo fica de fora de propósito.
+ */
+const CHIQUITO_TERM = /^chiquit[ao]s?$/;
+const CHIQUITO_OK = new Set([
+  'bano', 'banho', 'traje', 'trajes', 'bikini', 'bikinis', 'biquini', 'biquinis', 'tanga', 'tangas', 'hilo', 'short', 'shorts', 'falda', 'faldas',
+  'minifalda', 'vestido', 'vestidos', 'top', 'tops', 'bra', 'brasier', 'sosten', 'calzon', 'calzones', 'bragas', 'braga', 'panty', 'panties', 'lenceria',
+  'ropa', 'blusa', 'camiseta', 'playera', 'body', 'bodysuit', 'corset', 'corse', 'tacon', 'tacones', 'toalla', 'bata', 'kimono', 'delantal', 'bolso',
+  'cartera', 'cuarto', 'habitacion', 'departamento', 'apartamento', 'casa', 'cama', 'sofa', 'perro', 'perrito', 'gato', 'tatuaje', 'lunar', 'arete',
+  'aretes', 'collar', 'anillo', 'piercing', 'sombrero', 'gorro', 'lentes', 'gafas',
+]);
+
+function maskChiquito(text: string): string | null {
+  const flat = flatten(text);
+  const spans: Array<[number, number]> = [];
+  for (const match of flat.matchAll(/(?<![\p{L}\p{N}])chiquit[ao]s?(?![\p{L}\p{N}])/gu)) {
+    const start = match.index ?? 0;
+    const previous = words(flat.slice(Math.max(0, start - 40), start)).pop();
+    if (!previous || !CHIQUITO_OK.has(previous)) return null;
+    spans.push([start, start + match[0].length]);
+  }
+  return spans.length ? blank(text, spans) : null;
+}
+
 /* ------------------------------------------------------------------ conferência */
 
-export function assessText(text: string | null | undefined): MinorAssessment {
+/** Alfabetos que a trava lê (os de SCRIPT_GUARDS) mais o latino, a pontuação e os sinais comuns. */
+const READ_SCRIPTS =
+  /[\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}\p{Script=Hebrew}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Cyrillic}\p{Script=Arabic}\p{Script=Thai}\p{Script=Hangul}]/u;
+
+/**
+ * Troca por espaço cada letra de alfabeto que a trava não lê. Letra que só PARECE latina (homógrafo) fica: a forma
+ * canônica já a lê como latina e ela faz parte da palavra ofuscada.
+ */
+function withoutUnreadScripts(text: string): string {
+  return text.replace(/[\p{L}\p{M}]/gu, (char) => {
+    if (READ_SCRIPTS.test(char)) return char;
+    const mapped = canonical(char);
+    return mapped && /^[\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]+$/u.test(mapped) ? char : ' '.repeat(char.length);
+  });
+}
+
+/** Gíria de juventude escrita normalmente (texto achatado: minúsculo, sem acento). Ofuscada não casa aqui. */
+const PLAIN_YOUTH_SLANG =
+  /(?<![\p{L}\p{N}])(?:novi+nh[a-z]*|novin|ninfet[a-z]*|nymph(?:et|ette)[a-z]*|colegia[a-z]*|kolegial[a-z]*|colejial[a-z]*|school ?girl[a-z]*|jovencit[a-z]*)(?![\p{L}\p{N}])/u;
+
+/** Palavras que o pedido da cliente usa para adulta e que, na descrição de uma foto, valem ao pé da letra. */
+const LITERAL_ONLY = /(?<![\p{L}\p{N}])(?:menin[a-z]*|babysit[a-z]*)(?![\p{L}\p{N}])/gu;
+
+/** Termo que já é sexual sozinho: barra em qualquer alvo, mesmo sem outra palavra sexual no pedido. */
+const ALWAYS_SEXUAL_MINOR =
+  /(?<![a-z])(?:lol+i\w*|l\s?o\s?l\s?i|shota\w*|pedo\w*|p\s?e\s?d\s?o|jail ?bait\w*|child (?:porn\w*|abuse|sex\w*|model\w*)|csam|age ?play\w*|ddlg|littlespace|little ?space|pre ?teen\w*|tween\w*)(?![a-z])/;
+
+/** Pedido de despir sem palavra de nudez ("remove her clothes", "tira a roupa dela", "quítale el vestido"). */
+const UNDRESS_REQUEST =
+  /(?<![a-z])(?:remov[a-z]*|take(?:s|n)?\s+off|taking\s+off|strip[a-z]*|tir[ae][a-z]*|arranc[a-z]*|quit[a-z]*|sac[a-z]*)\s+(?:[a-z']+\s+){0,3}(?:cloth[a-z]*|outfits?|dress|tops?|bras?|pant(?:s|ies)|shirts?|skirts?|underwear|bikinis?|roupas?|vestidos?|blusas?|saias?|calcinhas?|sutias?|biquinis?|ropas?|faldas?|bragas?)(?![a-z])/;
+
+/** O pedido é sexual? A lista de conteúdo adulto da trava mais o pedido de despir. */
+function sexualRequest(prepared: string): boolean {
+  return hasAdultTerms(prepared) || UNDRESS_REQUEST.test(flatten(prepared));
+}
+
+/**
+ * Confere um texto livre. `target` diz para onde o pedido vai (padrão 'uncensored', a regra mais dura):
+ *  - 'uncensored': qualquer referência a menor barra;
+ *  - 'filtered': só barra pedido sexual que cita menor, e os termos que já são sexuais sozinhos. Texto grande demais
+ *    continua recusado; alfabeto que a trava não lê passa (o filtro do provedor lê, e o desvio para o modelo sem filtro
+ *    confere de novo como 'uncensored').
+ */
+export function assessText(text: string | null | undefined, options: GuardOptions = {}): MinorAssessment {
   if (!text || typeof text !== 'string') return { blocked: false };
   const source = text.trim();
   if (!source) return { blocked: false };
   if (source.length > MAX_TEXT_SCAN) return { blocked: true, reason: 'size' };
 
+  const literal = options.source === 'description';
+  let verdict = assessStrict(source, literal);
+  if (!verdict.blocked || (options.target ?? 'uncensored') === 'uncensored') return verdict;
+  if (verdict.reason === 'script') {
+    // o alfabeto sem lista não recusa o pedido aqui, mas também não esconde o resto: lê o texto sem essas letras
+    verdict = assessStrict(withoutUnreadScripts(source), literal);
+    if (!verdict.blocked || verdict.reason === 'script') return { blocked: false };
+  }
+  if (verdict.reason === 'size') return verdict;
+  if (ALWAYS_SEXUAL_MINOR.test(canonical(verdict.match ?? '')) || sexualRequest(prepare(source))) return verdict;
+  return { blocked: false };
+}
+
+/** A conferência completa (alvo sem filtro): qualquer referência a menor que não seja negação, remoção ou lista do que evitar. */
+function assessStrict(source: string, literal = false): MinorAssessment {
   const script = checkScripts(source);
   if (script) return script;
 
@@ -628,15 +792,35 @@ export function assessText(text: string | null | undefined): MinorAssessment {
   const sexAge = /(?<![\p{L}\p{N}])(1[0-7])\s?f(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])f\s?(1[0-7])(?![\p{L}\p{N}])/u.exec(flatten(working));
   if (sexAge) return { blocked: true, reason: 'age', match: sexAge[0] };
 
+  // gíria de juventude ("novinha", "colegial"): a escrita normal é liberada (o provedor sem filtro recebe "mulher
+  // adulta" no lugar); só ofuscada ("n0v1nh4", "n i n f e t a") barra: quem esconde a palavra não está usando gíria
+  const slang = findYouthSlang(working);
+  if (slang && (literal || !PLAIN_YOUTH_SLANG.test(flatten(working)))) return { blocked: true, reason: 'term', match: slang.slice(0, 80) };
+  if (literal) {
+    // descrição de foto: "menina" e "babysitter" também valem ao pé da letra (menos negadas: "no girl", "sem menina")
+    const flat = flatten(working);
+    for (const match of flat.matchAll(LITERAL_ONLY)) {
+      const start = match.index ?? 0;
+      if (!occurrenceExempt(flat, start, start + match[0].length, false, adultRequest)) return { blocked: true, reason: 'term', match: match[0] };
+    }
+  }
+  const passed: MinorAssessment = slang ? { blocked: false, slang: slang.slice(0, 80) } : { blocked: false };
+
   const drawn = isDrawnStyle(working);
+  const anime = drawn && hasUnnegated(flatten(working), ANIME_STYLE);
   for (let round = 0; round < MAX_ROUNDS; round++) {
-    const verdict = checkAdultOnly(working, { adult: true, drawn, lookalike: false, floor: AGE_FLOOR, free: true });
-    if (verdict.ok) return { blocked: false };
+    const verdict = checkAdultOnly(working, { adult: true, drawn, anime, lookalike: false, floor: AGE_FLOOR, free: true });
+    if (verdict.ok) return passed;
     // no pedido livre só sobram estes motivos ('lookalike' desligado, 'override' e 'adultOnCommerce' não se aplicam)
-    if (verdict.reason !== 'minor' && verdict.reason !== 'childlike' && verdict.reason !== 'drawnTerm') return { blocked: false };
+    if (verdict.reason !== 'minor' && verdict.reason !== 'childlike' && verdict.reason !== 'drawnTerm') return passed;
     const term = verdict.term;
     const isAge = AGE_LIKE.test(term);
-    const masked = SECUNDARIA_TERM.test(canonical(term).trim()) ? maskSecundaria(working) : maskIfExempt(working, term, isAge, adultRequest);
+    const plainTerm = canonical(term).trim();
+    const masked = SECUNDARIA_TERM.test(plainTerm)
+      ? maskSecundaria(working)
+      : CHIQUITO_TERM.test(plainTerm)
+        ? (maskChiquito(working) ?? maskIfExempt(working, term, isAge, adultRequest))
+        : maskIfExempt(working, term, isAge, adultRequest);
     if (masked === null || masked === working) return { blocked: true, reason: isAge ? 'age' : 'term', match: term.slice(0, 80) };
     working = masked;
   }
@@ -666,6 +850,15 @@ function looksBinaryOrUrl(value: string): boolean {
   if (trimmed.length < 1000 || /\s/.test(trimmed)) return false;
   const head = trimmed.slice(0, 1000);
   return /^[A-Za-z0-9+/=_-]+$/.test(head) && /[A-Z]/.test(head) && /[a-z]/.test(head) && /\d/.test(head);
+}
+
+/** O corpo traz mídia em algum campo (URL, data: ou base64 de arquivo)? Para rota sem tabela de campos de mídia. */
+export function carriesMedia(body: unknown, depth = 0): boolean {
+  if (body == null || depth > 6) return false;
+  if (typeof body === 'string') return looksBinaryOrUrl(body);
+  if (Array.isArray(body)) return body.slice(0, 200).some((item) => carriesMedia(item, depth + 1));
+  if (typeof body === 'object') return Object.values(body as Record<string, unknown>).some((value) => carriesMedia(value, depth + 1));
+  return false;
 }
 
 const MAX_DEPTH = 6;
@@ -707,7 +900,7 @@ export function collectTexts(body: unknown, depth = 0, out: string[] = [], textF
   return out;
 }
 
-export function assessBody(body: unknown): MinorAssessment {
+export function assessBody(body: unknown, options: GuardOptions = {}): MinorAssessment {
   let texts: string[];
   try {
     texts = collectTexts(body);
@@ -720,9 +913,11 @@ export function assessBody(body: unknown): MinorAssessment {
     total += text.length;
     if (total > MAX_TOTAL_CHARS) return { blocked: true, reason: 'size' };
   }
+  let slang: string | undefined;
   for (const text of texts) {
-    const result = assessText(text);
+    const result = assessText(text, options);
     if (result.blocked) return result;
+    slang ??= result.slang;
   }
-  return { blocked: false };
+  return slang ? { blocked: false, slang } : { blocked: false };
 }

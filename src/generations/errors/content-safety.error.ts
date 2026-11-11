@@ -288,16 +288,43 @@ export class ConsentRequiredSafetyError extends ContentSafetyError {
   }
 }
 
-/** Bloqueio que encerra a geração sem nova tentativa (menor de idade ou foto sem atestado). */
+/**
+ * O filtro do provedor bloqueou um pedido cujo TEXTO cita menor de idade e o desvio seria um modelo sem filtro. Pedido
+ * assim entra pelos provedores com filtro quando não é sexual (foto de família, cena de filme); o que não pode é o
+ * mesmo texto seguir para o modelo sem filtro. A geração termina aqui, como bloqueio de conteúdo comum (com estorno),
+ * sem a nova tentativa do BullMQ. Não é registro de menor: quem decide isso é a trava na entrada do pedido.
+ */
+export class UncensoredFallbackRefusedError extends ContentSafetyError {
+  readonly failureCode = 'CONTENT_SAFETY_BLOCKED' as const;
+  readonly providerDetail: string;
+  readonly model: string;
+
+  constructor(original: unknown, model: string) {
+    const supportCode =
+      original instanceof ContentSafetyError ? original.supportCode : undefined;
+    super(
+      'Bloqueio do filtro em pedido que cita menor de idade: sem desvio para o modelo sem censura',
+      supportCode,
+    );
+    this.name = 'UncensoredFallbackRefusedError';
+    this.model = model;
+    this.providerDetail =
+      providerTexts(original).join(' ') || 'provider content block';
+  }
+}
+
+/** Bloqueio que encerra a geração sem nova tentativa (menor de idade, foto sem atestado ou desvio recusado pelo texto). */
 export type TerminalSafetyBlockError =
   | MinorSafetyBlockError
-  | ConsentRequiredSafetyError;
+  | ConsentRequiredSafetyError
+  | UncensoredFallbackRefusedError;
 
 export function isTerminalSafetyBlock(
   error: unknown,
 ): error is TerminalSafetyBlockError {
   return (
     error instanceof MinorSafetyBlockError ||
-    error instanceof ConsentRequiredSafetyError
+    error instanceof ConsentRequiredSafetyError ||
+    error instanceof UncensoredFallbackRefusedError
   );
 }

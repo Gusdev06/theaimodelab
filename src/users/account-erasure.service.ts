@@ -532,7 +532,7 @@ export function mentionsEmail(
 }
 
 function citesMinor(text: string | null | undefined): boolean {
-  const assessment = assessText(text);
+  const assessment = assessText(text, { source: 'description' });
   return (
     assessment.blocked &&
     (assessment.reason === 'term' || assessment.reason === 'age')
