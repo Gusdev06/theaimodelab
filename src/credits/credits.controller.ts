@@ -8,6 +8,7 @@ import {
   UsePipes,
   ValidationPipe,
   GoneException,
+  HttpCode,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -16,6 +17,7 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 import { CreditsService } from './credits.service';
+import { DailyCreditsService } from './daily-credits.service';
 import { CurrentUser } from '../common/decorators';
 import { Public } from '../common/decorators/public.decorator';
 import { PaginationDto } from '../common/dto/pagination.dto';
@@ -36,6 +38,7 @@ import { CheckoutCodesService } from '../checkout-codes/checkout-codes.service';
 export class CreditsController {
   constructor(
     private readonly creditsService: CreditsService,
+    private readonly dailyCredits: DailyCreditsService,
     private readonly plansService: PlansService,
     private readonly stripeService: StripeService,
     private readonly prisma: PrismaService,
@@ -54,6 +57,23 @@ export class CreditsController {
     @CurrentUser('sub') userId: string,
   ): Promise<CreditBalanceResponseDto> {
     return this.creditsService.getBalance(userId);
+  }
+
+  @Get('daily')
+  @ApiOperation({ summary: 'Status dos créditos de hoje (resgate diário, dia UTC)' })
+  @ApiResponse({ status: 200, description: '{ enabled, amount, claimedToday, streakDays }' })
+  async getDailyStatus(@CurrentUser('sub') userId: string) {
+    return this.dailyCredits.getStatus(userId);
+  }
+
+  @Post('daily/claim')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Resgata os créditos de hoje (1x por dia UTC)' })
+  @ApiResponse({ status: 200, description: '{ granted, streakDays, balance }' })
+  @ApiResponse({ status: 404, description: 'Recurso desligado (DAILY_CREDITS_AMOUNT=0)' })
+  @ApiResponse({ status: 409, description: 'Já resgatado hoje' })
+  async claimDaily(@CurrentUser('sub') userId: string) {
+    return this.dailyCredits.claim(userId);
   }
 
   @Get('transactions')
