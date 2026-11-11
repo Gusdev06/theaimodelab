@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { UploadsService } from '../../uploads/uploads.service';
 import { GenerationResult } from './theaimodelab.provider';
+import { WAN_ANIMATE_KIE_MODEL } from '../motion-control-engine';
 
 export interface WanAnimateReplaceInput {
   id: string;
@@ -112,10 +113,56 @@ export class WanProvider {
     return { outputUrls, modelUsed: 'kling-2.6/motion-control' };
   }
 
+  /**
+   * Wan 2.2 Animate `replace` na kie (TKT-245): a pessoa do vídeo vira a da foto, o resto fica. Mesma fila, mesmo
+   * acompanhamento e mesma saída (S3) do Kling acima. `nsfw_checker: false` = sem filtro extra da kie (padrão da API).
+   * Vídeo e foto até 10 MB cada (quem chama confere); a kie não tem campo de texto neste modelo.
+   */
+  async generateWanAnimateReplace(input: {
+    id: string;
+    videoUrl: string;
+    imageUrl: string;
+    resolution: '480p' | '720p';
+  }): Promise<GenerationResult> {
+    const body = {
+      model: WAN_ANIMATE_KIE_MODEL,
+      input: {
+        video_url: input.videoUrl,
+        image_url: input.imageUrl,
+        resolution: input.resolution,
+        nsfw_checker: false,
+      },
+    };
+    this.logger.log(`[WAN_ANIMATE_KIE] ${input.id} createTask resolution=${input.resolution}`);
+
+    const createResponse = await this.fetchWithTimeout(
+      `${this.baseUrl}/api/v1/jobs/createTask`,
+      { method: 'POST', headers: this.headers(), body: JSON.stringify(body) },
+      60_000,
+    );
+    if (!createResponse.ok) {
+      const errorText = await createResponse.text();
+      throw new Error(`Wan Animate (kie) createTask error (${createResponse.status}): ${errorText}`);
+    }
+    const createData = (await createResponse.json()) as CreateTaskResponse;
+    if (createData.code !== 200 || !createData.data?.taskId) {
+      throw new Error(`Wan Animate (kie) createTask failed: ${createData.msg} (code ${createData.code})`);
+    }
+
+    const resultUrls = await this.pollTaskStatus(createData.data.taskId, 120, 5_000, 'Wan Animate (kie)');
+    const outputUrls: string[] = [];
+    for (let i = 0; i < resultUrls.length; i++) {
+      outputUrls.push(await this.downloadAndUpload(resultUrls[i], input.id, i));
+    }
+    if (!outputUrls.length) throw new Error('Wan Animate (kie) returned no videos.');
+    return { outputUrls, modelUsed: WAN_ANIMATE_KIE_MODEL };
+  }
+
   private async pollTaskStatus(
     taskId: string,
     maxAttempts = 120,
     intervalMs = 5_000,
+    label = 'Kling',
   ): Promise<string[]> {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (attempt > 0) {
@@ -131,7 +178,7 @@ export class WanProvider {
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(
-          `Kling recordInfo error (${response.status}): ${errorText}`,
+          `${label} recordInfo error (${response.status}): ${errorText}`,
         );
       }
 
@@ -139,32 +186,32 @@ export class WanProvider {
 
       if (data.data.state === 'waiting') {
         this.logger.debug(
-          `Kling task still processing... (attempt ${attempt + 1}/${maxAttempts})`,
+          `${label} task still processing... (attempt ${attempt + 1}/${maxAttempts})`,
         );
         continue;
       }
 
       if (data.data.state === 'fail') {
         throw new Error(
-          `Kling generation failed: ${data.data.failMsg ?? data.data.failCode ?? 'unknown error'}`,
+          `${label} generation failed: ${data.data.failMsg ?? data.data.failCode ?? 'unknown error'}`,
         );
       }
 
       if (data.data.state === 'success') {
         if (!data.data.resultJson) {
-          throw new Error('Kling succeeded but returned no resultJson.');
+          throw new Error(`${label} succeeded but returned no resultJson.`);
         }
         const result = JSON.parse(data.data.resultJson) as {
           resultUrls?: string[];
         };
         if (!result.resultUrls?.length) {
-          throw new Error('Kling succeeded but returned no video URLs.');
+          throw new Error(`${label} succeeded but returned no video URLs.`);
         }
         return result.resultUrls;
       }
     }
 
-    throw new Error('Kling generation timed out.');
+    throw new Error(`${label} generation timed out.`);
   }
 
   private async downloadAndUpload(

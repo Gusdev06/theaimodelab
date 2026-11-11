@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { GenerationType, Resolution } from '@prisma/client';
 import { PlanResponseDto } from './dto/plan-response.dto';
-import { WAN_ANIMATE_MODEL_VARIANT, wanAnimateCredits, WAN3_REFERENCE_MODEL_VARIANT, wan3ReferenceCredits } from '../generations/motion-control-engine';
+import { WAN_ANIMATE_MODEL_VARIANT, wanAnimateCredits, wanAnimateOnKie, WAN3_REFERENCE_MODEL_VARIANT, wan3ReferenceCredits } from '../generations/motion-control-engine';
 
 /**
  * Maps plan slugs to env var names for Stripe price IDs.
@@ -190,7 +190,10 @@ export class PlansService {
     }
     // Wan 2.2 Animate (troca de pessoa no vídeo): por segundo do vídeo de entrada, mínimo 3 s, fora da tabela
     if (modelVariant === WAN_ANIMATE_MODEL_VARIANT) {
-      return wanAnimateCredits(resolution, durationSeconds ?? 0);
+      // com a kie ligada o preço cai (TKT-245); a reserva na WaveSpeed segue acima do piso de margem
+      return wanAnimateCredits(resolution, durationSeconds ?? 0, {
+        kie: wanAnimateOnKie(this.configService.get<string>('WAN_ANIMATE_PROVIDER')),
+      });
     }
     // Wan 3.0 por referência: referência (teto 15 s) + saída, por segundo
     if (modelVariant === WAN3_REFERENCE_MODEL_VARIANT) {

@@ -1,3 +1,4 @@
+import { fitsWanAnimateKie, wanAnimateOnKie } from '../motion-control-engine';
 import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -1661,6 +1662,34 @@ export class GenerationProcessor extends WorkerHost {
       });
       await this.completeGeneration(data.generationId, wan3Result, startTime);
       return;
+    }
+
+    // Troca de pessoa na kie primeiro (TKT-245: 22% mais barata), só com o interruptor e arquivos de até 10 MB.
+    // Falhou na kie = a mesma troca na WaveSpeed logo abaixo (a cliente não vê a diferença).
+    if (
+      data.engine === 'wan-replace' &&
+      wanAnimateOnKie(this.configService.get<string>('WAN_ANIMATE_PROVIDER')) &&
+      fitsWanAnimateKie(data.videoBytes, data.imageBytes)
+    ) {
+      try {
+        const kieResult = await this.wanProvider.generateWanAnimateReplace({
+          id: data.generationId,
+          videoUrl: data.videoUrl,
+          imageUrl: data.imageUrl,
+          resolution: data.resolution === '480p' ? '480p' : '720p',
+        });
+        await this.completeGeneration(data.generationId, kieResult, startTime);
+        return;
+      } catch (kieError) {
+        const current = await this.prisma.generation.findUnique({
+          where: { id: data.generationId },
+          select: { status: true },
+        });
+        if (current?.status === GenerationStatus.FAILED || current?.status === GenerationStatus.COMPLETED) return;
+        this.logger.warn(
+          `[MOTION_CONTROL] ${data.generationId} kie falhou, indo à WaveSpeed: ${(kieError as Error).message}`,
+        );
+      }
     }
 
     // Wan 2.2 Animate (WaveSpeed): troca de pessoa no vídeo ou movimento da foto

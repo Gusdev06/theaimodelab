@@ -1500,51 +1500,73 @@ export class GenerationsService {
       },
     });
 
-    // Upload video to S3 — public URL for Wan API, signed URL for internal display
-    const { publicUrl: videoPublicUrl, signedUrl: videoSignedUrl } =
-      await this.uploadsService.uploadBufferPublic(
-        videoBuffer,
-        `inputs/${generation.id}`,
-        `input_video.${videoExt}`,
-        videoMime,
-      );
+    // Subida dos arquivos ANTES do débito: se falhar, a linha vira FAILED na hora (antes ficava PROCESSING sem
+    // cobrança até o cron de travadas, e a tela só via o 500; TKT-244, 10/11/2026). Nada a estornar aqui.
+    let videoPublicUrl: string;
+    let imagePublicUrl: string;
+    let imageByteLength: number;
+    try {
+      // Upload video to S3 — public URL for Wan API, signed URL for internal display
+      const uploadedVideo =
+        await this.uploadsService.uploadBufferPublic(
+          videoBuffer,
+          `inputs/${generation.id}`,
+          `input_video.${videoExt}`,
+          videoMime,
+        );
 
-    // Upload image to S3 — public URL for Wan API, signed URL for internal display
-    const imageMime = dto.image_mime_type ?? 'image/jpeg';
-    const imageExt =
-      imageMime === 'image/png'
-        ? 'png'
-        : imageMime === 'image/webp'
-          ? 'webp'
-          : 'jpg';
-    const imageBuffer = Buffer.from(dto.image, 'base64');
-    const { publicUrl: imagePublicUrl, signedUrl: imageSignedUrl } =
-      await this.uploadsService.uploadBufferPublic(
-        imageBuffer,
-        `inputs/${generation.id}`,
-        `input_image.${imageExt}`,
-        imageMime,
-      );
+      // Upload image to S3 — public URL for Wan API, signed URL for internal display
+      const imageMime = dto.image_mime_type ?? 'image/jpeg';
+      const imageExt =
+        imageMime === 'image/png'
+          ? 'png'
+          : imageMime === 'image/webp'
+            ? 'webp'
+            : 'jpg';
+      const imageBuffer = Buffer.from(dto.image, 'base64');
+      const uploadedImage =
+        await this.uploadsService.uploadBufferPublic(
+          imageBuffer,
+          `inputs/${generation.id}`,
+          `input_image.${imageExt}`,
+          imageMime,
+        );
 
-    // Save input images for reference (signed URLs for internal display)
-    await this.prisma.generationInputImage.createMany({
-      data: [
-        {
-          generationId: generation.id,
-          role: GenerationImageRole.REFERENCE,
-          mimeType: videoMime,
-          order: 0,
-          url: videoSignedUrl,
-        },
-        {
-          generationId: generation.id,
-          role: GenerationImageRole.REFERENCE,
-          mimeType: imageMime,
-          order: 1,
-          url: imageSignedUrl,
-        },
-      ],
-    });
+      // Save input images for reference (signed URLs for internal display)
+      await this.prisma.generationInputImage.createMany({
+        data: [
+          {
+            generationId: generation.id,
+            role: GenerationImageRole.REFERENCE,
+            mimeType: videoMime,
+            order: 0,
+            url: uploadedVideo.signedUrl,
+          },
+          {
+            generationId: generation.id,
+            role: GenerationImageRole.REFERENCE,
+            mimeType: imageMime,
+            order: 1,
+            url: uploadedImage.signedUrl,
+          },
+        ],
+      });
+      videoPublicUrl = uploadedVideo.publicUrl;
+      imagePublicUrl = uploadedImage.publicUrl;
+      imageByteLength = imageBuffer.length;
+    } catch (uploadError) {
+      await this.prisma.generation
+        .update({
+          where: { id: generation.id },
+          data: {
+            status: GenerationStatus.FAILED,
+            errorCode: 'GENERATION_FAILED',
+            errorMessage: 'Não foi possível enviar os arquivos. Nada foi cobrado: tente de novo.',
+          },
+        })
+        .catch(() => undefined);
+      throw uploadError;
+    }
 
     if (isFreeGeneration && freeGenType) {
       await this.consumeFreeGenerationOrRollback(
@@ -1573,6 +1595,8 @@ export class GenerationsService {
       engine: request.engine,
       prompt: request.prompt,
       durationSeconds,
+      videoBytes: videoBuffer.length,
+      imageBytes: imageByteLength,
     } satisfies MotionControlJobData);
 
     return {

@@ -82,6 +82,9 @@ export interface MotionControlJobData extends BaseJobData {
   durationSeconds?: number;
   /** só no Wan */
   prompt?: string | null;
+  /** tamanho dos arquivos enviados: a kie só aceita até 10 MB cada (ausente = jobs antigos, vão à WaveSpeed) */
+  videoBytes?: number;
+  imageBytes?: number;
 }
 
 export interface VirtualTryOnJobData extends BaseJobData {
