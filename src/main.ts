@@ -4,6 +4,7 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import * as express from 'express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { httpCompression } from './http-compression';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -15,6 +16,9 @@ async function bootstrap() {
   app.use(helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
   }));
+
+  // gzip/br nas respostas (fora SSE): ver http-compression.ts
+  app.use(httpCompression());
 
   // Body parsers that preserve rawBody for Stripe webhook verification
   app.use(express.json({ limit: '200mb', verify: (req: any, _res, buf) => { req.rawBody = buf; } }));
