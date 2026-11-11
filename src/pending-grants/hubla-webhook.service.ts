@@ -1,4 +1,6 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { timingSafeEqual } from 'node:crypto';
 import { WebhookLogsService } from '../webhook-logs/webhook-logs.service';
 import {
   DEFAULT_HUBLA_BUNDLE,
@@ -12,12 +14,17 @@ import {
  *   { type: 'invoice.paid', data: { user: { email: '...' }, id: 'evt_xxx' } }
  *   { event: 'NewSale',     user: { email: '...' },        id: 'evt_xxx' }
  *   { type: 'sale.created', customer: { email: '...' },    event_id: 'evt_xxx' }
+ *
+ * Autenticação (TKT-036): a Hubla não assina o webhook, então exigimos um token compartilhado em `?token=` ou no
+ * header `x-hubla-token`, igual a Greenn/Cartpanda. Diferente delas, aqui é FAIL-CLOSED: sem HUBLA_WEBHOOK_TOKEN no
+ * env, nada é processado. Antes, qualquer POST com "invoice.paid" e um e-mail criava acesso de graça.
  */
 @Injectable()
 export class HublaWebhookService {
   private readonly logger = new Logger(HublaWebhookService.name);
 
   constructor(
+    private readonly configService: ConfigService,
     private readonly pendingGrantsService: PendingGrantsService,
     private readonly webhookLogs: WebhookLogsService,
   ) {}
@@ -25,7 +32,9 @@ export class HublaWebhookService {
   async handle(
     payload: any,
     headers?: Record<string, string>,
+    queryToken?: string,
   ): Promise<{ processed: boolean; reason?: string }> {
+    this.verifyToken(queryToken, headers);
     const eventType = this.extractEventType(payload);
     const externalEventId = this.extractEventId(payload, headers);
     const email = this.extractEmail(payload);
@@ -53,6 +62,20 @@ export class HublaWebhookService {
     );
 
     return { processed: true };
+  }
+
+  private verifyToken(queryToken: string | undefined, headers?: Record<string, string>): void {
+    const expected = this.configService.get<string>('HUBLA_WEBHOOK_TOKEN')?.trim();
+    if (!expected) {
+      this.logger.warn('HUBLA_WEBHOOK_TOKEN não configurado: webhook da Hubla recusado (fail-closed)');
+      throw new UnauthorizedException('Hubla webhook disabled');
+    }
+    const received = (queryToken ?? headers?.['x-hubla-token'] ?? headers?.['X-Hubla-Token'] ?? '').trim();
+    const a = Buffer.from(received);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      throw new UnauthorizedException('Invalid Hubla token');
+    }
   }
 
   private isPaidEvent(eventType: string | null): boolean {
