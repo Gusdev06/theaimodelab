@@ -1,4 +1,6 @@
-import compression from 'compression';
+// `import x = require()`: o tsconfig não tem esModuleInterop, e `import compression from` virava
+// `compression_1.default(...)` (undefined) — a API caía no boot e o Swarm mantinha a versão velha (deploy de 11/11).
+import compression = require('compression');
 import type { Request, RequestHandler, Response } from 'express';
 
 /**
