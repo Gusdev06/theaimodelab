@@ -55,6 +55,36 @@ export const WAN_ANIMATE_CREDITS_PER_SECOND: Readonly<Partial<Record<Resolution,
   [Resolution.RES_480P]: 135,
   [Resolution.RES_720P]: 270,
 };
+/**
+ * Wan 2.2 Animate `replace` também na kie (TKT-245, preço conferido em 10/11/2026 em kie.ai/wan-animate): US$ 0,0625/s
+ * em 720p e US$ 0,03/s em 480p, contra 0,08 e 0,04 da WaveSpeed. Só aceita vídeo e foto de até 10 MB cada; acima
+ * disso, ou se a kie falhar, a troca vai à WaveSpeed. Liga com `WAN_ANIMATE_PROVIDER=kie` (depois de 1 teste 18+ real).
+ */
+export const WAN_ANIMATE_KIE_MODEL = 'wan/2-2-animate-replace';
+export const WAN_ANIMATE_KIE_MAX_BYTES = 10 * 1024 * 1024;
+/**
+ * Créditos por segundo com a kie ligada: custo da kie × 3.333, arredondado no múltiplo de 5. A reserva na WaveSpeed
+ * ainda fica acima do piso de 15% no crédito mais barato (US$ 0,0005): 720p 210 cr = US$ 0,105/s × 0,08 (24%);
+ * 480p 100 cr = US$ 0,05/s × 0,04 (20%).
+ */
+export const WAN_ANIMATE_KIE_CREDITS_PER_SECOND: Readonly<Partial<Record<Resolution, number>>> = {
+  [Resolution.RES_480P]: 100,
+  [Resolution.RES_720P]: 210,
+};
+
+/** A troca vai à kie? Só com o interruptor de ambiente; qualquer outro valor = WaveSpeed, como hoje. */
+export function wanAnimateOnKie(provider: string | undefined | null): boolean {
+  return (provider ?? '').trim().toLowerCase() === 'kie';
+}
+
+/** A kie aceita estes arquivos (10 MB cada; tamanho desconhecido = não arrisca e vai à WaveSpeed). */
+export function fitsWanAnimateKie(videoBytes: number | undefined, imageBytes: number | undefined): boolean {
+  return (
+    typeof videoBytes === 'number' && videoBytes > 0 && videoBytes <= WAN_ANIMATE_KIE_MAX_BYTES &&
+    typeof imageBytes === 'number' && imageBytes > 0 && imageBytes <= WAN_ANIMATE_KIE_MAX_BYTES
+  );
+}
+
 /** A WaveSpeed cobra no mínimo 3 s e arredonda o vídeo de entrada para o segundo inteiro de cima. */
 export const WAN_ANIMATE_MIN_BILLED_SECONDS = 3;
 /** O texto do Wan é uma orientação curta ("mesma roupa, sem mudar o fundo"); o resto vem da foto e do vídeo. */
@@ -148,8 +178,9 @@ export function resolveMotionControlRequest(dto: { engine?: string; resolution?:
 }
 
 /** Preço do Wan 2.2 Animate: segundos do vídeo de entrada (inteiros, mínimo 3) × créditos por segundo da resolução. */
-export function wanAnimateCredits(resolution: Resolution, durationSeconds: number): number {
-  const perSecond = WAN_ANIMATE_CREDITS_PER_SECOND[resolution] ?? WAN_ANIMATE_CREDITS_PER_SECOND[Resolution.RES_720P]!;
+export function wanAnimateCredits(resolution: Resolution, durationSeconds: number, options: { kie?: boolean } = {}): number {
+  const table = options.kie ? WAN_ANIMATE_KIE_CREDITS_PER_SECOND : WAN_ANIMATE_CREDITS_PER_SECOND;
+  const perSecond = table[resolution] ?? table[Resolution.RES_720P]!;
   const billed = Math.max(WAN_ANIMATE_MIN_BILLED_SECONDS, Math.ceil(Number.isFinite(durationSeconds) ? durationSeconds : 0));
   return billed * perSecond;
 }

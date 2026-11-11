@@ -1500,73 +1500,96 @@ export class GenerationsService {
       },
     });
 
-    // Upload video to S3 — public URL for Wan API, signed URL for internal display
-    const { publicUrl: videoPublicUrl, signedUrl: videoSignedUrl } =
-      await this.uploadsService.uploadBufferPublic(
-        videoBuffer,
-        `inputs/${generation.id}`,
-        `input_video.${videoExt}`,
-        videoMime,
-      );
-
-    // Upload image to S3 — public URL for Wan API, signed URL for internal display
-    const imageMime = dto.image_mime_type ?? 'image/jpeg';
-    const imageExt =
-      imageMime === 'image/png'
-        ? 'png'
-        : imageMime === 'image/webp'
-          ? 'webp'
-          : 'jpg';
-    const imageBuffer = Buffer.from(dto.image, 'base64');
-    const { publicUrl: imagePublicUrl, signedUrl: imageSignedUrl } =
-      await this.uploadsService.uploadBufferPublic(
-        imageBuffer,
-        `inputs/${generation.id}`,
-        `input_image.${imageExt}`,
-        imageMime,
-      );
-
-    // Wan 3.0 com casal ou trio: as outras pessoas da cena ("Image 2", "Image 3"), na ordem em que vieram
-    const extraImages = await Promise.all(
-      (wan3 ? (dto.extra_images ?? []) : []).map(async (base64, index) => {
-        const mime = dto.extra_image_mime_types?.[index] ?? 'image/jpeg';
-        const ext = mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
-        const uploaded = await this.uploadsService.uploadBufferPublic(
-          Buffer.from(base64, 'base64'),
+    // Subida dos arquivos ANTES do débito: se falhar, a linha vira FAILED na hora (antes ficava PROCESSING sem
+    // cobrança até o cron de travadas, e a tela só via o 500; TKT-244, 10/11/2026). Nada a estornar aqui.
+    let videoPublicUrl: string;
+    let imagePublicUrl: string;
+    let imageByteLength: number;
+    let extraImages: Array<{ mime: string; publicUrl: string; signedUrl: string }> = [];
+    try {
+      // Upload video to S3 — public URL for Wan API, signed URL for internal display
+      const uploadedVideo =
+        await this.uploadsService.uploadBufferPublic(
+          videoBuffer,
           `inputs/${generation.id}`,
-          `input_image_${index + 2}.${ext}`,
-          mime,
+          `input_video.${videoExt}`,
+          videoMime,
         );
-        return { mime, ...uploaded };
-      }),
-    );
 
-    // Save input images for reference (signed URLs for internal display)
-    await this.prisma.generationInputImage.createMany({
-      data: [
-        {
-          generationId: generation.id,
-          role: GenerationImageRole.REFERENCE,
-          mimeType: videoMime,
-          order: 0,
-          url: videoSignedUrl,
-        },
-        {
-          generationId: generation.id,
-          role: GenerationImageRole.REFERENCE,
-          mimeType: imageMime,
-          order: 1,
-          url: imageSignedUrl,
-        },
-        ...extraImages.map((extra, index) => ({
-          generationId: generation.id,
-          role: GenerationImageRole.REFERENCE,
-          mimeType: extra.mime,
-          order: index + 2,
-          url: extra.signedUrl,
-        })),
-      ],
-    });
+      // Upload image to S3 — public URL for Wan API, signed URL for internal display
+      const imageMime = dto.image_mime_type ?? 'image/jpeg';
+      const imageExt =
+        imageMime === 'image/png'
+          ? 'png'
+          : imageMime === 'image/webp'
+            ? 'webp'
+            : 'jpg';
+      const imageBuffer = Buffer.from(dto.image, 'base64');
+      const uploadedImage =
+        await this.uploadsService.uploadBufferPublic(
+          imageBuffer,
+          `inputs/${generation.id}`,
+          `input_image.${imageExt}`,
+          imageMime,
+        );
+
+      // Wan 3.0 com casal ou trio: as outras pessoas da cena ("Image 2", "Image 3"), na ordem em que vieram
+      extraImages = await Promise.all(
+        (wan3 ? (dto.extra_images ?? []) : []).map(async (base64, index) => {
+          const mime = dto.extra_image_mime_types?.[index] ?? 'image/jpeg';
+          const ext = mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
+          const uploaded = await this.uploadsService.uploadBufferPublic(
+            Buffer.from(base64, 'base64'),
+            `inputs/${generation.id}`,
+            `input_image_${index + 2}.${ext}`,
+            mime,
+          );
+          return { mime, ...uploaded };
+        }),
+      );
+
+      // Save input images for reference (signed URLs for internal display)
+      await this.prisma.generationInputImage.createMany({
+        data: [
+          {
+            generationId: generation.id,
+            role: GenerationImageRole.REFERENCE,
+            mimeType: videoMime,
+            order: 0,
+            url: uploadedVideo.signedUrl,
+          },
+          {
+            generationId: generation.id,
+            role: GenerationImageRole.REFERENCE,
+            mimeType: imageMime,
+            order: 1,
+            url: uploadedImage.signedUrl,
+          },
+          ...extraImages.map((extra, index) => ({
+            generationId: generation.id,
+            role: GenerationImageRole.REFERENCE,
+            mimeType: extra.mime,
+            order: index + 2,
+            url: extra.signedUrl,
+          })),
+        ],
+      });
+      videoPublicUrl = uploadedVideo.publicUrl;
+      imagePublicUrl = uploadedImage.publicUrl;
+      imageByteLength = imageBuffer.length;
+    } catch (uploadError) {
+      await this.prisma.generation
+        .update({
+          where: { id: generation.id },
+          data: {
+            status: GenerationStatus.FAILED,
+            errorCode: 'GENERATION_FAILED',
+            errorMessage: 'Não foi possível enviar os arquivos. Nada foi cobrado: tente de novo.',
+          },
+        })
+        .catch(() => undefined);
+      throw uploadError;
+    }
 
     if (isFreeGeneration && freeGenType) {
       await this.consumeFreeGenerationOrRollback(
@@ -1595,6 +1618,8 @@ export class GenerationsService {
       engine: request.engine,
       prompt: request.prompt,
       durationSeconds,
+      videoBytes: videoBuffer.length,
+      imageBytes: imageByteLength,
       ...(extraImages.length ? { extraImageUrls: extraImages.map((extra) => extra.publicUrl) } : {}),
     } satisfies MotionControlJobData);
 
