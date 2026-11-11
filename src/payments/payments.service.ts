@@ -14,6 +14,11 @@ import {
   computeSecondLevelCommissionCents,
   resolveSecondLevelPercent,
 } from '../affiliates/affiliate-second-level';
+import {
+  ANNUAL_FIRST_MONTH_BONUS_DESCRIPTION,
+  ANNUAL_FIRST_MONTH_BONUS_KIND,
+  computeAnnualFirstMonthBonusCredits,
+} from './annual-bonus';
 
 const ULTRA_BASIC_WELCOME_FREE_GENERATIONS = 2;
 
@@ -315,6 +320,7 @@ export class PaymentsService {
 
     let created = false;
     let skipped = false;
+    let annualBonusCredits = 0;
 
     await this.prisma.$transaction(async (tx) => {
       // Idempotência dentro da transaction (evita crédito duplicado em retries do webhook)
@@ -444,6 +450,23 @@ export class PaymentsService {
         },
       });
 
+      // Bônus do anual no 1º mês (atrás da env ANNUAL_FIRST_MONTH_BONUS_PERCENT, padrão
+      // desligado). Só na ATIVAÇÃO da assinatura (`created`): renovação e cron mensal
+      // não passam aqui. Entra na mesma transaction do pagamento, então o retry do
+      // webhook (saleCode já gravado) nunca credita 2x.
+      if (created) {
+        const bonusCredits = computeAnnualFirstMonthBonusCredits(plan);
+        if (bonusCredits > 0) {
+          const bonusGranted = await this.grantAnnualFirstMonthBonus(tx, {
+            userId,
+            subscriptionId: subscription.id,
+            paymentId: payment.id,
+            credits: bonusCredits,
+          });
+          annualBonusCredits = bonusGranted ? bonusCredits : 0;
+        }
+      }
+
       if (created || (await this.renewalEarnsAffiliateCommission(tx, userId, referredByCode, now))) {
         await this.recordAffiliateEarning(tx, userId, payment, amountCents, referredByCode);
       }
@@ -457,6 +480,11 @@ export class PaymentsService {
     this.logger.log(
       `${provider} subscription ${created ? 'ATIVADA' : 'RENOVADA'} — user ${userId}, plano ${plan.slug} (${plan.creditsPerMonth} créditos)`,
     );
+    if (annualBonusCredits > 0) {
+      this.logger.log(
+        `${provider} bônus do anual (1º mês) concedido — user ${userId}, plano ${plan.slug}, +${annualBonusCredits} créditos`,
+      );
+    }
 
     if (created) {
       const user = await this.prisma.user.findUnique({
@@ -498,6 +526,47 @@ export class PaymentsService {
     }
 
     return { processed: true };
+  }
+
+  /**
+   * Concede o bônus de créditos do plano anual (1º mês) UMA vez por assinatura.
+   * Roda dentro da transaction da ativação. Além de só ser chamado quando a
+   * assinatura acabou de ser criada, confere o extrato: se já existe bônus gravado
+   * para esta assinatura, não credita de novo. Retorna true quando creditou.
+   */
+  private async grantAnnualFirstMonthBonus(
+    tx: Prisma.TransactionClient,
+    params: { userId: string; subscriptionId: string; paymentId: string; credits: number },
+  ): Promise<boolean> {
+    const { userId, subscriptionId, paymentId, credits } = params;
+
+    const alreadyGranted = await tx.creditTransaction.findFirst({
+      where: {
+        userId,
+        type: 'ONBOARDING_BONUS',
+        metadata: { path: ['subscriptionId'], equals: subscriptionId },
+      },
+      select: { id: true },
+    });
+    if (alreadyGranted) return false;
+
+    // O upsert da ativação já rodou, então o saldo existe; o increment só soma o bônus.
+    await tx.creditBalance.update({
+      where: { userId },
+      data: { bonusCreditsRemaining: { increment: credits } },
+    });
+    await tx.creditTransaction.create({
+      data: {
+        userId,
+        type: 'ONBOARDING_BONUS',
+        amount: credits,
+        source: 'bonus',
+        description: ANNUAL_FIRST_MONTH_BONUS_DESCRIPTION,
+        paymentId,
+        metadata: { kind: ANNUAL_FIRST_MONTH_BONUS_KIND, subscriptionId },
+      },
+    });
+    return true;
   }
 
   /**
