@@ -386,6 +386,8 @@ export class UploadsService {
     folder: string,
     filename: string,
     size = 256,
+    /** com altura máxima, mantém a proporção do vídeo (largura `size`, sem corte) em vez do quadrado */
+    maxHeight?: number,
   ): Promise<string> {
     const fileKey = `${folder}/${randomUUID()}/${filename}`;
 
@@ -421,7 +423,7 @@ export class UploadsService {
       // Resize with sharp and upload
       const frameBuffer = fs.readFileSync(framePath);
       const thumbnail = await sharp(frameBuffer)
-        .resize(size, size, { fit: 'cover' })
+        .resize(size, maxHeight ?? size, maxHeight ? { fit: 'inside', withoutEnlargement: true } : { fit: 'cover' })
         .webp({ quality: 70 })
         .toBuffer();
 

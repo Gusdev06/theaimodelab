@@ -39,6 +39,10 @@ import {
 
 const PROMPT_THUMB_WIDTH = 400;
 const PROMPT_THUMB_HEIGHT = 500;
+/** Capa de prompt que é vídeo (mp4/webm/mov), com ou sem query/fragmento. */
+const PROMPT_VIDEO_COVER = /\.(mp4|webm|mov|m4v)(\?|#|$)/i;
+/** Pôster de capa em vídeo: largura 400 e altura até 720 (um 9:16 cabe inteiro, sem corte). */
+const PROMPT_VIDEO_THUMB_MAX_HEIGHT = 720;
 
 /**
  * Métricas do painel admin — regras em projects/theaimodelab/admin-metricas-CONTRATO.md.
@@ -137,6 +141,17 @@ export class AdminService {
     promptId: string,
   ): Promise<string | null> {
     try {
+      // capa em vídeo (cenas e moldes 18+): o pôster é o 1º quadro, na proporção do vídeo. Sem ele a galeria
+      // mostrava <img> quebrado e os Reels baixavam o vídeo de cada card só para pintar o 1º quadro.
+      if (PROMPT_VIDEO_COVER.test(imageUrl)) {
+        return await this.uploadsService.generateVideoThumbnail(
+          imageUrl,
+          `thumbnails/prompts/${promptId}`,
+          'thumb.webp',
+          PROMPT_THUMB_WIDTH,
+          PROMPT_VIDEO_THUMB_MAX_HEIGHT,
+        );
+      }
       return await this.uploadsService.generateThumbnailDirect(
         imageUrl,
         `thumbnails/prompts/${promptId}`,
@@ -2286,7 +2301,9 @@ export class AdminService {
 
     // Regenerate thumbnail only if imageUrl actually changes
     let thumbnailPatch: { thumbnailUrl: string | null } | undefined;
-    if (dto.imageUrl !== undefined && dto.imageUrl !== template.imageUrl) {
+    // capa em vídeo sem pôster: mandar o mesmo imageUrl gera o pôster que faltava (preenche as capas antigas)
+    const missingVideoPoster = !!dto.imageUrl && !template.thumbnailUrl && PROMPT_VIDEO_COVER.test(dto.imageUrl);
+    if (dto.imageUrl !== undefined && (dto.imageUrl !== template.imageUrl || missingVideoPoster)) {
       if (dto.imageUrl) {
         const thumbnailUrl = await this.generatePromptThumbnail(dto.imageUrl, id);
         thumbnailPatch = { thumbnailUrl: thumbnailUrl ?? null };
