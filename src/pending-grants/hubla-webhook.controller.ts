@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Logger,
   Post,
+  Query,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../common/decorators';
@@ -29,12 +30,12 @@ export class HublaWebhookController {
   async hublaWebhook(
     @Body() payload: any,
     @Headers() headers: Record<string, string>,
+    @Query('token') queryToken?: string,
   ) {
-    console.log('[HUBLA WEBHOOK] headers:', JSON.stringify(headers, null, 2));
-    console.log('[HUBLA WEBHOOK] body:', JSON.stringify(payload, null, 2));
-    this.logger.log(`Hubla webhook received: ${JSON.stringify(payload)}`);
+    // sem despejar headers/body no log: tinham e-mail do comprador e o token (TKT-054)
+    this.logger.log('Hubla webhook received');
 
-    const result = await this.hublaWebhookService.handle(payload, headers);
+    const result = await this.hublaWebhookService.handle(payload, headers, queryToken);
     return { received: true, ...result };
   }
 }
