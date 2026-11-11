@@ -34,8 +34,18 @@ export type EnvReader = (key: string) => string | undefined;
 
 const processEnv: EnvReader = (key) => process.env[key];
 
-function firstUrl(value: string | undefined): string {
+/** Primeiro endereço de uma lista (FRONTEND_URL pode vir com vírgula), sem barra no fim. */
+export function firstUrl(value: string | undefined): string {
   return (value ?? '').split(',')[0]?.trim().replace(/\/+$/, '') ?? '';
+}
+
+/** Site público e caixa de suporte da origem: os fallbacks quando o env falta (o domínio .ai não existe). */
+export const ORIGIN_SITE_URL = 'https://www.theaimodelab.com';
+export const ORIGIN_SUPPORT_EMAIL = 'support@help.theaimodelab.com';
+
+/** Site da origem para link de e-mail e de evento: FRONTEND_URL (1º da lista) ou o site público. */
+export function originSiteUrl(frontendUrl: string | undefined): string {
+  return firstUrl(frontendUrl) || ORIGIN_SITE_URL;
 }
 
 function hostOf(url: string): string | null {

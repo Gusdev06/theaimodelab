@@ -12,7 +12,7 @@ import {
   type RecoveryLead,
   type SocialProof,
 } from '../payments/recovery/recovery-templates';
-import { resolveBrand } from '../brand/brand';
+import { ORIGIN_SUPPORT_EMAIL, originSiteUrl, resolveBrand } from '../brand/brand';
 
 const RECENT_CANCEL_DAYS = 30;
 const DAYS_BEFORE_EMAIL_2 = 3;
@@ -263,10 +263,9 @@ export class PaymentRecoveryCampaignService {
   }
 
   private async buildBrandConfig(): Promise<BrandConfig> {
-    const frontendUrl =
-      this.configService.get<string>('FRONTEND_URL')?.split(',')[0]?.trim() || 'https://theaimodelab.ai';
+    const frontendUrl = originSiteUrl(this.configService.get<string>('FRONTEND_URL'));
     const supportEmail =
-      this.configService.get<string>('SUPPORT_EMAIL') || 'ola@theaimodelab.ai';
+      this.configService.get<string>('SUPPORT_EMAIL') || ORIGIN_SUPPORT_EMAIL;
     const recoveryCouponCode =
       this.configService.get<string>('RECOVERY_COUPON_CODE') || DEFAULT_RECOVERY_COUPON_CODE;
     const recoveryCouponDiscount =

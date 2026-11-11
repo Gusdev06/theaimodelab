@@ -1,3 +1,4 @@
+import { SkipThrottle } from '@nestjs/throttler';
 import {
   Body,
   Controller,
@@ -13,6 +14,9 @@ import { Public } from '../common/decorators';
 import { PerfectpayWebhookService } from './perfectpay-webhook.service';
 
 @ApiTags('webhooks')
+// postback de gateway chega em rajada do mesmo IP (retentativas, Black November): o limite global de 30/min por IP
+// recusaria venda paga. A autenticação continua (token/assinatura conferido no serviço).
+@SkipThrottle()
 @Controller('api/v1/webhooks')
 export class PerfectpayWebhookController {
   private readonly logger = new Logger(PerfectpayWebhookController.name);
@@ -28,8 +32,12 @@ export class PerfectpayWebhookController {
     @Headers() headers: Record<string, string>,
     @Query('token') queryToken?: string,
   ) {
+    // só o que identifica a venda: o corpo traz e-mail, CPF, telefone e o próprio token (a API é repo público e o
+    // log fica no servidor). O corpo inteiro, quando passa no token, já vai para webhook_logs.
     this.logger.log(
-      `Perfectpay webhook received: ${JSON.stringify(payload).slice(0, 4000)}`,
+      `Perfectpay webhook received: venda ${payload?.code ?? payload?.sale_code ?? 'n/a'}, ` +
+        `status ${payload?.sale_status_enum_key ?? payload?.sale_status_enum ?? 'n/a'}, ` +
+        `produto ${payload?.product?.code ?? 'n/a'}, plano ${payload?.plan?.code ?? 'n/a'}`,
     );
     const result = await this.perfectpayWebhookService.handle(
       payload,

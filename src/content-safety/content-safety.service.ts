@@ -12,11 +12,12 @@ import { readImageDeclaration } from '../users/image-declaration';
 import { CURRENT_TERMS_VERSION } from '../users/terms.constants';
 
 /**
- * Suspensão automática por menor de idade: ligada por padrão; MINOR_AUTO_SUSPEND_ENABLED=false desliga
+ * Suspensão automática por menor de idade: DESLIGADA por padrão (regra do dono, 08/11: nenhuma conta é suspensa
+ * sozinha, o caso vai ao dono primeiro). Só MINOR_AUTO_SUSPEND_ENABLED=true liga
  * (a trava de texto e do provedor continua recusando os pedidos, só a conta não é suspensa sozinha).
  */
 export function minorAutoSuspendEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return (env.MINOR_AUTO_SUSPEND_ENABLED ?? 'true').trim().toLowerCase() !== 'false';
+  return (env.MINOR_AUTO_SUSPEND_ENABLED ?? '').trim().toLowerCase() === 'true';
 }
 
 /**
@@ -143,10 +144,17 @@ export class ContentSafetyService {
    * suspende de novo). Admin nunca é suspenso. Nunca lança: quem chama já recusou o pedido.
    */
   private async suspendIfMinorHold(userId: string): Promise<void> {
-    if (!minorAutoSuspendEnabled()) return;
     try {
       const tally = await countMinorBlocks(this.prisma, userId, new Date());
       if (!minorHoldReached(tally)) return;
+      if (!minorAutoSuspendEnabled()) {
+        // padrão: a conta NÃO é suspensa sozinha; o caso fica no log (e em Denúncias) para o dono decidir
+        this.logger.warn(
+          `[SAFETY_GUARD] conta ${userId} chegou à guarda legal por menor (${tally.recentAttempts} tentativa(s) em 90 dias, ` +
+            `${tally.provider} recusa(s) do provedor com mídia da conta). Suspensão automática desligada: decisão do dono.`,
+        );
+        return;
+      }
       const suspended = await this.prisma.$transaction(async (tx) => {
         // a condição isActive: true é a trava: dois bloqueios juntos suspendem e registram uma vez só
         const { count } = await tx.user.updateMany({
