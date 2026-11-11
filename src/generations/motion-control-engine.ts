@@ -33,6 +33,13 @@ export const WAN3_REFERENCE_CREDITS_PER_SECOND: Readonly<Partial<Record<Resoluti
 /** o Wan 3.0 lê no máximo 15 s de vídeo de referência e gera de 2 a 30 s */
 export const WAN3_REFERENCE_MAX_INPUT_SECONDS = 15;
 export const WAN3_REFERENCE_MIN_OUTPUT_SECONDS = 2;
+/**
+ * Pessoas a mais na cena (casal e trio): a foto principal é "Image 1"; estas viram "Image 2" e "Image 3". A
+ * WaveSpeed aceita até 10 referências, mas a cena dos templates tem no máximo 3 pessoas.
+ */
+export const WAN3_REFERENCE_MAX_EXTRA_IMAGES = 2;
+/** Com 2 ou 3 pessoas o texto precisa dizer o papel de cada uma: mais longo que a orientação curta do Wan 2.2. */
+export const WAN3_REFERENCE_PROMPT_MAX_LENGTH = 1500;
 
 /** Interruptor do admin (/admin/modelos) e o que o site lê em GET /models/videos para mostrar a opção. */
 export const WAN_ANIMATE_SLUG = 'wan-animate';
@@ -120,17 +127,21 @@ export interface MotionControlRequest {
  * Lê motor, resolução e texto do pedido. O Kling continua aceitando só 720p/1080p e o Wan só 480p/720p: a combinação
  * errada é recusada antes de qualquer cobrança.
  */
-export function resolveMotionControlRequest(dto: { engine?: string; resolution?: string; prompt?: string }): MotionControlRequest {
+export function resolveMotionControlRequest(dto: { engine?: string; resolution?: string; prompt?: string; extra_images?: unknown[] }): MotionControlRequest {
   const engine = (dto.engine ?? 'kling') as MotionControlEngine;
   if (!MOTION_CONTROL_ENGINES.includes(engine)) {
     throw new BadRequestException(`Motor desconhecido: ${dto.engine}.`);
+  }
+  // só o Wan 3.0 leva mais de uma foto: nos outros a 2ª pessoa sumiria em silêncio depois de cobrar
+  if (dto.extra_images?.length && !isWan3Engine(engine)) {
+    throw new BadRequestException('Fotos de outras pessoas da cena só valem no Wan 3.0 por referência.');
   }
   if (isWan3Engine(engine)) {
     const resolution = dto.resolution ?? '720p';
     if (resolution !== '480p' && resolution !== '720p' && resolution !== '1080p') {
       throw new BadRequestException('O Wan 3.0 por referência gera em 480p, 720p ou 1080p.');
     }
-    const prompt = dto.prompt?.replace(/\s+/g, ' ').trim().slice(0, WAN_ANIMATE_PROMPT_MAX_LENGTH) || null;
+    const prompt = dto.prompt?.replace(/\s+/g, ' ').trim().slice(0, WAN3_REFERENCE_PROMPT_MAX_LENGTH) || null;
     return {
       engine,
       mode: null,

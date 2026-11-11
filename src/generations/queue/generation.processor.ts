@@ -1654,7 +1654,7 @@ export class GenerationProcessor extends WorkerHost {
         prompt:
           data.prompt ??
           'Image 1 is the woman: keep her exact face, hair, skin tone and body. Recreate Video 1 shot for shot with her as the only person: the same motion, timing, camera, framing, background and lighting.',
-        imageUrls: [data.imageUrl],
+        imageUrls: [data.imageUrl, ...(data.extraImageUrls ?? [])],
         videoUrls: [data.videoUrl],
         resolution: data.resolution === '480p' ? '480p' : data.resolution === '1080p' ? '1080p' : '720p',
         aspectRatio: '9:16',

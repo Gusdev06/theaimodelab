@@ -1505,6 +1505,7 @@ export class GenerationsService {
     let videoPublicUrl: string;
     let imagePublicUrl: string;
     let imageByteLength: number;
+    let extraImages: Array<{ mime: string; publicUrl: string; signedUrl: string }> = [];
     try {
       // Upload video to S3 — public URL for Wan API, signed URL for internal display
       const uploadedVideo =
@@ -1532,6 +1533,21 @@ export class GenerationsService {
           imageMime,
         );
 
+      // Wan 3.0 com casal ou trio: as outras pessoas da cena ("Image 2", "Image 3"), na ordem em que vieram
+      extraImages = await Promise.all(
+        (wan3 ? (dto.extra_images ?? []) : []).map(async (base64, index) => {
+          const mime = dto.extra_image_mime_types?.[index] ?? 'image/jpeg';
+          const ext = mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
+          const uploaded = await this.uploadsService.uploadBufferPublic(
+            Buffer.from(base64, 'base64'),
+            `inputs/${generation.id}`,
+            `input_image_${index + 2}.${ext}`,
+            mime,
+          );
+          return { mime, ...uploaded };
+        }),
+      );
+
       // Save input images for reference (signed URLs for internal display)
       await this.prisma.generationInputImage.createMany({
         data: [
@@ -1549,6 +1565,13 @@ export class GenerationsService {
             order: 1,
             url: uploadedImage.signedUrl,
           },
+          ...extraImages.map((extra, index) => ({
+            generationId: generation.id,
+            role: GenerationImageRole.REFERENCE,
+            mimeType: extra.mime,
+            order: index + 2,
+            url: extra.signedUrl,
+          })),
         ],
       });
       videoPublicUrl = uploadedVideo.publicUrl;
@@ -1597,6 +1620,7 @@ export class GenerationsService {
       durationSeconds,
       videoBytes: videoBuffer.length,
       imageBytes: imageByteLength,
+      ...(extraImages.length ? { extraImageUrls: extraImages.map((extra) => extra.publicUrl) } : {}),
     } satisfies MotionControlJobData);
 
     return {

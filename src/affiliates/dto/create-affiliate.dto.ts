@@ -42,4 +42,13 @@ export class CreateAffiliateDto {
   @IsEnum(AffiliateDiscountScope)
   @IsOptional()
   discountAppliesTo?: AffiliateDiscountScope;
+
+  @ApiPropertyOptional({
+    example: 'PARCEIRA',
+    description: 'Código do afiliado que trouxe este (segundo nível). Opcional.',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @IsOptional()
+  parentAffiliateCode?: string;
 }

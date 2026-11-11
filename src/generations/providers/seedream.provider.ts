@@ -13,6 +13,18 @@ import { ProviderFailureError } from '../errors/failure-reason';
 const KIE_MODEL_T2I = 'seedream/5-pro-text-to-image';
 const KIE_MODEL_I2I = 'seedream/5-pro-image-to-image';
 
+// Plano B do Unlocked (TKT-216): quando a KIE nem aceita a tarefa (saldo zerado, 5xx, rede), a mesma geração roda no
+// Seedream V5.0 Pro da WaveSpeed, que era o motor do Unlocked até agosto. Só com UNLOCKED_WAVESPEED_FALLBACK=true e
+// WAVESPEED_API_KEY. Só no 'sem-censura' (o Undress fica como está). Nas panes de 05 a 08/11/2026 foram 585 falhas
+// "Não foi possível iniciar a geração" em 86 contas, porque a imagem 18+ inteira dependia de um único saldo.
+const WS_MODEL_T2I = 'bytedance/seedream-v5.0-pro';
+const WS_MODEL_EDIT = 'bytedance/seedream-v5.0-pro/edit';
+const WS_RESOLUTION: Record<string, '1k' | '2k'> = {
+  RES_1K: '1k',
+  RES_2K: '2k',
+  RES_4K: '2k',
+};
+
 // KIE Seedream Pro: `quality` basic → 1K, high → 2K (não há 4K).
 const QUALITY_MAP: Record<string, 'basic' | 'high'> = {
   RES_1K: 'basic',
@@ -60,11 +72,14 @@ function applySafetyWrapper(prompt: string): string {
 
 // User-facing error messages (never expose provider name or technical detail)
 const USER_ERRORS = {
-  configMissing: 'Serviço de geração indisponível no momento. Tente novamente em instantes.',
-  startFailed: 'Não foi possível iniciar a geração. Tente novamente em instantes.',
+  configMissing:
+    'Serviço de geração indisponível no momento. Tente novamente em instantes.',
+  startFailed:
+    'Não foi possível iniciar a geração. Tente novamente em instantes.',
   generationFailed: 'Não foi possível gerar a imagem. Tente novamente.',
   statusCheckFailed: 'Falha ao verificar o status da geração. Tente novamente.',
-  noOutput: 'A geração foi concluída, mas não retornou imagens. Tente novamente.',
+  noOutput:
+    'A geração foi concluída, mas não retornou imagens. Tente novamente.',
   timeout: 'A geração demorou mais que o esperado. Tente novamente.',
   downloadFailed: 'Falha ao baixar a imagem gerada. Tente novamente.',
   noImages: 'Nenhuma imagem foi gerada. Tente novamente.',
@@ -113,11 +128,27 @@ interface ResultJsonPayload {
   resultUrls?: string[];
 }
 
+interface WavespeedCreateResponse {
+  id?: string;
+  data?: { id?: string };
+}
+
+interface WavespeedResultResponse {
+  data?: {
+    status?: 'created' | 'processing' | 'completed' | 'failed';
+    outputs?: string[];
+    error?: string;
+  };
+}
+
 @Injectable()
 export class SeedreamProvider {
   private readonly logger = new Logger(SeedreamProvider.name);
   private readonly baseUrl: string;
   private readonly apiKey: string;
+  private readonly wavespeedBaseUrl: string;
+  private readonly wavespeedApiKey: string;
+  private readonly wavespeedFallbackEnabled: boolean;
 
   constructor(
     private readonly configService: ConfigService,
@@ -130,6 +161,21 @@ export class SeedreamProvider {
     this.apiKey = (
       this.configService.get<string>('NANO_BANANA_API_KEY', '') ?? ''
     ).trim();
+    this.wavespeedBaseUrl = this.configService.get<string>(
+      'WAVESPEED_BASE_URL',
+      'https://api.wavespeed.ai',
+    );
+    this.wavespeedApiKey = (
+      this.configService.get<string>('WAVESPEED_API_KEY', '') ?? ''
+    ).trim();
+    const fallbackFlag = String(
+      this.configService.get<string>('UNLOCKED_WAVESPEED_FALLBACK', '') ?? '',
+    )
+      .trim()
+      .toLowerCase();
+    this.wavespeedFallbackEnabled =
+      (fallbackFlag === 'true' || fallbackFlag === '1') &&
+      !!this.wavespeedApiKey;
     if (!this.apiKey) {
       this.logger.warn(
         'NANO_BANANA_API_KEY (KIE) is not set. Image generation will fail with a 401 from the provider.',
@@ -175,7 +221,27 @@ export class SeedreamProvider {
       },
     };
 
-    const taskId = await this.submitTask(body);
+    let taskId: string;
+    try {
+      taskId = await this.submitTask(body);
+    } catch (error) {
+      // recusa de conteúdo segue o caminho de sempre; só a falha técnica de início vai ao plano B
+      if (
+        error instanceof ContentSafetyError ||
+        !this.canUseWavespeedFallback(input)
+      ) {
+        throw error;
+      }
+      this.logger.warn(
+        `[SEEDREAM_PRO→WAVESPEED] gen=${input.id} a KIE não aceitou a tarefa (${(error as Error).message}); plano B na WaveSpeed`,
+      );
+      return this.generateViaWavespeed(
+        input,
+        finalPrompt,
+        aspectRatio,
+        error as Error,
+      );
+    }
     this.logger.log(`[SEEDREAM_PRO] Task submitted: ${taskId}`);
 
     const resultUrls = await this.pollTaskStatus(taskId);
@@ -202,9 +268,7 @@ export class SeedreamProvider {
    * request especifica uma proporção válida, usa direto; caso contrário (vazio
    * ou `match_input_image`), casa com a proporção da 1ª imagem de entrada.
    */
-  private async resolveAspectRatio(
-    input: SeedreamImageInput,
-  ): Promise<string> {
+  private async resolveAspectRatio(input: SeedreamImageInput): Promise<string> {
     const requested = input.aspectRatio?.trim();
 
     if (requested && requested !== 'match_input_image') {
@@ -377,7 +441,11 @@ export class SeedreamProvider {
 
       const { state } = data.data;
 
-      if (state === 'waiting' || state === 'queuing' || state === 'generating') {
+      if (
+        state === 'waiting' ||
+        state === 'queuing' ||
+        state === 'generating'
+      ) {
         this.logger.debug(
           `[SEEDREAM_PRO POLL] state=${state} (attempt ${attempt + 1}/${maxAttempts})`,
         );
@@ -398,7 +466,10 @@ export class SeedreamProvider {
 
         this.logger.error(`[SEEDREAM_PRO] Prediction failed: ${fullMessage}`);
         // texto amigável pro usuário, motivo técnico preservado pra classificação
-        throw new ProviderFailureError(USER_ERRORS.generationFailed, fullMessage);
+        throw new ProviderFailureError(
+          USER_ERRORS.generationFailed,
+          fullMessage,
+        );
       }
 
       if (state === 'success') {
@@ -488,6 +559,167 @@ export class SeedreamProvider {
     return {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${this.apiKey}`,
+    };
+  }
+
+  // ─── Plano B na WaveSpeed (TKT-216) ──────────────────────────
+
+  /** Só o Unlocked (`sem-censura`), com a flag ligada e a chave da WaveSpeed. */
+  private canUseWavespeedFallback(input: SeedreamImageInput): boolean {
+    const tag = input.modelUsedTag ?? 'sem-censura';
+    return this.wavespeedFallbackEnabled && tag === 'sem-censura';
+  }
+
+  /**
+   * Roda a geração no Seedream V5.0 Pro da WaveSpeed com o mesmo prompt final e a mesma proporção. Se o plano B também
+   * falhar por motivo técnico, sobe o erro ORIGINAL da KIE (é o que o processador e o usuário já conhecem). Recusa de
+   * conteúdo da WaveSpeed sobe como ContentSafetyError, para a trava de menor e a classificação seguirem iguais.
+   */
+  private async generateViaWavespeed(
+    input: SeedreamImageInput,
+    finalPrompt: string,
+    aspectRatio: string,
+    originalError: Error,
+  ): Promise<GenerationResult> {
+    const hasImages = !!input.imageUrls?.length;
+    const model = hasImages ? WS_MODEL_EDIT : WS_MODEL_T2I;
+    const body: Record<string, unknown> = {
+      prompt: finalPrompt,
+      resolution: WS_RESOLUTION[input.resolution] ?? '2k',
+      aspect_ratio: aspectRatio,
+      output_format: 'jpeg',
+      enable_base64_output: false,
+      enable_sync_mode: false,
+      ...(hasImages ? { images: input.imageUrls } : {}),
+    };
+
+    try {
+      const predictionId = await this.createWavespeedPrediction(model, body);
+      this.logger.log(
+        `[WAVESPEED_SEEDREAM] gen=${input.id} prediction=${predictionId}`,
+      );
+      const resultUrls = await this.pollWavespeedPrediction(predictionId);
+      const outputUrls: string[] = [];
+      for (let i = 0; i < resultUrls.length; i++) {
+        outputUrls.push(
+          await this.downloadAndUpload(resultUrls[i], input.id, i),
+        );
+      }
+      if (!outputUrls.length) throw new Error(USER_ERRORS.noImages);
+      this.logger.log(
+        `[WAVESPEED_SEEDREAM] gen=${input.id} ${outputUrls.length} image(s) uploaded to S3`,
+      );
+      return { outputUrls, modelUsed: 'sem-censura' };
+    } catch (fallbackError) {
+      if (fallbackError instanceof ContentSafetyError) throw fallbackError;
+      this.logger.error(
+        `[WAVESPEED_SEEDREAM] gen=${input.id} plano B também falhou: ${(fallbackError as Error).message}`,
+      );
+      throw originalError;
+    }
+  }
+
+  private async createWavespeedPrediction(
+    model: string,
+    body: Record<string, unknown>,
+  ): Promise<string> {
+    const maxAttempts = 2;
+    const transientStatuses = new Set([408, 429, 500, 502, 503, 504]);
+    let lastStatus = 0;
+    let lastErrorText = '';
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const response = await this.fetchWithTimeout(
+        `${this.wavespeedBaseUrl}/api/v3/${model}`,
+        {
+          method: 'POST',
+          headers: this.wavespeedHeaders(),
+          body: JSON.stringify(body),
+        },
+        60_000,
+      );
+      if (response.ok) {
+        const data = (await response.json()) as WavespeedCreateResponse;
+        const predictionId = data.data?.id ?? data.id;
+        if (!predictionId) throw new Error(USER_ERRORS.startFailed);
+        return predictionId;
+      }
+      lastStatus = response.status;
+      lastErrorText = await response.text();
+      const safetyError = ContentSafetyError.fromErrorMessage(lastErrorText);
+      if (safetyError) throw safetyError;
+      if (attempt < maxAttempts && transientStatuses.has(response.status)) {
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        continue;
+      }
+      break;
+    }
+
+    this.logger.error(
+      `[WAVESPEED_SEEDREAM] createPrediction failed status=${lastStatus} body=${lastErrorText.slice(0, 300)}`,
+    );
+    throw new Error(USER_ERRORS.startFailed);
+  }
+
+  private async pollWavespeedPrediction(
+    predictionId: string,
+    maxAttempts = 120,
+    intervalMs = 3_000,
+  ): Promise<string[]> {
+    const url = `${this.wavespeedBaseUrl}/api/v3/predictions/${predictionId}/result`;
+    const maxNetworkRetries = 5;
+    let networkFailures = 0;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (attempt > 0)
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+
+      let response: Response;
+      try {
+        response = await this.fetchWithTimeout(
+          url,
+          { headers: this.wavespeedHeaders() },
+          30_000,
+        );
+      } catch {
+        networkFailures++;
+        if (networkFailures >= maxNetworkRetries)
+          throw new Error(USER_ERRORS.statusCheckFailed);
+        continue;
+      }
+      if (!response.ok) {
+        networkFailures++;
+        const errorText = await response.text();
+        if (networkFailures >= maxNetworkRetries) {
+          const safetyError = ContentSafetyError.fromErrorMessage(errorText);
+          if (safetyError) throw safetyError;
+          throw new Error(USER_ERRORS.statusCheckFailed);
+        }
+        continue;
+      }
+
+      networkFailures = 0;
+      const data = ((await response.json()) as WavespeedResultResponse).data;
+      if (!data) throw new Error(USER_ERRORS.statusCheckFailed);
+      if (data.status === 'completed') {
+        if (!data.outputs?.length) throw new Error(USER_ERRORS.noOutput);
+        return data.outputs;
+      }
+      if (data.status === 'failed') {
+        const errorText = data.error ?? 'unknown error';
+        const safetyError = ContentSafetyError.fromErrorMessage(errorText);
+        if (safetyError) throw safetyError;
+        throw new ProviderFailureError(USER_ERRORS.generationFailed, errorText);
+      }
+    }
+
+    throw new Error(USER_ERRORS.timeout);
+  }
+
+  private wavespeedHeaders(): Record<string, string> {
+    return {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${this.wavespeedApiKey}`,
     };
   }
 }

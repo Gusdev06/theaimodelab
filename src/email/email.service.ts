@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
-import { applyBrand, Brand, brandedFrom } from '../brand/brand';
+import { applyBrand, Brand, brandedFrom, firstUrl, ORIGIN_SITE_URL } from '../brand/brand';
 import type { BuyerLocale } from '../pending-grants/buyer-locale';
 import { formatAffiliatePayoutAmount } from '../affiliates/affiliate-currency';
 import { describePayoutDestination } from '../affiliates/affiliate-payout';
@@ -111,7 +111,16 @@ export class EmailService implements OnModuleInit {
   onModuleInit() {
     const apiKey = this.configService.get<string>('RESEND_API_KEY');
     this.fromEmail = this.configService.get<string>('RESEND_FROM_EMAIL') || '';
-    this.frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:5173';
+    // 1º endereço da lista (FRONTEND_URL pode ter vírgula): senão o link de senha/login sai "a.com,b.com/reset…"
+    const configuredUrl = firstUrl(this.configService.get<string>('FRONTEND_URL'));
+    if (configuredUrl) {
+      this.frontendUrl = configuredUrl;
+    } else if (this.configService.get<string>('NODE_ENV') === 'production') {
+      this.frontendUrl = ORIGIN_SITE_URL;
+      this.logger.error(`FRONTEND_URL não configurado em produção: links de e-mail saem para ${ORIGIN_SITE_URL}`);
+    } else {
+      this.frontendUrl = 'http://localhost:5173';
+    }
     this.logoUrl = this.configService.get<string>('LOGO_URL') || '';
 
     if (!apiKey || !this.fromEmail) {

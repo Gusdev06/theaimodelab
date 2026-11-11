@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { PaymentsService } from '../payments.service';
 
 /**
@@ -113,6 +114,33 @@ describe('PaymentsService.refundExternalPayment', () => {
     expect(tx.creditBalance.updateMany).not.toHaveBeenCalled();
     expect(tx.payment.update).toHaveBeenCalledWith({ where: { id: 'pay-1' }, data: { status: 'REFUNDED' } });
     expect(tx.affiliateEarning.deleteMany).toHaveBeenCalled();
+  });
+
+  it('segundo nível: o cancelamento é por pagamento, sem filtro de nível, e leva as duas comissões', async () => {
+    const { service, tx } = setup({ payment: pack({ type: 'SUBSCRIPTION', creditPackage: null }) });
+    tx.affiliateEarning.deleteMany.mockResolvedValueOnce({ count: 2 });
+
+    const result = await service.refundExternalPayment('perfectpay-PPSUBSALE', 'refund');
+
+    expect(result).toMatchObject({ earningsCanceled: 2 });
+    expect(tx.affiliateEarning.deleteMany).toHaveBeenCalledTimes(1);
+    expect(tx.affiliateEarning.deleteMany).toHaveBeenCalledWith({ where: { paymentId: 'pay-1', status: 'PENDING' } });
+    const deleteWhere = (tx.affiliateEarning.deleteMany.mock.calls as unknown as Array<[{ where: object }]>)[0][0].where;
+    expect(deleteWhere).not.toHaveProperty('level');
+  });
+
+  it('comissão já PAGA (de qualquer nível) fica e vira aviso para cobrar de volta', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    try {
+      const { service, tx } = setup({ payment: pack(), bonus: 30000, paidEarnings: 2 });
+
+      await service.refundExternalPayment('perfectpay-PPCODE', 'refund');
+
+      expect(tx.affiliateEarning.count).toHaveBeenCalledWith({ where: { paymentId: 'pay-1', status: 'PAID' } });
+      expect(warn.mock.calls.some(([message]) => String(message).includes('já PAGA'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('venda desconhecida: found=false e nada muda', async () => {

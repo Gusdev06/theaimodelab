@@ -80,7 +80,12 @@ export class PerfectpayWebhookService {
     headers?: Record<string, string>,
     queryToken?: string,
   ): Promise<{ processed: boolean; reason?: string }> {
-    this.verifyToken(payload, headers, queryToken);
+    try {
+      this.verifyToken(payload, headers, queryToken);
+    } catch (error) {
+      await this.recordRejectedToken(payload, error);
+      throw error;
+    }
 
     const eventType = this.extractEventType(payload);
     const externalEventId = this.extractEventId(payload);
@@ -476,6 +481,34 @@ export class PerfectpayWebhookService {
   // ────────────────────────────────────────────────────────────
   // Helpers
   // ────────────────────────────────────────────────────────────
+
+  /**
+   * Postback recusado pelo token (401) fica registrado em webhook_logs (eventType `rejected_token`), sem dado pessoal
+   * nem o token: antes ele só virava linha de log, a Perfect Pay pausava o webhook depois de falhas seguidas e a venda
+   * paga ficava sem crédito liberado sem ninguém saber (TKT-177, conta brain2 desde 29/10). Melhor esforço: falha ao
+   * gravar não muda a resposta.
+   */
+  private async recordRejectedToken(payload: any, error: unknown): Promise<void> {
+    const reason = error instanceof Error ? error.message : String(error);
+    const saleCode = payload?.code ?? payload?.sale_code ?? null;
+    const productCode = payload?.product?.code ?? null;
+    this.logger.error(
+      `[WEBHOOK_TOKEN] Perfect Pay recusado (${reason}): venda ${saleCode ?? 'n/a'}, produto ${productCode ?? 'n/a'}. ` +
+        'Confira PERFECTPAY_WEBHOOK_TOKEN / PERFECTPAY_WEBHOOK_EXTRA_TOKENS: a Perfect Pay pausa o webhook depois de falhas seguidas.',
+    );
+    try {
+      const log = await this.webhookLogs.create('perfectpay', 'rejected_token', this.extractEventId(payload), {
+        saleCode: typeof saleCode === 'string' || typeof saleCode === 'number' ? String(saleCode) : null,
+        productCode: typeof productCode === 'string' ? productCode : null,
+        planCode: typeof payload?.plan?.code === 'string' ? payload.plan.code : null,
+        saleStatus: payload?.sale_status_enum_key ?? payload?.sale_status_enum ?? null,
+      });
+      await this.webhookLogs.markFailed(log.id, reason);
+    } catch (logError) {
+      const message = logError instanceof Error ? logError.message : String(logError);
+      this.logger.warn(`[WEBHOOK_TOKEN] não deu para registrar o postback recusado: ${message}`);
+    }
+  }
 
   private verifyToken(
     payload: any,
