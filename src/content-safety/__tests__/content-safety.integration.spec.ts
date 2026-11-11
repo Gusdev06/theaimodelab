@@ -42,7 +42,24 @@ describe('ContentSafety no pipeline do Nest', () => {
   let controller: FakeGenerationsController;
   const events: Array<Record<string, unknown>> = [];
   const links: Array<{ id: string; generationId: unknown }> = [];
+  /** contas em memória: a declaração de imagens fica na linha da conta, como na tabela users */
+  interface AccountRow {
+    termsVersion: string | null;
+    imageDeclarationAt: Date | null;
+    imageDeclarationVersion: string | null;
+  }
+  const accounts: Record<string, AccountRow> = {};
   const prismaMock = {
+    user: {
+      findUnique: jest.fn(async ({ where }: { where: { id: string } }) => accounts[where.id] ?? null),
+      updateMany: jest.fn(async ({ where, data }: { where: { id: string; imageDeclarationAt?: null }; data: Partial<AccountRow> }) => {
+        const row = accounts[where.id];
+        if (!row) return { count: 0 };
+        if ('imageDeclarationAt' in where && row.imageDeclarationAt !== null) return { count: 0 };
+        Object.assign(row, data);
+        return { count: 1 };
+      }),
+    },
     contentSafetyEvent: {
       create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
         events.push(data);
@@ -68,6 +85,12 @@ describe('ContentSafety no pipeline do Nest', () => {
       controllers: [FakeGenerationsController],
     }).compile();
     app = moduleRef.createNestApplication();
+    // os testes da declaração da conta entram "logados" por este cabeçalho; sem ele o pedido segue sem usuário, como antes
+    app.use((req: { headers: Record<string, unknown>; user?: { sub: string } }, _res: unknown, next: () => void) => {
+      const testUser = req.headers['x-test-user'];
+      if (typeof testUser === 'string') req.user = { sub: testUser };
+      next();
+    });
     app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }));
     await app.init();
     controller = moduleRef.get(FakeGenerationsController);
@@ -77,6 +100,7 @@ describe('ContentSafety no pipeline do Nest', () => {
     events.length = 0;
     links.length = 0;
     controller.handled.length = 0;
+    for (const id of Object.keys(accounts)) delete accounts[id];
   });
 
   afterAll(async () => {
@@ -166,5 +190,139 @@ describe('ContentSafety no pipeline do Nest', () => {
     expect(res.status).toBe(201);
     expect(controller.handled).toEqual(['generate-image']);
     expect(events).toEqual([]);
+  });
+
+  describe('declaração de imagens gravada na conta (uma vez)', () => {
+    const post = (url: string, userId: string, body: Record<string, unknown>) =>
+      request(app.getHttpServer()).post(url).set('x-test-user', userId).send(body);
+    const TROCA_DE_ROSTO = { source_image: FOTO, target_image: FOTO };
+
+    it('conta que já declarou não manda mais o campo: a troca de rosto passa, com a evidência marcada como vinda da conta', async () => {
+      accounts['u-declarou'] = { termsVersion: '2026-10-15', imageDeclarationAt: new Date('2026-11-06T15:00:00.000Z'), imageDeclarationVersion: '2026-11-06' };
+
+      const res = await post('/api/v1/generations/face-swap', 'u-declarou', TROCA_DE_ROSTO);
+
+      expect(res.status).toBe(201);
+      expect(controller.handled).toEqual(['face-swap']);
+      expect(events).toEqual([
+        expect.objectContaining({
+          kind: 'CONSENT_ATTESTED',
+          userId: 'u-declarou',
+          match: 'account-declaration:2026-11-06',
+          termsVersion: '2026-10-15',
+        }),
+      ]);
+      await flush();
+      expect(links).toEqual([{ id: 'evt-1', generationId: 'gen-swap' }]);
+    });
+
+    it('site que ainda manda o campo: o campo vale só para aquele pedido; a conta não fica declarada e o seguinte, sem o campo, leva 400', async () => {
+      accounts['u-antigo'] = { termsVersion: '2026-10-15', imageDeclarationAt: null, imageDeclarationVersion: null };
+      prismaMock.user.findUnique.mockClear();
+      prismaMock.user.updateMany.mockClear();
+
+      const attested = await post('/api/v1/generations/face-swap', 'u-antigo', { ...TROCA_DE_ROSTO, consent_confirmed: true });
+      expect(attested.status).toBe(201);
+      expect(accounts['u-antigo']).toEqual({ termsVersion: '2026-10-15', imageDeclarationAt: null, imageDeclarationVersion: null });
+      // com o campo, nada é escrito em users e a única leitura é a da versão do termo que acompanha a evidência
+      // (já existia antes da declaração da conta); a declaração da conta não é consultada
+      expect(prismaMock.user.updateMany).not.toHaveBeenCalled();
+      expect(prismaMock.user.findUnique.mock.calls.map(([args]) => args)).toEqual([
+        { where: { id: 'u-antigo' }, select: { termsVersion: true } },
+      ]);
+
+      const after = await post('/api/v1/generations/face-swap', 'u-antigo', TROCA_DE_ROSTO);
+      expect(after.status).toBe(400);
+      expect(after.body).toMatchObject({ code: 'CONSENT_REQUIRED' });
+      expect(accounts['u-antigo'].imageDeclarationAt).toBeNull();
+      expect(prismaMock.user.updateMany).not.toHaveBeenCalled();
+
+      expect(events.map((event) => [event.kind, event.match])).toEqual([
+        ['CONSENT_ATTESTED', null],
+        ['CONSENT_MISSING', null],
+      ]);
+    });
+
+    it('rota opcional com o campo: sem conseguir gravar o atestado o pedido passa mesmo assim (nunca 503 onde sem o campo passaria)', async () => {
+      accounts['u-campo'] = { termsVersion: '2026-10-15', imageDeclarationAt: null, imageDeclarationVersion: null };
+      prismaMock.contentSafetyEvent.create.mockRejectedValueOnce(new Error('banco fora'));
+
+      const res = await post('/api/v1/generations/generate-image', 'u-campo', {
+        prompt: 'portrait, studio light',
+        model: 'gpt-image-2',
+        resolution: 'RES_2K',
+        images: [{ base64: 'iVBORw0KGgo' }],
+        consent_confirmed: true,
+      });
+
+      expect(res.status).toBe(201);
+      expect(controller.handled).toEqual(['generate-image']);
+      expect(events).toEqual([]);
+      await flush();
+      expect(links).toEqual([]);
+      expect(accounts['u-campo'].imageDeclarationAt).toBeNull();
+    });
+
+    it('acabou de declarar pela rota do perfil: o pedido seguinte passa na hora (o "não" de antes não ficou guardado)', async () => {
+      accounts['u-novo'] = { termsVersion: '2026-10-15', imageDeclarationAt: null, imageDeclarationVersion: null };
+
+      const before = await post('/api/v1/generations/virtual-try-on', 'u-novo', { influencer_image: FOTO, clothing_image: FOTO });
+      expect(before.status).toBe(400);
+
+      // o que POST /users/me/image-declaration grava (por outro service, até em outra instância da API)
+      accounts['u-novo'] = { termsVersion: '2026-10-15', imageDeclarationAt: new Date(), imageDeclarationVersion: '2026-11-06' };
+
+      const after = await post('/api/v1/generations/virtual-try-on', 'u-novo', { influencer_image: FOTO, clothing_image: FOTO });
+      expect(after.status).toBe(201);
+      expect(controller.handled).toEqual(['virtual-try-on']);
+    });
+
+    it('modelo com filtro e foto (rota opcional) de conta que já declarou: sem o campo, o atestado é gravado e ligado', async () => {
+      accounts['u-opcional'] = { termsVersion: '2026-10-15', imageDeclarationAt: new Date('2026-11-06T15:00:00.000Z'), imageDeclarationVersion: '2026-11-06' };
+
+      const res = await post('/api/v1/generations/generate-image', 'u-opcional', {
+        prompt: 'portrait, studio light',
+        model: 'gpt-image-2',
+        resolution: 'RES_2K',
+        images: [{ base64: 'iVBORw0KGgo' }],
+      });
+
+      expect(res.status).toBe(201);
+      expect(events).toEqual([expect.objectContaining({ kind: 'CONSENT_ATTESTED', match: 'account-declaration:2026-11-06' })]);
+      await flush();
+      expect(links).toEqual([{ id: 'evt-1', generationId: 'gen-img' }]);
+    });
+
+    it('rota opcional: sem conseguir gravar o atestado o pedido passa mesmo assim (nunca 503 onde hoje passa)', async () => {
+      accounts['u-opcional-2'] = { termsVersion: '2026-10-15', imageDeclarationAt: new Date('2026-11-06T15:00:00.000Z'), imageDeclarationVersion: '2026-11-06' };
+      prismaMock.contentSafetyEvent.create.mockRejectedValueOnce(new Error('banco fora'));
+
+      const res = await post('/api/v1/generations/generate-image', 'u-opcional-2', {
+        prompt: 'portrait, studio light',
+        model: 'gpt-image-2',
+        resolution: 'RES_2K',
+        images: [{ base64: 'iVBORw0KGgo' }],
+      });
+
+      expect(res.status).toBe(201);
+      expect(controller.handled).toEqual(['generate-image']);
+      await flush();
+      expect(links).toEqual([]);
+    });
+
+    it('conta sem declaração em rota opcional: passa sem registro nenhum, como antes', async () => {
+      accounts['u-sem'] = { termsVersion: '2026-10-15', imageDeclarationAt: null, imageDeclarationVersion: null };
+
+      const res = await post('/api/v1/generations/generate-image', 'u-sem', {
+        prompt: 'portrait, studio light',
+        model: 'gpt-image-2',
+        resolution: 'RES_2K',
+        images: [{ base64: 'iVBORw0KGgo' }],
+      });
+
+      expect(res.status).toBe(201);
+      expect(events).toEqual([]);
+      expect(accounts['u-sem'].imageDeclarationAt).toBeNull();
+    });
   });
 });

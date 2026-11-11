@@ -8,14 +8,16 @@ import {
 import { ContentSafetyEvent, ContentSafetyEventKind, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { countMinorBlocks, MINOR_BLOCKED_HOLD_THRESHOLD, MinorBlockTally } from '../users/account-erasure.service';
+import { readImageDeclaration } from '../users/image-declaration';
 import { CURRENT_TERMS_VERSION } from '../users/terms.constants';
 
 /**
- * Suspensão automática por menor de idade: ligada por padrão; MINOR_AUTO_SUSPEND_ENABLED=false desliga
+ * Suspensão automática por menor de idade: DESLIGADA por padrão (regra do dono, 08/11: nenhuma conta é suspensa
+ * sozinha, o caso vai ao dono primeiro). Só MINOR_AUTO_SUSPEND_ENABLED=true liga
  * (a trava de texto e do provedor continua recusando os pedidos, só a conta não é suspensa sozinha).
  */
 export function minorAutoSuspendEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return (env.MINOR_AUTO_SUSPEND_ENABLED ?? 'true').trim().toLowerCase() !== 'false';
+  return (env.MINOR_AUTO_SUSPEND_ENABLED ?? '').trim().toLowerCase() === 'true';
 }
 
 /**
@@ -29,6 +31,14 @@ export function minorHoldReached(tally: MinorBlockTally): boolean {
 /** Nota da liberação de um bloqueio por menor: o jurídico explica por quê (fica na trilha). */
 export const SAFETY_RELEASE_NOTE_MIN_LENGTH = 10;
 export const SAFETY_RELEASE_NOTE_MAX_LENGTH = 1000;
+
+/** Teto de contas "já declarou" guardadas em memória; cheio, sai a mais antiga (a próxima consulta dela vai ao banco). */
+export const DECLARED_ACCOUNTS_MAX_ENTRIES = 10_000;
+
+/** Declaração de responsabilidade pelas imagens que a conta já fez (versão do texto que ficou gravada). */
+export interface AccountImageDeclaration {
+  version: string | null;
+}
 
 export type SafetyEventWithRelease = ContentSafetyEvent & { released: boolean };
 export type ReleasedSafetyEvent = SafetyEventWithRelease & {
@@ -64,6 +74,11 @@ export interface SafetyEventInput {
 @Injectable()
 export class ContentSafetyService {
   private readonly logger = new Logger(ContentSafetyService.name);
+  /**
+   * Contas que já declararam (id → versão). Só o "sim" fica em memória, porque a declaração nunca é desfeita; o "não"
+   * vai sempre ao banco, para quem acabou de declarar não levar 400 no pedido seguinte (nem em outra instância da API).
+   */
+  private readonly declaredAccounts = new Map<string, string | null>();
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -94,6 +109,8 @@ export class ContentSafetyService {
   /**
    * Grava o evento de RECUSA (menor, falta de atestado). Falha ao gravar não libera o pedido: quem chama já
    * decidiu recusar; o erro do banco só vira log, para a recusa nunca depender do registro.
+   * Serve também ao atestado das rotas OPCIONAIS (venha do campo do pedido ou da declaração da conta): ali o pedido
+   * passa com ou sem registro, então a falha não pode virar 503 (devolve null e o pedido segue sem atestado).
    */
   async record(event: SafetyEventInput): Promise<string | null> {
     let eventId: string | null;
@@ -111,6 +128,15 @@ export class ContentSafetyService {
   }
 
   /**
+   * A conta está na guarda legal por menor (minorHoldReached, sem os bloqueios liberados pelo jurídico)? Vale também
+   * para a conta que a suspensão automática não pega: admin, MINOR_AUTO_SUSPEND_ENABLED=false ou que chegou à guarda
+   * antes da suspensão existir. Erro do banco sobe para quem chama.
+   */
+  async isUnderMinorHold(userId: string): Promise<boolean> {
+    return minorHoldReached(await countMinorBlocks(this.prisma, userId, new Date()));
+  }
+
+  /**
    * Conta que chega na guarda legal por menor é suspensa na hora: a trava recusa o pedido, mas sem isso a pessoa
    * continua tentando com outras palavras e com fotos. Desativa e revoga as
    * sessões, como o "Desativar" do admin; o JWT confere a conta ativa (cache de 60 s), então o acesso cai em até 1 min.
@@ -118,10 +144,17 @@ export class ContentSafetyService {
    * suspende de novo). Admin nunca é suspenso. Nunca lança: quem chama já recusou o pedido.
    */
   private async suspendIfMinorHold(userId: string): Promise<void> {
-    if (!minorAutoSuspendEnabled()) return;
     try {
       const tally = await countMinorBlocks(this.prisma, userId, new Date());
       if (!minorHoldReached(tally)) return;
+      if (!minorAutoSuspendEnabled()) {
+        // padrão: a conta NÃO é suspensa sozinha; o caso fica no log (e em Denúncias) para o dono decidir
+        this.logger.warn(
+          `[SAFETY_GUARD] conta ${userId} chegou à guarda legal por menor (${tally.recentAttempts} tentativa(s) em 90 dias, ` +
+            `${tally.provider} recusa(s) do provedor com mídia da conta). Suspensão automática desligada: decisão do dono.`,
+        );
+        return;
+      }
       const suspended = await this.prisma.$transaction(async (tx) => {
         // a condição isActive: true é a trava: dois bloqueios juntos suspendem e registram uma vez só
         const { count } = await tx.user.updateMany({
@@ -175,6 +208,36 @@ export class ContentSafetyService {
       where: { generationId, kind: ContentSafetyEventKind.CONSENT_ATTESTED },
     });
     return count > 0;
+  }
+
+  /**
+   * A conta já fez a declaração de responsabilidade pelas imagens? Com ela, o pedido com foto vale como atestado sem
+   * precisar trazer `consent_confirmed`. Nunca lança: sem conseguir ler, responde "não" e o pedido segue a regra de
+   * sempre (o campo no corpo). Este service só LÊ a declaração: quem grava é o POST /users/me/image-declaration.
+   */
+  async accountImageDeclaration(userId: string | null): Promise<AccountImageDeclaration | null> {
+    if (!userId) return null;
+    if (this.declaredAccounts.has(userId)) return { version: this.declaredAccounts.get(userId) ?? null };
+    try {
+      const declaration = await readImageDeclaration(this.prisma, userId);
+      if (!declaration?.imageDeclarationAt) return null;
+      this.rememberDeclared(userId, declaration.imageDeclarationVersion);
+      return { version: declaration.imageDeclarationVersion };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`content-safety: não deu para ler a declaração de imagens da conta ${userId}: ${message}`);
+      return null;
+    }
+  }
+
+  private rememberDeclared(userId: string, version: string | null): void {
+    this.declaredAccounts.delete(userId);
+    while (this.declaredAccounts.size >= DECLARED_ACCOUNTS_MAX_ENTRIES) {
+      const oldest = this.declaredAccounts.keys().next();
+      if (oldest.done) break;
+      this.declaredAccounts.delete(oldest.value);
+    }
+    this.declaredAccounts.set(userId, version);
   }
 
   /** Quantos pedidos com referência a menor o usuário teve recusados nas últimas `hours` horas (sem os liberados). */

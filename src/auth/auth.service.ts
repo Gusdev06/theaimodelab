@@ -326,6 +326,7 @@ export class AuthService {
       hasCompletedOnboarding: user.hasCompletedOnboarding,
       termsAcceptedAt: user.termsAcceptedAt,
       termsVersion: user.termsVersion,
+      imageDeclarationAt: user.imageDeclarationAt ?? null,
       createdAt: user.createdAt,
     };
   }

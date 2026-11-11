@@ -13,9 +13,11 @@ import { AdminVertexService } from './admin-vertex.service';
 import { CreateVertexCredentialDto } from './dto/create-vertex-credential.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { AdminThrottle } from '../common/decorators/admin-throttle.decorator';
 
 @ApiTags('admin')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/vertex')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')

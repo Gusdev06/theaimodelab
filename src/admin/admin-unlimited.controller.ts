@@ -16,6 +16,7 @@ import {
   AdminUnlimitedService,
   UnlimitedJobStatusFilter,
 } from './admin-unlimited.service';
+import { AdminThrottle } from '../common/decorators/admin-throttle.decorator';
 
 const ALLOWED_STATUS: UnlimitedJobStatusFilter[] = [
   'waiting',
@@ -28,6 +29,7 @@ const ALLOWED_STATUS: UnlimitedJobStatusFilter[] = [
 
 @ApiTags('admin')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/unlimited')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')

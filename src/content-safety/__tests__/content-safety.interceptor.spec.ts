@@ -34,7 +34,12 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 const FOTO = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ';
 
 describe('ContentSafetyInterceptor', () => {
-  let safety: { record: jest.Mock; recordOrThrow: jest.Mock; linkGeneration: jest.Mock };
+  let safety: {
+    record: jest.Mock;
+    recordOrThrow: jest.Mock;
+    linkGeneration: jest.Mock;
+    accountImageDeclaration: jest.Mock;
+  };
   let interceptor: ContentSafetyInterceptor;
   let next: CallHandler & { handle: jest.Mock };
 
@@ -43,6 +48,8 @@ describe('ContentSafetyInterceptor', () => {
       record: jest.fn().mockResolvedValue('evt-recusa'),
       recordOrThrow: jest.fn().mockResolvedValue('evt-atestado'),
       linkGeneration: jest.fn().mockResolvedValue(undefined),
+      // por padrão a conta ainda não fez a declaração de imagens (vale só o campo do pedido, como antes)
+      accountImageDeclaration: jest.fn().mockResolvedValue(null),
     };
     interceptor = new ContentSafetyInterceptor(safety as unknown as ContentSafetyService);
     next = { handle: jest.fn(() => of({ id: 'gen-1', status: 'PROCESSING', creditsConsumed: 10 })) };
@@ -330,14 +337,184 @@ describe('ContentSafetyInterceptor', () => {
       await run(ctx('POST', '/api/v1/generations/generate-image', { prompt: 'portrait', model: 'gpt-image-2', images: [{ base64: FOTO }], consent_confirmed: true }));
       await run(ctx('POST', '/api/v1/generations/seedance-video', { prompt: 'walks', first_frame: { base64: FOTO }, consent_confirmed: true }));
       await flush();
-      expect(safety.recordOrThrow).toHaveBeenCalledTimes(2);
+      // rota opcional: gravação que não lança (o pedido passaria sem o campo, então a falha não pode virar 503)
+      expect(safety.record).toHaveBeenCalledTimes(2);
+      expect(safety.record).toHaveBeenNthCalledWith(1, { userId: 'user-1', kind: 'CONSENT_ATTESTED', route: 'POST /api/v1/generations/generate-image' });
+      expect(safety.record.mock.invocationCallOrder[0]).toBeLessThan(next.handle.mock.invocationCallOrder[0]);
+      expect(safety.recordOrThrow).not.toHaveBeenCalled();
       expect(safety.linkGeneration).toHaveBeenCalledTimes(2);
+      expect(safety.linkGeneration).toHaveBeenCalledWith('evt-recusa', 'gen-1');
+    });
+
+    it('provedor com filtro, foto e atestado: se a gravação falhar, o pedido segue sem atestado (nunca 503 em rota opcional)', async () => {
+      safety.record.mockResolvedValue(null);
+      safety.recordOrThrow.mockRejectedValue(new ServiceUnavailableException('sem banco'));
+      const out = await run(ctx('POST', '/api/v1/generations/generate-image-nano-banana', { prompt: 'portrait', images: [{ base64: FOTO }], consent_confirmed: true }));
+      await run(ctx('POST', '/api/v1/generations/upscale', { image: FOTO, consent_confirmed: true }));
+      await flush();
+      expect(out).toMatchObject({ id: 'gen-1' });
+      expect(next.handle).toHaveBeenCalledTimes(2);
+      expect(safety.record).toHaveBeenCalledTimes(2);
+      expect(safety.recordOrThrow).not.toHaveBeenCalled();
+      expect(safety.linkGeneration).not.toHaveBeenCalled();
+    });
+
+    it('rota que exige, com o campo: a falha ao gravar continua fechada (503), inclusive modelo sem censura com foto', async () => {
+      safety.recordOrThrow.mockRejectedValue(new ServiceUnavailableException('sem banco'));
+      await expect(
+        run(ctx('POST', '/api/v1/generations/face-swap', { source_image: FOTO, target_image: FOTO, consent_confirmed: true })),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      await expect(
+        run(ctx('POST', '/api/v1/generations/generate-image', { prompt: 'portrait', model: 'sem-censura', images: [{ base64: FOTO }], consent_confirmed: true })),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(next.handle).not.toHaveBeenCalled();
+      expect(safety.record).not.toHaveBeenCalled();
     });
 
     it('atestado sem foto (texto puro) não é gravado: não há imagem a atestar', async () => {
       await run(ctx('POST', '/api/v1/generations/generate-image', { prompt: 'portrait', model: 'gpt-image-2', consent_confirmed: true }));
       await run(ctx('POST', '/api/v1/generations/text-to-video', { prompt: 'a beach', consent_confirmed: true }));
       expect(safety.recordOrThrow).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('declaração de imagens gravada na conta (marcada uma vez)', () => {
+    const DECLARADA = { version: '2026-11-06' };
+    const MARCA = 'account-declaration:2026-11-06';
+    const TROCA_DE_ROSTO = { source_image: FOTO, target_image: FOTO };
+
+    it('rota que exige, sem o campo, de conta que já declarou: vale como atestado, gravado antes do handler e ligado à geração', async () => {
+      safety.accountImageDeclaration.mockResolvedValue(DECLARADA);
+      const out = await run(ctx('POST', '/api/v1/generations/face-swap', TROCA_DE_ROSTO));
+      expect(out).toMatchObject({ id: 'gen-1' });
+      expect(safety.accountImageDeclaration).toHaveBeenCalledWith('user-1');
+      expect(safety.recordOrThrow).toHaveBeenCalledWith({
+        userId: 'user-1',
+        kind: 'CONSENT_ATTESTED',
+        route: 'POST /api/v1/generations/face-swap',
+        match: MARCA,
+      });
+      expect(safety.recordOrThrow.mock.invocationCallOrder[0]).toBeLessThan(next.handle.mock.invocationCallOrder[0]);
+      await flush();
+      expect(safety.linkGeneration).toHaveBeenCalledWith('evt-atestado', 'gen-1');
+      // nada de CONSENT_MISSING
+      expect(safety.record).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['virtual-try-on', { influencer_image: FOTO, clothing_image: FOTO }],
+      ['motion-control', { video: 'AAAA', image: FOTO }],
+      ['talking-avatar', { text: 'oi, tudo bem?', image: FOTO }],
+      ['generate-image', { prompt: 'portrait', model: 'sem-censura', images: [{ base64: FOTO }] }],
+      ['generate-image-auto', { prompt: 'portrait', model: 'deepdeep' }],
+      ['image-to-video-wavespeed', { prompt: 'walks', first_frame: FOTO }],
+      ['image-to-video-seedance-spicy', { first_frame: FOTO }],
+      ['minimax-h3-image-to-video', { prompt: 'walks', first_frame: FOTO }],
+      ['minimax-h3-reference-to-video', { prompt: 'walks', reference_images: [{ base64: FOTO }] }],
+    ])('quem já declarou não leva 400 em rota que exige o atestado: %s', async (name, body) => {
+      safety.accountImageDeclaration.mockResolvedValue(DECLARADA);
+      await run(ctx('POST', `/api/v1/generations/${name}`, body));
+      await flush();
+      expect(next.handle).toHaveBeenCalledTimes(1);
+      expect(safety.recordOrThrow).toHaveBeenCalledWith(expect.objectContaining({ kind: 'CONSENT_ATTESTED', match: MARCA }));
+      expect(safety.linkGeneration).toHaveBeenCalledWith('evt-atestado', 'gen-1');
+    });
+
+    it('rota que exige, de conta que já declarou: sem conseguir gravar o atestado o pedido não segue (fail closed, como com o campo)', async () => {
+      safety.accountImageDeclaration.mockResolvedValue(DECLARADA);
+      safety.recordOrThrow.mockRejectedValue(new ServiceUnavailableException('sem banco'));
+      await expect(run(ctx('POST', '/api/v1/generations/face-swap', TROCA_DE_ROSTO))).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(next.handle).not.toHaveBeenCalled();
+    });
+
+    it('rota opcional com foto, sem o campo, de conta que já declarou: grava e liga (é o que libera o desvio sem censura)', async () => {
+      safety.accountImageDeclaration.mockResolvedValue(DECLARADA);
+      safety.record.mockResolvedValue('evt-conta');
+      await run(ctx('POST', '/api/v1/generations/image-to-video-kling', { first_frame: FOTO, resolution: 'RES_720P' }));
+      await run(ctx('POST', '/api/v1/generations/generate-image', { prompt: 'portrait', model: 'gpt-image-2', images: [{ base64: FOTO }] }));
+      await flush();
+      expect(next.handle).toHaveBeenCalledTimes(2);
+      expect(safety.record).toHaveBeenCalledTimes(2);
+      expect(safety.record).toHaveBeenCalledWith({
+        userId: 'user-1',
+        kind: 'CONSENT_ATTESTED',
+        route: 'POST /api/v1/generations/image-to-video-kling',
+        match: MARCA,
+      });
+      expect(safety.record.mock.invocationCallOrder[0]).toBeLessThan(next.handle.mock.invocationCallOrder[0]);
+      expect(safety.linkGeneration).toHaveBeenCalledTimes(2);
+      expect(safety.linkGeneration).toHaveBeenCalledWith('evt-conta', 'gen-1');
+      expect(safety.recordOrThrow).not.toHaveBeenCalled();
+    });
+
+    it('rota opcional: se a gravação falhar, o pedido segue sem atestado (hoje ele passa; nunca vira 503)', async () => {
+      safety.accountImageDeclaration.mockResolvedValue(DECLARADA);
+      safety.record.mockResolvedValue(null);
+      const out = await run(ctx('POST', '/api/v1/generations/upscale', { image: FOTO }));
+      await flush();
+      expect(out).toMatchObject({ id: 'gen-1' });
+      expect(next.handle).toHaveBeenCalledTimes(1);
+      expect(safety.linkGeneration).not.toHaveBeenCalled();
+      expect(safety.recordOrThrow).not.toHaveBeenCalled();
+    });
+
+    it('rota opcional de conta SEM declaração: segue sem atestado e sem registro, como antes', async () => {
+      await run(ctx('POST', '/api/v1/generations/image-to-video-kling', { first_frame: FOTO, resolution: 'RES_720P' }));
+      expect(next.handle).toHaveBeenCalledTimes(1);
+      expect(safety.accountImageDeclaration).toHaveBeenCalledWith('user-1');
+      expect(safety.record).not.toHaveBeenCalled();
+      expect(safety.recordOrThrow).not.toHaveBeenCalled();
+    });
+
+    it('o pedido traz o campo: vale só para o pedido (evidência sem marca); a conta não é consultada nem fica declarada', async () => {
+      await run(ctx('POST', '/api/v1/generations/face-swap', { ...TROCA_DE_ROSTO, consent_confirmed: true }));
+      await run(ctx('POST', '/api/v1/generations/generate-image', { prompt: 'portrait', model: 'gpt-image-2', images: [{ base64: FOTO }], consent_confirmed: true }));
+      expect(safety.recordOrThrow).toHaveBeenCalledTimes(1);
+      expect(safety.recordOrThrow).toHaveBeenCalledWith({ userId: 'user-1', kind: 'CONSENT_ATTESTED', route: 'POST /api/v1/generations/face-swap' });
+      expect(safety.record).toHaveBeenCalledTimes(1);
+      expect(safety.record).toHaveBeenCalledWith({ userId: 'user-1', kind: 'CONSENT_ATTESTED', route: 'POST /api/v1/generations/generate-image' });
+      expect(safety.accountImageDeclaration).not.toHaveBeenCalled();
+      // o interceptor só usa estes métodos do service: nenhum deles grava a declaração na conta
+      expect(Object.keys(safety).sort()).toEqual(['accountImageDeclaration', 'linkGeneration', 'record', 'recordOrThrow']);
+
+      // o pedido seguinte da mesma conta, sem o campo, continua pedindo o atestado
+      await expect(run(ctx('POST', '/api/v1/generations/face-swap', TROCA_DE_ROSTO))).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'CONSENT_REQUIRED' }),
+      });
+    });
+
+    it('conta sem declaração e pedido sem o campo: 400 CONSENT_REQUIRED e CONSENT_MISSING, exatamente como antes', async () => {
+      await expect(run(ctx('POST', '/api/v1/generations/face-swap', TROCA_DE_ROSTO))).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'CONSENT_REQUIRED' }),
+        status: 400,
+      });
+      expect(safety.accountImageDeclaration).toHaveBeenCalledWith('user-1');
+      expect(safety.record).toHaveBeenCalledWith({ userId: 'user-1', kind: 'CONSENT_MISSING', route: 'POST /api/v1/generations/face-swap' });
+      expect(safety.recordOrThrow).not.toHaveBeenCalled();
+      expect(next.handle).not.toHaveBeenCalled();
+    });
+
+    it('a conta só é consultada em rota da tabela com foto: texto puro e rota de fora não consultam nem gravam', async () => {
+      safety.accountImageDeclaration.mockResolvedValue(DECLARADA);
+      await run(ctx('POST', '/api/v1/generations/generate-image', { prompt: 'portrait', model: 'gpt-image-2' }));
+      await run(ctx('POST', '/api/v1/generations/generate-image', { prompt: 'portrait', model: 'sem-censura', images: [] }));
+      await run(ctx('POST', '/api/v1/generations/text-to-video', { prompt: 'a beach', consent_confirmed: true }));
+      await run(ctx('POST', '/api/v1/prompt-enhancer/enhance', { prompt: 'a beach' }));
+      expect(next.handle).toHaveBeenCalledTimes(4);
+      expect(safety.accountImageDeclaration).not.toHaveBeenCalled();
+      expect(safety.record).not.toHaveBeenCalled();
+      expect(safety.recordOrThrow).not.toHaveBeenCalled();
+    });
+
+    it('a trava de menor não muda: conta que já declarou com menor no texto é recusada como menor, antes de qualquer atestado', async () => {
+      safety.accountImageDeclaration.mockResolvedValue(DECLARADA);
+      await expect(
+        run(ctx('POST', '/api/v1/generations/generate-image', { prompt: 'menina de 12 anos na praia', model: 'sem-censura', images: [{ base64: FOTO }] })),
+      ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'CONTENT_POLICY_MINOR' }), status: 422 });
+      expect(safety.record).toHaveBeenCalledWith(expect.objectContaining({ kind: 'MINOR_BLOCKED' }));
+      expect(safety.accountImageDeclaration).not.toHaveBeenCalled();
+      expect(safety.recordOrThrow).not.toHaveBeenCalled();
+      expect(next.handle).not.toHaveBeenCalled();
     });
   });
 
@@ -544,7 +721,7 @@ describe('guardTargetFor (para onde o pedido vai)', () => {
 });
 
 describe('ContentSafetyInterceptor · alvo do pedido', () => {
-  let safety: { record: jest.Mock; recordOrThrow: jest.Mock; linkGeneration: jest.Mock };
+  let safety: { record: jest.Mock; recordOrThrow: jest.Mock; linkGeneration: jest.Mock; accountImageDeclaration: jest.Mock };
   let interceptor: ContentSafetyInterceptor;
   let next: CallHandler & { handle: jest.Mock };
   const run = async (c: ExecutionContext) => lastValueFrom(await interceptor.intercept(c, next));
@@ -555,6 +732,7 @@ describe('ContentSafetyInterceptor · alvo do pedido', () => {
       record: jest.fn().mockResolvedValue('evt-recusa'),
       recordOrThrow: jest.fn().mockResolvedValue('evt-atestado'),
       linkGeneration: jest.fn().mockResolvedValue(undefined),
+      accountImageDeclaration: jest.fn().mockResolvedValue(null),
     };
     interceptor = new ContentSafetyInterceptor(safety as unknown as ContentSafetyService);
     next = { handle: jest.fn(() => of({ id: 'gen-1' })) };

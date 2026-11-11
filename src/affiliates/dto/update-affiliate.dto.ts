@@ -39,4 +39,14 @@ export class UpdateAffiliateDto {
   @IsEnum(AffiliateDiscountScope)
   @IsOptional()
   discountAppliesTo?: AffiliateDiscountScope;
+
+  @ApiPropertyOptional({
+    example: 'PARCEIRA',
+    description: 'Código do afiliado que trouxe este (segundo nível). Envie null para remover.',
+    nullable: true,
+  })
+  @ValidateIf((_o, v) => v !== null)
+  @IsString()
+  @IsOptional()
+  parentAffiliateCode?: string | null;
 }

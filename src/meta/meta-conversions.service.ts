@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'crypto';
 import { MetaEventContextDto } from './meta-event-context.dto';
+import { ORIGIN_SITE_URL, originSiteUrl } from '../brand/brand';
 
 type MetaEventName =
   | 'PageView'
@@ -272,12 +273,11 @@ export class MetaConversionsService {
   }
 
   private resolveFrontendUrl(path: string): string {
-    const base = this.configService.get<string>('FRONTEND_URL')?.split(',')[0]?.trim() ||
-      'https://theaimodelab.ai';
+    const base = originSiteUrl(this.configService.get<string>('FRONTEND_URL'));
     try {
       return new URL(path, base).toString();
     } catch {
-      return `https://theaimodelab.ai${path}`;
+      return `${ORIGIN_SITE_URL}${path}`;
     }
   }
 

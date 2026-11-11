@@ -113,6 +113,7 @@ import {
   MinimaxH3ImageToVideoJobData,
   MinimaxH3ReferenceToVideoJobData,
   TalkingAvatarJobData,
+  MultipleAnglesJobData,
   TextToSpeechJobData,
   VoiceCloneJobData,
   GenerationJobData,
@@ -956,6 +957,21 @@ export class GenerationProcessor extends WorkerHost {
     }
   }
 
+  /** Ângulos (Qwen Multiple Angles na WaveSpeed). Falhou = estorno pelo handleFailure. */
+  async runMultipleAnglesDirectly(data: MultipleAnglesJobData): Promise<void> {
+    try {
+      await this.processMultipleAngles(data);
+    } catch (error) {
+      await this.handleFailure(
+        data.generationId,
+        data.userId,
+        data.creditsConsumed,
+        error as Error,
+        data.usedFreeGeneration,
+      );
+    }
+  }
+
   async runVoiceCloneDirectly(data: VoiceCloneJobData): Promise<void> {
     try {
       await this.processVoiceClone(data);
@@ -1655,7 +1671,7 @@ export class GenerationProcessor extends WorkerHost {
         prompt:
           data.prompt ??
           'Image 1 is the woman: keep her exact face, hair, skin tone and body. Recreate Video 1 shot for shot with her as the only person: the same motion, timing, camera, framing, background and lighting.',
-        imageUrls: [data.imageUrl],
+        imageUrls: [data.imageUrl, ...(data.extraImageUrls ?? [])],
         videoUrls: [data.videoUrl],
         resolution: data.resolution === '480p' ? '480p' : data.resolution === '1080p' ? '1080p' : '720p',
         aspectRatio: '9:16',
@@ -2361,6 +2377,25 @@ export class GenerationProcessor extends WorkerHost {
       id: data.generationId,
       imageUrl: data.imageUrl,
       audioUrl,
+    });
+
+    await this.completeGeneration(data.generationId, result, startTime);
+  }
+
+  private async processMultipleAngles(data: MultipleAnglesJobData): Promise<void> {
+    const startTime = Date.now();
+    await this.markProcessingStarted(data.generationId);
+
+    this.logger.log(
+      `[MULTIPLE_ANGLES] ${data.generationId} h=${data.horizontalAngle} v=${data.verticalAngle} d=${data.distance}`,
+    );
+
+    const result = await this.wavespeedVideoProvider.generateMultipleAngles({
+      id: data.generationId,
+      imageUrl: data.imageUrl,
+      horizontalAngle: data.horizontalAngle,
+      verticalAngle: data.verticalAngle,
+      distance: data.distance,
     });
 
     await this.completeGeneration(data.generationId, result, startTime);

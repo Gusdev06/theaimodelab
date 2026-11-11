@@ -6,9 +6,11 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { ListReferralsQueryDto } from './dto/list-referrals.query';
 import { UpdateReferralSettingsDto } from './dto/update-referral-settings.dto';
 import { ReferralsService } from './referrals.service';
+import { AdminThrottle } from '../common/decorators/admin-throttle.decorator';
 
 @ApiTags('referrals')
 @ApiBearerAuth()
+@AdminThrottle()
 @Controller('api/v1/admin/referrals')
 @UseGuards(RolesGuard)
 @Roles('ADMIN')

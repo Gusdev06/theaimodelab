@@ -2607,7 +2607,7 @@ export class AccountErasureService implements BeforeApplicationShutdown {
       { scrubCard: true },
     );
 
-    // Afiliado: chave PIX e nome fora, desativado; as comissões ficam.
+    // Afiliado: chave PIX, conta PayPal/Wise e nome fora, desativado; as comissões ficam.
     const affiliate = await tx.affiliate.findUnique({
       where: { userId },
       select: {
@@ -2615,6 +2615,8 @@ export class AccountErasureService implements BeforeApplicationShutdown {
         name: true,
         pixKey: true,
         pixKeyType: true,
+        payoutMethod: true,
+        payoutEmail: true,
         isActive: true,
       },
     });
@@ -2624,6 +2626,8 @@ export class AccountErasureService implements BeforeApplicationShutdown {
       (affiliate.isActive ||
         affiliate.pixKey !== null ||
         affiliate.pixKeyType !== null ||
+        affiliate.payoutMethod !== null ||
+        affiliate.payoutEmail !== null ||
         affiliate.name !== ERASED_AFFILIATE_NAME)
     ) {
       await tx.affiliate.update({
@@ -2632,6 +2636,8 @@ export class AccountErasureService implements BeforeApplicationShutdown {
           name: ERASED_AFFILIATE_NAME,
           pixKey: null,
           pixKeyType: null,
+          payoutMethod: null,
+          payoutEmail: null,
           isActive: false,
         },
       });

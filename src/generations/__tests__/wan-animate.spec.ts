@@ -9,7 +9,9 @@ import {
   WAN_ANIMATE_MODEL_VARIANT,
   WAN_ANIMATE_PROMPT_MAX_LENGTH,
   WAN3_REFERENCE_MODEL_VARIANT,
+  WAN3_REFERENCE_PROMPT_MAX_LENGTH,
 } from '../motion-control-engine';
+import { GenerationProcessor } from '../queue/generation.processor';
 import { WavespeedVideoProvider } from '../providers/wavespeed-video.provider';
 import { adultSafePrompt } from '../../content-safety/adult-anchor';
 import { resolveFreeGenerationType } from '../../credits/credits.service';
@@ -126,6 +128,49 @@ describe('Motion Control · motor Wan 2.2 Animate (troca de pessoa no vídeo)', 
         reference_videos: ['https://s3.example/example.mp4'],
       });
       expect(result.modelUsed).toBe('alibaba/wan-3.0/reference-to-video');
+    });
+
+    it('casal e trio: só o Wan 3.0 aceita fotos das outras pessoas, e o texto de papéis passa de 600', () => {
+      const roles = 'Image 1 is the woman. Image 2 is her partner. Image 3 is the second woman. '.repeat(12);
+      const wan3 = resolveMotionControlRequest({ engine: 'wan3-reference', prompt: roles, extra_images: ['AAAA', 'BBBB'] });
+      expect(wan3.prompt!.length).toBeGreaterThan(WAN_ANIMATE_PROMPT_MAX_LENGTH);
+      expect(wan3.prompt!.length).toBeLessThanOrEqual(WAN3_REFERENCE_PROMPT_MAX_LENGTH);
+      expect(resolveMotionControlRequest({ engine: 'wan-replace', prompt: roles }).prompt!.length).toBe(WAN_ANIMATE_PROMPT_MAX_LENGTH);
+      expect(() => resolveMotionControlRequest({ engine: 'wan-replace', extra_images: ['AAAA'] })).toThrow(BadRequestException);
+      expect(() => resolveMotionControlRequest({ engine: 'kling', extra_images: ['AAAA'] })).toThrow(BadRequestException);
+      expect(resolveMotionControlRequest({ engine: 'kling', extra_images: [] }).engine).toBe('kling');
+    });
+
+    it('o job leva Image 1 + as outras pessoas, na ordem, ao Wan 3.0', async () => {
+      const processor = Object.create(GenerationProcessor.prototype) as GenerationProcessor;
+      const generateWan3Reference = jest.fn().mockResolvedValue({ outputUrls: ['https://s3.example/out.mp4'], modelUsed: 'alibaba/wan-3.0/reference-to-video' });
+      Object.assign(processor, {
+        logger: { log: jest.fn() },
+        markProcessingStarted: jest.fn().mockResolvedValue(undefined),
+        completeGeneration: jest.fn().mockResolvedValue(undefined),
+        wavespeedVideoProvider: { generateWan3Reference },
+      });
+      const data = {
+        generationId: 'g1',
+        userId: 'u1',
+        creditsConsumed: 1,
+        usedFreeGeneration: false,
+        videoUrl: 'https://s3.example/example.mp4',
+        imageUrl: 'https://s3.example/her.jpg',
+        extraImageUrls: ['https://s3.example/him.jpg', 'https://s3.example/her2.jpg'],
+        resolution: '720p',
+        engine: 'wan3-reference',
+        prompt: 'roles',
+        durationSeconds: 8,
+      } as MotionControlJobData;
+      await (processor as unknown as { processMotionControl: (d: MotionControlJobData) => Promise<void> }).processMotionControl(data);
+      expect(generateWan3Reference).toHaveBeenCalledWith(
+        expect.objectContaining({
+          imageUrls: ['https://s3.example/her.jpg', 'https://s3.example/him.jpg', 'https://s3.example/her2.jpg'],
+          videoUrls: ['https://s3.example/example.mp4'],
+          durationSeconds: 8,
+        }),
+      );
     });
   });
 
