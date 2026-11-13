@@ -6,7 +6,9 @@
     "EMAIL_NOT_VERIFIED": "Confirma tu correo antes de iniciar sesión",
     "UNAUTHORIZED": "No autorizado",
     "USER_NOT_FOUND": "Usuario no encontrado",
-    "GOOGLE_TOKEN_INVALID": "Token de Google inválido o expirado"
+    "GOOGLE_TOKEN_INVALID": "Token de Google inválido o expirado",
+    "INVALID_CODE": "Código inválido o vencido. Revisa el último correo o pide uno nuevo.",
+    "RESEND_WAIT": "Espera 1 minuto antes de pedir otro código."
   },
   "credits": {
     "INSUFFICIENT_CREDITS": "Créditos insuficientes. Necesarios: {required}, disponibles: {available}",
@@ -45,5 +47,21 @@
     "NOT_FOUND": "Recurso no encontrado",
     "BAD_REQUEST": "Solicitud inválida",
     "INTERNAL_ERROR": "Error interno del servidor"
+  },
+  "validation": {
+    "EMAIL_INVALID": "Escribe un correo válido.",
+    "EMAIL_REQUIRED": "Escribe tu correo.",
+    "NAME_REQUIRED": "Escribe tu nombre.",
+    "NAME_TOO_SHORT": "El nombre debe tener al menos 2 letras.",
+    "NAME_TOO_LONG": "El nombre puede tener como máximo 100 caracteres.",
+    "PASSWORD_REQUIRED": "Crea una contraseña.",
+    "PASSWORD_TOO_SHORT": "La contraseña debe tener al menos 8 caracteres.",
+    "PASSWORD_TOO_LONG": "La contraseña puede tener como máximo 100 caracteres.",
+    "PASSWORD_WEAK": "Usa al menos 8 caracteres con 1 mayúscula, 1 minúscula y 1 número.",
+    "REFERRAL_CODE_TOO_LONG": "El código de referido puede tener como máximo 50 caracteres.",
+    "REFERRAL_CODE_INVALID": "Código de referido inválido.",
+    "CODE_REQUIRED": "Escribe el código de 6 números.",
+    "CODE_LENGTH": "El código tiene 6 números.",
+    "CODE_DIGITS": "El código tiene solo números."
   }
 }

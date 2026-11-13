@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EmailService } from '../email/email.service';
+import { resolveBuyerLocale } from './buyer-locale';
 import { WebhookLogsService } from '../webhook-logs/webhook-logs.service';
 import {
   PERFECTPAY_COURSE_BUNDLE,
@@ -84,7 +85,21 @@ export class GreennWebhookService {
 
     if (created) {
       const buyerName = this.extractName(payload);
-      await this.emailService.sendPendingGrantsEmailEs(email, buyerName);
+      // Idioma da compradora pelo país e pela moeda (B-08: antes saía sempre em inglês).
+      const locale = resolveBuyerLocale({
+        countries: [
+          payload?.client?.country,
+          payload?.client?.country_code,
+          payload?.client?.address?.country,
+          payload?.buyer?.country,
+        ],
+        currencies: [
+          payload?.sale?.currency,
+          payload?.contract?.currency,
+          payload?.currency,
+        ],
+      });
+      await this.emailService.sendPendingGrantsEmail(email, buyerName, locale, 'course');
     }
 
     return { processed: true };

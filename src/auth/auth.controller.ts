@@ -6,7 +6,6 @@ import {
   HttpCode,
   HttpStatus,
   UsePipes,
-  ValidationPipe,
   Get,
   UseGuards,
   Req,
@@ -26,6 +25,7 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { Public } from '../common/decorators/public.decorator';
+import { CodedValidationPipe } from '../common/i18n/coded-validation';
 import { detectLocaleFromHeaders } from '../common/utils/locale.util';
 import { MetaConversionsService } from '../meta/meta-conversions.service';
 
@@ -51,7 +51,7 @@ export class AuthController {
   @Post('register')
   @Throttle({ default: { ttl: 60000, limit: 5 } })
   @HttpCode(HttpStatus.CREATED)
-  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @UsePipes(new CodedValidationPipe({ transform: true, whitelist: true }))
   @ApiOperation({ summary: 'Registrar novo usuário' })
   @ApiResponse({
     status: 201,
@@ -82,7 +82,7 @@ export class AuthController {
   @Post('login')
   @Throttle({ default: { ttl: 60000, limit: 5 } })
   @HttpCode(HttpStatus.OK)
-  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @UsePipes(new CodedValidationPipe({ transform: true, whitelist: true }))
   @ApiOperation({ summary: 'Login do usuário' })
   @ApiResponse({
     status: 200,
@@ -129,7 +129,7 @@ export class AuthController {
   @Public()
   @Post('google')
   @HttpCode(HttpStatus.OK)
-  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @UsePipes(new CodedValidationPipe({ transform: true, whitelist: true }))
   @ApiOperation({ summary: 'Login/Cadastro via Google OAuth (para mobile apps)' })
   @ApiResponse({
     status: 200,
@@ -158,7 +158,7 @@ export class AuthController {
   @Post('refresh')
   @Throttle({ default: { ttl: 60000, limit: 60 } })
   @HttpCode(HttpStatus.OK)
-  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @UsePipes(new CodedValidationPipe({ transform: true, whitelist: true }))
   @ApiOperation({ summary: 'Renovar access token usando refresh token' })
   @ApiResponse({
     status: 200,
@@ -188,7 +188,7 @@ export class AuthController {
   @Public()
   @Post('verify-email')
   @HttpCode(HttpStatus.OK)
-  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @UsePipes(new CodedValidationPipe({ transform: true, whitelist: true }))
   @ApiOperation({ summary: 'Verificar email com código de 6 dígitos' })
   @ApiResponse({ status: 200, description: 'Email verificado com sucesso' })
   @ApiResponse({ status: 400, description: 'Código inválido ou expirado' })
@@ -200,7 +200,7 @@ export class AuthController {
   @Post('resend-verification')
   @Throttle({ default: { ttl: 60000, limit: 3 } })
   @HttpCode(HttpStatus.OK)
-  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @UsePipes(new CodedValidationPipe({ transform: true, whitelist: true }))
   @ApiOperation({ summary: 'Reenviar email de verificação' })
   @ApiResponse({ status: 200, description: 'Email de verificação reenviado' })
   @ApiResponse({ status: 400, description: 'Aguarde antes de solicitar novamente' })
@@ -212,7 +212,7 @@ export class AuthController {
   @Post('forgot-password')
   @Throttle({ default: { ttl: 60000, limit: 3 } })
   @HttpCode(HttpStatus.OK)
-  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @UsePipes(new CodedValidationPipe({ transform: true, whitelist: true }))
   @ApiOperation({ summary: 'Solicitar reset de senha' })
   @ApiResponse({
     status: 200,
@@ -230,7 +230,7 @@ export class AuthController {
   @Post('reset-password')
   @Throttle({ default: { ttl: 60000, limit: 5 } })
   @HttpCode(HttpStatus.OK)
-  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  @UsePipes(new CodedValidationPipe({ transform: true, whitelist: true }))
   @ApiOperation({ summary: 'Resetar senha com token' })
   @ApiResponse({
     status: 200,

@@ -1,7 +1,15 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
-import { applyBrand, Brand, brandedFrom, firstUrl, ORIGIN_SITE_URL } from '../brand/brand';
+import { applyBrand, Brand, brandedFrom, firstUrl, ORIGIN_SITE_URL, ORIGIN_SUPPORT_EMAIL } from '../brand/brand';
+import {
+  brandBannerUrl,
+  escapeHtml,
+  MailLocale,
+  renderBrandEmail,
+  sitePathFor,
+  withQuery,
+} from './brand-email';
 import type { BuyerLocale } from '../pending-grants/buyer-locale';
 import { formatAffiliatePayoutAmount } from '../affiliates/affiliate-currency';
 import { describePayoutDestination } from '../affiliates/affiliate-payout';
@@ -21,7 +29,15 @@ interface PendingGrantsCopy {
   button: string;
   important: string;
   footer: string;
+  /** Itens do bundle do CURSO (Perfect Pay e Greenn: 2 de cada modelo, 38 no total). */
+  courseItems: string[];
 }
+
+/** Qual pacote de gerações a compra libera: curso (Perfect Pay/Greenn) ou o básico (Hubla/Hotmart/Cartpanda). */
+export type PendingGrantsVariant = 'course' | 'basic';
+
+/** Saldo a partir do qual a 1ª foto já sai paga (decisão do dono, 13/11: bônus total de 200). */
+export const FIRST_PHOTO_PAID_CREDITS = 200;
 
 export const PENDING_GRANTS_COPY: Record<BuyerLocale, PendingGrantsCopy> = {
   en: {
@@ -47,6 +63,13 @@ export const PENDING_GRANTS_COPY: Record<BuyerLocale, PendingGrantsCopy> = {
     important:
       "Important: sign up with the same email this message was sent to — otherwise the generations can't be credited.",
     footer: "Any questions? Just reply to this email and we'll help you out.",
+    courseItems: [
+      '<strong>38 free generations</strong>: 2 with every model',
+      'Uncensored photos and premium models',
+      'Videos with Veo 3.1 and Kling',
+      'Face swap, virtual try-on and Motion Control',
+      'Upscale to high resolution',
+    ],
   },
   es: {
     htmlLang: 'es',
@@ -71,6 +94,13 @@ export const PENDING_GRANTS_COPY: Record<BuyerLocale, PendingGrantsCopy> = {
     important:
       'Importante: regístrate con el mismo correo al que llegó este mensaje. Con otro correo, las generaciones no se pueden acreditar.',
     footer: '¿Dudas? Responde este correo y te ayudamos.',
+    courseItems: [
+      '<strong>38 generaciones gratis</strong>: 2 con cada modelo',
+      'Fotos sin censura y modelos premium',
+      'Videos con Veo 3.1 y Kling',
+      'Cambio de rostro, probador virtual y Motion Control',
+      'Upscale a alta resolución',
+    ],
   },
   pt: {
     htmlLang: 'pt-BR',
@@ -95,6 +125,167 @@ export const PENDING_GRANTS_COPY: Record<BuyerLocale, PendingGrantsCopy> = {
     important:
       'Importante: cadastre-se com o mesmo e-mail que recebeu esta mensagem. Com outro e-mail, as gerações não podem ser creditadas.',
     footer: 'Dúvidas? Responda este e-mail e a gente ajuda.',
+    courseItems: [
+      '<strong>38 gerações grátis</strong>: 2 com cada modelo',
+      'Fotos sem censura e modelos premium',
+      'Vídeos com Veo 3.1 e Kling',
+      'Troca de rosto, provador virtual e Motion Control',
+      'Upscale para alta resolução',
+    ],
+  },
+};
+
+/** E-mail do código de confirmação (C-03): o código vai no assunto e no preheader, no idioma da conta. */
+const VERIFICATION_COPY: Record<MailLocale, {
+  subject: (code: string) => string;
+  preheader: (code: string, bonus: number) => string;
+  title: string;
+  intro: string;
+  bonus: (bonus: number) => string;
+  button: string;
+  note: string;
+  footer: string;
+}> = {
+  pt: {
+    subject: (code) => `${code} é seu código · The AI Model Lab`,
+    preheader: (code, bonus) =>
+      bonus > 0
+        ? `Seu código é ${code}. Confirme e libere +${bonus} créditos: sua 1ª foto fica paga.`
+        : `Seu código é ${code}. Vale por 15 minutos.`,
+    title: 'Confirme seu e-mail',
+    intro: 'Digite este código no app para confirmar seu e-mail:',
+    bonus: (bonus) => `Confirmou, entram <strong>+${bonus} créditos</strong> na hora e sua 1ª foto fica paga.`,
+    button: 'Abrir o app',
+    note: 'Vale por 15 minutos. Não compartilhe este código com ninguém.',
+    footer: 'Não criou conta na The AI Model Lab? É só ignorar este e-mail.',
+  },
+  es: {
+    subject: (code) => `${code} es tu código · The AI Model Lab`,
+    preheader: (code, bonus) =>
+      bonus > 0
+        ? `Tu código es ${code}. Confirma y libera +${bonus} créditos: tu 1.ª foto queda pagada.`
+        : `Tu código es ${code}. Vale por 15 minutos.`,
+    title: 'Confirma tu correo',
+    intro: 'Escribe este código en la app para confirmar tu correo:',
+    bonus: (bonus) => `Al confirmar, entran <strong>+${bonus} créditos</strong> al instante y tu 1.ª foto queda pagada.`,
+    button: 'Abrir la app',
+    note: 'Vale por 15 minutos. No compartas este código con nadie.',
+    footer: '¿No creaste una cuenta en The AI Model Lab? Ignora este correo.',
+  },
+  en: {
+    subject: (code) => `${code} is your code · The AI Model Lab`,
+    preheader: (code, bonus) =>
+      bonus > 0
+        ? `Your code is ${code}. Confirm and unlock +${bonus} credits: your 1st photo is on us.`
+        : `Your code is ${code}. Valid for 15 minutes.`,
+    title: 'Confirm your email',
+    intro: 'Enter this code in the app to confirm your email:',
+    bonus: (bonus) => `Once confirmed, <strong>+${bonus} credits</strong> land instantly and your 1st photo is on us.`,
+    button: 'Open the app',
+    note: 'Valid for 15 minutes. Never share this code with anyone.',
+    footer: "Didn't create an account on The AI Model Lab? Just ignore this email.",
+  },
+};
+
+/** Boas-vindas (D-06): saldo real, "1ª foto paga" e CTA para os Reels. Sem pedir plano. */
+const WELCOME_COPY: Record<MailLocale, {
+  subjectPaid: string;
+  subjectPlain: string;
+  preheader: (credits: number) => string;
+  title: string;
+  creditsLine: (credits: number, paid: boolean) => string;
+  plainLine: string;
+  howTo: string;
+  button: string;
+  footer: string;
+}> = {
+  pt: {
+    subjectPaid: 'Sua conta está pronta: a 1ª foto já está paga',
+    subjectPlain: 'Sua conta na The AI Model Lab está pronta',
+    preheader: (credits) => `Você já tem ${credits} créditos. Abra os Reels e gere em 1 toque.`,
+    title: 'Sua conta está pronta',
+    creditsLine: (credits, paid) =>
+      paid
+        ? `Você já tem <strong>${credits} créditos</strong>: sua 1ª foto já está paga.`
+        : `Você já tem <strong>${credits} créditos</strong> na conta.`,
+    plainLine: 'Seu e-mail está confirmado e sua conta está pronta.',
+    howTo: 'Abra os Reels, escolha a cena e toque em gerar. O resultado sai em segundos.',
+    button: 'Gerar minha 1ª foto',
+    footer: `Dúvidas? Fale com a gente em ${ORIGIN_SUPPORT_EMAIL}.`,
+  },
+  es: {
+    subjectPaid: 'Tu cuenta está lista: la 1.ª foto ya está pagada',
+    subjectPlain: 'Tu cuenta en The AI Model Lab está lista',
+    preheader: (credits) => `Ya tienes ${credits} créditos. Abre los Reels y genera en 1 toque.`,
+    title: 'Tu cuenta está lista',
+    creditsLine: (credits, paid) =>
+      paid
+        ? `Ya tienes <strong>${credits} créditos</strong>: tu 1.ª foto ya está pagada.`
+        : `Ya tienes <strong>${credits} créditos</strong> en tu cuenta.`,
+    plainLine: 'Tu correo está confirmado y tu cuenta está lista.',
+    howTo: 'Abre los Reels, elige la escena y toca generar. El resultado sale en segundos.',
+    button: 'Generar mi 1.ª foto',
+    footer: `¿Dudas? Escríbenos a ${ORIGIN_SUPPORT_EMAIL}.`,
+  },
+  en: {
+    subjectPaid: 'Your account is ready: your 1st photo is on us',
+    subjectPlain: 'Welcome to The AI Model Lab!',
+    preheader: (credits) => `You already have ${credits} credits. Open Reels and generate in 1 tap.`,
+    title: 'Your account is ready',
+    creditsLine: (credits, paid) =>
+      paid
+        ? `You already have <strong>${credits} credits</strong>: your 1st photo is on us.`
+        : `You already have <strong>${credits} credits</strong> in your account.`,
+    plainLine: 'Your email is confirmed and your account is ready.',
+    howTo: 'Open Reels, pick a scene and tap generate. Your result is ready in seconds.',
+    button: 'Generate my 1st photo',
+    footer: `Questions? Write to us at ${ORIGIN_SUPPORT_EMAIL}.`,
+  },
+};
+
+/** Pagamento aprovado sem conta com o e-mail da compra (B-01): o que foi comprado fica guardado até a conta existir. */
+const PURCHASE_WITHOUT_ACCOUNT_COPY: Record<MailLocale, {
+  subject: string;
+  preheader: string;
+  title: string;
+  received: (product: string, email: string) => string;
+  howTo: string;
+  button: string;
+  note: string;
+  footer: string;
+}> = {
+  pt: {
+    subject: 'Pagamento aprovado: crie sua conta para ativar',
+    preheader: 'Cadastre-se com este mesmo e-mail e a compra entra na hora.',
+    title: 'Seu pagamento foi aprovado',
+    received: (product, email) =>
+      `Recebemos sua compra de <strong>${product}</strong>, mas ainda não existe conta na The AI Model Lab com o e-mail <strong>${email}</strong>.`,
+    howTo: 'Crie a conta com <strong>este mesmo e-mail</strong> e a compra entra na hora, sem falar com o suporte.',
+    button: 'Criar conta e ativar',
+    note: `Já tem conta com outro e-mail? Escreva para ${ORIGIN_SUPPORT_EMAIL} com os dois endereços e a gente transfere.`,
+    footer: 'Sua compra fica guardada: nada se perde enquanto a conta não existir.',
+  },
+  es: {
+    subject: 'Pago aprobado: crea tu cuenta para activarlo',
+    preheader: 'Regístrate con este mismo correo y la compra entra al instante.',
+    title: 'Tu pago fue aprobado',
+    received: (product, email) =>
+      `Recibimos tu compra de <strong>${product}</strong>, pero todavía no hay una cuenta en The AI Model Lab con el correo <strong>${email}</strong>.`,
+    howTo: 'Crea la cuenta con <strong>este mismo correo</strong> y la compra entra al instante, sin hablar con soporte.',
+    button: 'Crear cuenta y activar',
+    note: `¿Ya tienes cuenta con otro correo? Escribe a ${ORIGIN_SUPPORT_EMAIL} con los dos correos y lo transferimos.`,
+    footer: 'Tu compra queda guardada: no se pierde nada mientras la cuenta no exista.',
+  },
+  en: {
+    subject: 'Payment approved: create your account to activate it',
+    preheader: 'Sign up with this same email and your purchase lands instantly.',
+    title: 'Your payment was approved',
+    received: (product, email) =>
+      `We received your purchase of <strong>${product}</strong>, but there is no The AI Model Lab account with <strong>${email}</strong> yet.`,
+    howTo: 'Create your account with <strong>this same email</strong> and your purchase lands instantly, no need to contact support.',
+    button: 'Create account and activate',
+    note: `Already have an account with another email? Write to ${ORIGIN_SUPPORT_EMAIL} with both addresses and we'll move it.`,
+    footer: 'Your purchase is safe: nothing is lost while the account does not exist.',
   },
 };
 
@@ -182,26 +373,42 @@ export class EmailService implements OnModuleInit {
     }
   }
 
-  async sendVerificationEmail(to: string, name: string, code: string, brand?: Brand): Promise<void> {
+  /**
+   * Código de confirmação no idioma da conta, com o código no assunto e no preheader (C-03).
+   * `bonusCredits` > 0 promete os créditos que caem ao confirmar. Devolve true se o Resend aceitou.
+   */
+  async sendVerificationEmail(
+    to: string,
+    name: string,
+    code: string,
+    brand?: Brand,
+    options: { locale?: MailLocale; bonusCredits?: number } = {},
+  ): Promise<boolean> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping verification email');
-      return;
+      return false;
     }
+
+    const locale = options.locale ?? 'en';
+    const copy = VERIFICATION_COPY[locale];
+    const bonus = Math.max(0, Math.floor(options.bonusCredits ?? 0));
 
     try {
       const { error } = await this.client.emails.send({
-        ...this.branded({ subject: 'Your verification code — The AI Model Lab', html: this.getVerificationTemplate(name, code) }, brand),
+        ...this.branded({ subject: copy.subject(code), html: this.getVerificationTemplate(name, code, locale, bonus, to, brand) }, brand),
         to: [to],
       });
 
       if (error) {
         this.logger.error(`Failed to send verification email to ${to}: ${JSON.stringify(error)}`);
-        return;
+        return false;
       }
 
-      this.logger.log(`Verification email sent to ${to}`);
+      this.logger.log(`Verification email (${locale}) sent to ${to}`);
+      return true;
     } catch (error: any) {
       this.logger.error(`Failed to send verification email: ${error.message}`);
+      return false;
     }
   }
 
@@ -258,15 +465,29 @@ export class EmailService implements OnModuleInit {
     }
   }
 
-  async sendWelcomeEmail(to: string, name: string, brand?: Brand): Promise<void> {
+  /**
+   * Boas-vindas no idioma da conta (D-06). Com `credits`, cita o saldo real e, a partir de
+   * FIRST_PHOTO_PAID_CREDITS, promete a 1ª foto paga. CTA para os Reels, nunca para o checkout.
+   */
+  async sendWelcomeEmail(
+    to: string,
+    name: string,
+    brand?: Brand,
+    options: { locale?: MailLocale; credits?: number } = {},
+  ): Promise<void> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping welcome email');
       return;
     }
 
+    const locale = options.locale ?? 'en';
+    const copy = WELCOME_COPY[locale];
+    const credits = options.credits;
+    const paid = credits != null && credits >= FIRST_PHOTO_PAID_CREDITS;
+
     try {
       const { error } = await this.client.emails.send({
-        ...this.branded({ subject: 'Welcome to The AI Model Lab!', html: this.getWelcomeTemplate(name) }, brand),
+        ...this.branded({ subject: paid ? copy.subjectPaid : copy.subjectPlain, html: this.getWelcomeTemplate(name, locale, credits, to, brand) }, brand),
         to: [to],
       });
 
@@ -319,6 +540,7 @@ export class EmailService implements OnModuleInit {
     to: string,
     name: string | null | undefined,
     locale: BuyerLocale = 'en',
+    variant: PendingGrantsVariant = 'course',
   ): Promise<void> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping pending grants email');
@@ -332,7 +554,7 @@ export class EmailService implements OnModuleInit {
         from: this.fromEmail,
         to: [to],
         subject: copy.subject,
-        html: this.getPendingGrantsTemplate(copy, name ?? null),
+        html: this.getPendingGrantsTemplate(copy, name ?? null, to, locale, variant),
       });
 
       if (error) {
@@ -352,7 +574,54 @@ export class EmailService implements OnModuleInit {
    * (Hotmart, Cartpanda, Greenn). Prefira sendPendingGrantsEmail(to, name, locale).
    */
   async sendPendingGrantsEmailEs(to: string, name?: string | null): Promise<void> {
-    return this.sendPendingGrantsEmail(to, name ?? null, 'en');
+    return this.sendPendingGrantsEmail(to, name ?? null, 'en', 'basic');
+  }
+
+  /**
+   * Pagamento aprovado (plano ou pacote) sem conta com o e-mail da compra (B-01). A compra fica guardada e
+   * entra sozinha no cadastro/login com este e-mail; o link já abre o cadastro com o e-mail preenchido.
+   * Devolve true se o Resend aceitou.
+   */
+  async sendPurchaseWithoutAccountEmail(
+    to: string,
+    params: { locale: MailLocale; productName: string; brand?: Brand },
+  ): Promise<boolean> {
+    if (!this.client) {
+      this.logger.warn('Email service not configured — skipping purchase-without-account email');
+      return false;
+    }
+
+    const copy = PURCHASE_WITHOUT_ACCOUNT_COPY[params.locale] ?? PURCHASE_WITHOUT_ACCOUNT_COPY.en;
+    const signupUrl = withQuery(`${this.frontendUrl}/${sitePathFor(params.locale)}/login`, {
+      modo: 'cadastro',
+      email: to,
+      utm_source: 'email',
+      utm_medium: 'compra-sem-conta',
+    });
+    const html = renderBrandEmail({
+      locale: params.locale,
+      preheader: copy.preheader,
+      bannerUrl: this.bannerFor(params.locale, to, params.brand),
+      title: copy.title,
+      paragraphs: [copy.received(escapeHtml(params.productName), escapeHtml(to)), copy.howTo],
+      cta: { label: copy.button, url: signupUrl },
+      note: copy.note,
+      footer: copy.footer,
+    });
+
+    try {
+      // Produto de outra marca (Funvmake): remetente, nome e link da marca da venda.
+      const { error } = await this.client.emails.send({ ...this.branded({ subject: copy.subject, html }, params.brand), to: [to] });
+      if (error) {
+        this.logger.error(`Failed to send purchase-without-account email to ${to}: ${JSON.stringify(error)}`);
+        return false;
+      }
+      this.logger.log(`Purchase-without-account email (${params.locale}) sent to ${to}`);
+      return true;
+    } catch (error: any) {
+      this.logger.error(`Failed to send purchase-without-account email: ${error.message}`);
+      return false;
+    }
   }
 
   async sendCreditPurchaseEmail(
@@ -536,42 +805,35 @@ export class EmailService implements OnModuleInit {
 
   // --- Templates ---
 
-  private getVerificationTemplate(_name: string, code: string): string {
-    const logoHtml = this.logoUrl
-      ? `<img src="${this.logoUrl}" alt="The AI Model Lab" width="80" height="80" style="display: block; border-radius: 12px;">`
-      : '';
+  /** Banner da marca só na origem: conta de outra marca (Funvmake) não recebe a arte da The AI Model Lab. */
+  private bannerFor(locale: MailLocale, seed: string, brand?: Brand): string | null {
+    return !brand || brand.key === 'taml' ? brandBannerUrl(locale, seed) : null;
+  }
 
-    return `
-<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin: 0; padding: 0; background-color: #f9f9f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #f9f9f9; padding: 40px 20px;">
-    <tr>
-      <td align="center">
-        <table role="presentation" width="480" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; overflow: hidden;">
-          <tr>
-            <td style="padding: 48px 40px;">
-              ${logoHtml ? `<div style="margin-bottom: 32px;">${logoHtml}</div>` : ''}
-              <h1 style="margin: 0 0 16px; font-size: 24px; font-weight: 700; color: #1a1a1a; line-height: 1.3;">Verification code</h1>
-              <p style="margin: 0 0 28px; font-size: 15px; color: #666; line-height: 1.6;">Enter the verification code below to confirm your email:</p>
-              <p style="margin: 0 0 28px; font-size: 36px; font-weight: 700; color: #1a1a1a; letter-spacing: 6px; line-height: 1;">${code}</p>
-              <p style="margin: 0 0 0; font-size: 15px; color: #666; line-height: 1.6;">To keep your account secure, don't share this code.</p>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding: 0 40px 40px;">
-              <hr style="border: none; border-top: 1px solid #eee; margin: 0 0 24px;">
-              <p style="margin: 0 0 6px; font-size: 13px; font-weight: 600; color: #1a1a1a;">Didn't request this code?</p>
-              <p style="margin: 0; font-size: 13px; color: #999; line-height: 1.5;">If you didn't create an account on The AI Model Lab, you can ignore this email.</p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`;
+  private getVerificationTemplate(
+    _name: string,
+    code: string,
+    locale: MailLocale = 'en',
+    bonus = 0,
+    seed = '',
+    brand?: Brand,
+  ): string {
+    const copy = VERIFICATION_COPY[locale];
+    const appUrl = withQuery(`${this.frontendUrl}/${sitePathFor(locale)}/x/reels`, {
+      utm_source: 'email',
+      utm_medium: 'codigo',
+    });
+    return renderBrandEmail({
+      locale,
+      preheader: copy.preheader(code, bonus),
+      bannerUrl: this.bannerFor(locale, seed || code, brand),
+      title: copy.title,
+      paragraphs: [copy.intro],
+      highlight: `<span style="font-size:36px;font-weight:800;letter-spacing:8px;color:#ffffff;">${code}</span>`,
+      cta: { label: copy.button, url: appUrl },
+      note: [bonus > 0 ? copy.bonus(bonus) : '', copy.note].filter(Boolean).join('<br>'),
+      footer: copy.footer,
+    });
   }
 
   private getPasswordResetTemplate(_name: string, resetUrl: string): string {
@@ -663,94 +925,62 @@ export class EmailService implements OnModuleInit {
 </html>`;
   }
 
-  private getWelcomeTemplate(name: string): string {
-    const dashboardUrl = `${this.frontendUrl}`;
-    const logoHtml = this.logoUrl
-      ? `<img src="${this.logoUrl}" alt="The AI Model Lab" width="80" height="80" style="display: block; border-radius: 12px;">`
-      : '';
-
-    return `
-<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin: 0; padding: 0; background-color: #f9f9f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #f9f9f9; padding: 40px 20px;">
-    <tr>
-      <td align="center">
-        <table role="presentation" width="480" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; overflow: hidden;">
-          <tr>
-            <td style="padding: 48px 40px;">
-              ${logoHtml ? `<div style="margin-bottom: 32px;">${logoHtml}</div>` : ''}
-              <h1 style="margin: 0 0 16px; font-size: 24px; font-weight: 700; color: #1a1a1a; line-height: 1.3;">Welcome to The AI Model Lab!</h1>
-              <p style="margin: 0 0 28px; font-size: 15px; color: #666; line-height: 1.6;">Hi, ${name}! Your email is confirmed and your account is ready.</p>
-              <div style="margin: 0 0 0;">
-                <a href="${dashboardUrl}"
-                   style="display: inline-block; background-color: #1a1a1a; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 600;">
-                  Start creating
-                </a>
-              </div>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`;
+  private getWelcomeTemplate(
+    _name: string,
+    locale: MailLocale = 'en',
+    credits?: number,
+    seed = '',
+    brand?: Brand,
+  ): string {
+    const copy = WELCOME_COPY[locale];
+    const paid = credits != null && credits >= FIRST_PHOTO_PAID_CREDITS;
+    const reelsUrl = withQuery(`${this.frontendUrl}/${sitePathFor(locale)}/x/reels`, {
+      utm_source: 'email',
+      utm_campaign: 'welcome',
+    });
+    return renderBrandEmail({
+      locale,
+      preheader: credits != null ? copy.preheader(credits) : copy.plainLine,
+      bannerUrl: this.bannerFor(locale, seed || 'welcome', brand),
+      title: copy.title,
+      paragraphs: [credits != null ? copy.creditsLine(credits, paid) : copy.plainLine, copy.howTo],
+      cta: { label: copy.button, url: reelsUrl },
+      footer: copy.footer,
+    });
   }
 
-  private getPendingGrantsTemplate(copy: PendingGrantsCopy, name: string | null): string {
-    // O site tem rota por idioma (/en, /es, /pt-br); o /login sem prefixo cai no
-    // português para todo mundo.
-    const signupUrl = `${this.frontendUrl}/${copy.sitePath}/login`;
-    const logoHtml = this.logoUrl
-      ? `<img src="${this.logoUrl}" alt="The AI Model Lab" width="80" height="80" style="display: block; border-radius: 12px;">`
-      : '';
-    const greeting = copy.greeting(name);
-    const items = copy.items.map((item) => `<li>${item}</li>`).join('\n                  ');
+  private getPendingGrantsTemplate(
+    copy: PendingGrantsCopy,
+    name: string | null,
+    email: string,
+    locale: BuyerLocale = 'en',
+    variant: PendingGrantsVariant = 'course',
+  ): string {
+    // O site tem rota por idioma (/en, /es, /pt-br); o /login sem prefixo cai no português para todo mundo.
+    // modo=cadastro abre direto no cadastro e email= já preenche o e-mail da compra (B-03): com outro e-mail o
+    // bônus não cai.
+    const signupUrl = withQuery(`${this.frontendUrl}/${copy.sitePath}/login`, {
+      modo: 'cadastro',
+      email,
+      utm_source: 'email',
+      utm_medium: 'acesso-isca',
+    });
+    const items = (variant === 'course' ? copy.courseItems : copy.items)
+      .map((item) => `<li style="margin:0 0 4px;">${item}</li>`)
+      .join('');
+    const greeting = escapeHtml(copy.greeting(name));
 
-    return `
-<!DOCTYPE html>
-<html lang="${copy.htmlLang}">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="margin: 0; padding: 0; background-color: #f9f9f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #f9f9f9; padding: 40px 20px;">
-    <tr>
-      <td align="center">
-        <table role="presentation" width="480" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; overflow: hidden;">
-          <tr>
-            <td style="padding: 48px 40px;">
-              ${logoHtml ? `<div style="margin-bottom: 32px;">${logoHtml}</div>` : ''}
-              <h1 style="margin: 0 0 16px; font-size: 24px; font-weight: 700; color: #1a1a1a; line-height: 1.3;">${greeting} ${copy.title}</h1>
-              <p style="margin: 0 0 20px; font-size: 15px; color: #666; line-height: 1.6;">${copy.intro}</p>
-              <div style="margin: 0 0 28px; padding: 20px; background-color: #f5f5f5; border-radius: 8px;">
-                <p style="margin: 0 0 8px; font-size: 13px; color: #999; text-transform: uppercase; letter-spacing: 1px;">${copy.includedLabel}</p>
-                <ul style="margin: 0; padding-left: 18px; font-size: 14px; color: #1a1a1a; line-height: 1.8;">
-                  ${items}
-                </ul>
-              </div>
-              <p style="margin: 0 0 28px; font-size: 15px; color: #666; line-height: 1.6;">${copy.claim}</p>
-              <div style="margin: 0 0 28px;">
-                <a href="${signupUrl}"
-                   style="display: inline-block; background-color: #1a1a1a; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 600;">
-                  ${copy.button}
-                </a>
-              </div>
-              <p style="margin: 0; font-size: 13px; color: #999; line-height: 1.6;">${copy.important}</p>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding: 0 40px 40px;">
-              <hr style="border: none; border-top: 1px solid #eee; margin: 0 0 24px;">
-              <p style="margin: 0; font-size: 13px; color: #999; line-height: 1.5;">${copy.footer}</p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`;
+    return renderBrandEmail({
+      locale,
+      preheader: copy.title,
+      bannerUrl: brandBannerUrl(locale, email),
+      title: `${greeting} ${copy.title}`,
+      paragraphs: [copy.intro, copy.claim],
+      highlight: `<p style="margin:0 0 8px;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#8a8a99;text-align:left;">${copy.includedLabel}</p><ul style="margin:0;padding-left:18px;font-size:15px;line-height:1.6;color:#ffffff;text-align:left;">${items}</ul>`,
+      cta: { label: copy.button, url: signupUrl },
+      note: copy.important,
+      footer: copy.footer,
+    });
   }
 
   private getCreditPurchaseTemplate(name: string, credits: number, packageName?: string): string {

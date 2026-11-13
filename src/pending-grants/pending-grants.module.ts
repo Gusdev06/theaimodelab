@@ -13,6 +13,8 @@ import { PerfectpayWebhookController } from './perfectpay-webhook.controller';
 import { PerfectpayWebhookService } from './perfectpay-webhook.service';
 import { CaktoWebhookController } from './cakto-webhook.controller';
 import { CaktoWebhookService } from './cakto-webhook.service';
+import { NoAccountPurchasesService } from './no-account-purchases.service';
+import { NoAccountPurchasesClaimer } from './no-account-purchases.claimer';
 import { WebhookLogsModule } from '../webhook-logs/webhook-logs.module';
 import { EmailModule } from '../email/email.module';
 import { PaymentsModule } from '../payments/payments.module';
@@ -36,7 +38,9 @@ import { CheckoutCodesModule } from '../checkout-codes/checkout-codes.module';
     CartpandaWebhookService,
     PerfectpayWebhookService,
     CaktoWebhookService,
+    NoAccountPurchasesService,
+    NoAccountPurchasesClaimer,
   ],
-  exports: [PendingGrantsService],
+  exports: [PendingGrantsService, NoAccountPurchasesClaimer],
 })
 export class PendingGrantsModule {}

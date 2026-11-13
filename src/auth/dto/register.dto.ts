@@ -2,40 +2,39 @@ import { IsEmail, IsString, MinLength, MaxLength, Matches, IsNotEmpty, IsOptiona
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional, ApiProperty } from '@nestjs/swagger';
 import { TrackingDto } from './tracking.dto';
+import { coded } from '../../common/i18n/coded-validation';
+
+/** Regra da senha (o site valida antes de enviar com a mesma expressão). */
+export const PASSWORD_RULE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d\W_]{8,}$/;
 
 export class RegisterDto {
   @ApiProperty({
     example: 'john.doe@example.com',
     description: 'Email do usuário',
   })
-  @IsEmail({}, { message: 'Email inválido' })
-  @IsNotEmpty({ message: 'Email é obrigatório' })
+  @IsEmail({}, coded('EMAIL_INVALID'))
+  @IsNotEmpty(coded('EMAIL_REQUIRED'))
   email: string;
 
   @ApiProperty({
     example: 'John Doe',
     description: 'Nome completo do usuário',
   })
-  @IsString()
-  @IsNotEmpty({ message: 'Nome é obrigatório' })
-  @MinLength(2, { message: 'Nome deve ter no mínimo 2 caracteres' })
-  @MaxLength(100, { message: 'Nome deve ter no máximo 100 caracteres' })
+  @IsString(coded('NAME_REQUIRED'))
+  @IsNotEmpty(coded('NAME_REQUIRED'))
+  @MinLength(2, coded('NAME_TOO_SHORT'))
+  @MaxLength(100, coded('NAME_TOO_LONG'))
   name: string;
 
   @ApiProperty({
     example: 'SecurePassword123!',
     description: 'Senha do usuário',
   })
-  @IsString()
-  @IsNotEmpty({ message: 'Senha é obrigatória' })
-  @MinLength(8, { message: 'Senha deve ter no mínimo 8 caracteres' })
-  @MaxLength(100, { message: 'Senha deve ter no máximo 100 caracteres' })
-  @Matches(
-    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d\W_]{8,}$/,
-    {
-      message: 'Senha deve conter pelo menos uma letra maiúscula, uma minúscula e um número',
-    },
-  )
+  @IsString(coded('PASSWORD_REQUIRED'))
+  @IsNotEmpty(coded('PASSWORD_REQUIRED'))
+  @MinLength(8, coded('PASSWORD_TOO_SHORT'))
+  @MaxLength(100, coded('PASSWORD_TOO_LONG'))
+  @Matches(PASSWORD_RULE, coded('PASSWORD_WEAK'))
   password: string;
 
   @ApiPropertyOptional({
@@ -44,8 +43,8 @@ export class RegisterDto {
   })
   @IsString()
   @IsOptional()
-  @MaxLength(50, { message: 'Código de indicação deve ter no máximo 50 caracteres' })
-  @Matches(/^[A-Za-z0-9_-]+$/, { message: 'Código de indicação contém caracteres inválidos' })
+  @MaxLength(50, coded('REFERRAL_CODE_TOO_LONG'))
+  @Matches(/^[A-Za-z0-9_-]+$/, coded('REFERRAL_CODE_INVALID'))
   referralCode?: string;
 
   @ApiPropertyOptional({ description: 'Atribuição de marketing capturada na landing' })

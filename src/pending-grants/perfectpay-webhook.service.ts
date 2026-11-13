@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -21,6 +22,13 @@ import {
   parseProductLocales,
   resolvePerfectpayBuyerLocale,
 } from './buyer-locale';
+import { NoAccountPurchasesService } from './no-account-purchases.service';
+
+/** De onde veio a venda: webhook ao vivo (com log) ou reprocesso de venda guardada sem conta (B-01). */
+interface SaleContext {
+  webhookLogId: string | null;
+  replay: boolean;
+}
 
 /**
  * Webhook do Perfect Pay (https://www.perfectpay.com.br).
@@ -73,6 +81,7 @@ export class PerfectpayWebhookService {
     private readonly prisma: PrismaService,
     private readonly paymentsService: PaymentsService,
     private readonly checkoutCodes: CheckoutCodesService,
+    @Optional() private readonly noAccountPurchases?: NoAccountPurchasesService,
   ) {}
 
   async handle(
@@ -87,16 +96,35 @@ export class PerfectpayWebhookService {
       throw error;
     }
 
+    const log = await this.webhookLogs.create(
+      'perfectpay',
+      this.extractEventType(payload) ?? 'unknown',
+      this.extractEventId(payload),
+      payload,
+    );
+
+    return this.process(payload, { webhookLogId: log?.id ?? null, replay: false });
+  }
+
+  /**
+   * Reaplica uma venda aprovada que chegou antes da conta existir (B-01). O payload vem do nosso banco
+   * (já passou pelo token quando chegou), então não confere token, não grava log novo nem manda e-mail de
+   * "crie sua conta". A idempotência é a de sempre: código da venda = Payment.externalPaymentId.
+   */
+  async replayPaidSale(payload: any): Promise<{ processed: boolean; reason?: string }> {
+    if (this.classifyEvent(payload) !== 'paid') {
+      return { processed: false, reason: 'replay: not a paid event' };
+    }
+    return this.process(payload, { webhookLogId: null, replay: true });
+  }
+
+  private async process(
+    payload: any,
+    ctx: SaleContext,
+  ): Promise<{ processed: boolean; reason?: string }> {
     const eventType = this.extractEventType(payload);
     const externalEventId = this.extractEventId(payload);
     const email = this.extractEmail(payload);
-
-    await this.webhookLogs.create(
-      'perfectpay',
-      eventType ?? 'unknown',
-      externalEventId,
-      payload,
-    );
 
     const kind = this.classifyEvent(payload);
 
@@ -117,6 +145,10 @@ export class PerfectpayWebhookService {
     // Reembolso/chargeback de pack ou da isca: resolve aqui e NÃO revoga a
     // assinatura do comprador (antes revogava, e o pack/bundle ficava — TKT-099).
     if (kind === 'refund' || kind === 'chargeback') {
+      // Venda guardada sem conta (B-01) que voltou: o cadastro futuro não pode ativá-la.
+      if (!ctx.replay && this.noAccountPurchases) {
+        await this.noAccountPurchases.cancelBeforeAccount('perfectpay', this.extractSaleCode(payload), kind);
+      }
       const handled = await this.handleNonSubscriptionRefund(payload, kind);
       if (handled) return handled;
     }
@@ -198,11 +230,11 @@ export class PerfectpayWebhookService {
     }
 
     if (plan) {
-      return this.handlePlanSubscription(payload, email, plan);
+      return this.handlePlanSubscription(payload, email, plan, ctx);
     }
 
     if (extraPackage) {
-      return this.handleCreditPurchase(payload, email, extraPackage);
+      return this.handleCreditPurchase(payload, email, extraPackage, ctx);
     }
 
     // Se é assinatura recorrente mas nenhum plano casou, NÃO trata como curso:
@@ -229,7 +261,13 @@ export class PerfectpayWebhookService {
       : null;
 
     if (creditPackage) {
-      return this.handleCreditPurchase(payload, email, creditPackage);
+      return this.handleCreditPurchase(payload, email, creditPackage, ctx);
+    }
+
+    // Reprocesso só existe para plano e pacote: se a venda guardada não casa mais nenhum (código removido do
+    // plano), não vira isca nem manda e-mail de acesso.
+    if (ctx.replay) {
+      return { processed: false, reason: 'replay: sale matched no plan or package' };
     }
 
     // 3) Caso contrário: produto de curso → libera gerações grátis por email.
@@ -261,6 +299,30 @@ export class PerfectpayWebhookService {
   }
 
   /**
+   * Venda paga sem conta (B-01): guarda para aplicar no cadastro/login com este e-mail e avisa a compradora no
+   * idioma dela. No reprocesso não faz nada (a venda já está guardada).
+   */
+  private async keepForFutureAccount(
+    payload: any,
+    email: string,
+    saleCode: string,
+    productName: string,
+    ctx: SaleContext,
+  ): Promise<void> {
+    if (ctx.replay || !this.noAccountPurchases) return;
+    await this.noAccountPurchases.record({
+      gateway: 'perfectpay',
+      email,
+      saleCode,
+      payload,
+      webhookLogId: ctx.webhookLogId,
+      locale: resolvePerfectpayBuyerLocale(payload, this.productLocales()),
+      productName,
+      codeCandidates: this.extractPlanCandidates(payload),
+    });
+  }
+
+  /**
    * Mapa produto → idioma: o padrão (CPF e CNPJ) mais o que vier em
    * PERFECTPAY_PRODUCT_LOCALES ("PPPBXXXXX:es,PPPBYYYYY:en"), para produto novo
    * entrar sem deploy.
@@ -282,6 +344,7 @@ export class PerfectpayWebhookService {
     payload: any,
     email: string,
     plan: { id: string; slug: string; name: string },
+    ctx: SaleContext,
   ): Promise<{ processed: boolean; reason?: string }> {
     const saleCode = this.extractSaleCode(payload);
     if (!saleCode) {
@@ -295,8 +358,9 @@ export class PerfectpayWebhookService {
 
     if (!user) {
       this.logger.warn(
-        `Perfectpay: assinatura do plano "${plan.name}" (venda ${saleCode}) mas nenhuma conta tem o email ${email}. Não ativado.`,
+        `Perfectpay: assinatura do plano "${plan.name}" (venda ${saleCode}) mas nenhuma conta tem o email ${email}. Guardada até a conta existir.`,
       );
+      await this.keepForFutureAccount(payload, email, saleCode, plan.name, ctx);
       return { processed: false, reason: `no account for email ${email}` };
     }
 
@@ -323,6 +387,7 @@ export class PerfectpayWebhookService {
     payload: any,
     email: string,
     creditPackage: { id: string; name: string; credits: number },
+    ctx: SaleContext,
   ): Promise<{ processed: boolean; reason?: string }> {
     const saleCode = this.extractSaleCode(payload);
     if (!saleCode) {
@@ -336,8 +401,9 @@ export class PerfectpayWebhookService {
 
     if (!user) {
       this.logger.warn(
-        `Perfectpay: compra do pacote "${creditPackage.name}" (venda ${saleCode}) mas nenhuma conta tem o email ${email}. Não creditado.`,
+        `Perfectpay: compra do pacote "${creditPackage.name}" (venda ${saleCode}) mas nenhuma conta tem o email ${email}. Guardada até a conta existir.`,
       );
+      await this.keepForFutureAccount(payload, email, saleCode, creditPackage.name, ctx);
       return { processed: false, reason: `no account for email ${email}` };
     }
 

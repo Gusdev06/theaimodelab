@@ -6,7 +6,9 @@
     "EMAIL_NOT_VERIFIED": "Please verify your email before signing in",
     "UNAUTHORIZED": "Unauthorized",
     "USER_NOT_FOUND": "User not found",
-    "GOOGLE_TOKEN_INVALID": "Invalid or expired Google token"
+    "GOOGLE_TOKEN_INVALID": "Invalid or expired Google token",
+    "INVALID_CODE": "Invalid or expired code. Check the latest email or request a new one.",
+    "RESEND_WAIT": "Please wait 1 minute before requesting another code."
   },
   "credits": {
     "INSUFFICIENT_CREDITS": "Insufficient credits. Required: {required}, available: {available}",
@@ -45,5 +47,21 @@
     "NOT_FOUND": "Resource not found",
     "BAD_REQUEST": "Bad request",
     "INTERNAL_ERROR": "Internal server error"
+  },
+  "validation": {
+    "EMAIL_INVALID": "Enter a valid email.",
+    "EMAIL_REQUIRED": "Enter your email.",
+    "NAME_REQUIRED": "Enter your name.",
+    "NAME_TOO_SHORT": "Your name needs at least 2 letters.",
+    "NAME_TOO_LONG": "Your name can have up to 100 characters.",
+    "PASSWORD_REQUIRED": "Create a password.",
+    "PASSWORD_TOO_SHORT": "Your password needs at least 8 characters.",
+    "PASSWORD_TOO_LONG": "Your password can have up to 100 characters.",
+    "PASSWORD_WEAK": "Use at least 8 characters with 1 uppercase letter, 1 lowercase letter and 1 number.",
+    "REFERRAL_CODE_TOO_LONG": "The referral code can have up to 50 characters.",
+    "REFERRAL_CODE_INVALID": "Invalid referral code.",
+    "CODE_REQUIRED": "Enter the 6-digit code.",
+    "CODE_LENGTH": "The code has 6 digits.",
+    "CODE_DIGITS": "The code has digits only."
   }
 }
