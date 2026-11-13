@@ -8,6 +8,7 @@ import { PixAutoBillingService } from './pix-auto-billing.service';
 import { PerfectpaySubscriptionExpiryService } from './perfectpay-subscription-expiry.service';
 import { OnboardingSequenceService } from './onboarding-sequence.service';
 import { LifecycleEmailsService } from './lifecycle-emails.service';
+import { FirstGenerationEmailsService } from './first-generation-emails.service';
 import { AnnualCreditsRefillService } from './annual-credits-refill.service';
 import { CronLoggerService } from './cron-logger.service';
 import { ReferralRewardsService } from './referral-rewards.service';
@@ -30,6 +31,7 @@ import { ReferralsModule } from '../referrals/referrals.module';
     PerfectpaySubscriptionExpiryService,
     OnboardingSequenceService,
     LifecycleEmailsService,
+    FirstGenerationEmailsService,
     AnnualCreditsRefillService,
     ReferralRewardsService,
   ],
