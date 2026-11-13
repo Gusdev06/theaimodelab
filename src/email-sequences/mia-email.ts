@@ -8,7 +8,7 @@
  * - Só na marca The AI Model Lab. Conta que nasceu noutra marca (Funvmake) recebe o e-mail sem a Mia: a
  *   personagem é da TAML e não combina com a pele da outra marca.
  * - Boas-vindas usam a Mia 3D (MIA29), que nunca aparece em contexto sexual. As realistas (MIA25, MIA30)
- *   ficam com saudade e créditos, sem nudez: são peças vestidas da leva 1.
+ *   ficam com saudade e créditos: lingerie opaca, sem nudez. Fora da Meta (anúncio e página de destino).
  * - A imagem fica no serviço `funis` (public/assets/mia), servido também pelo domínio da marca
  *   assets.theaimodelab.com (o mesmo dos banners de e-mail): domínio próprio entrega melhor que *.railway.app.
  * - A imagem não é link: o e-mail continua com um único CTA.
