@@ -4,19 +4,29 @@ import { UploadsService } from '../../uploads/uploads.service';
 import { GenerationResult } from './theaimodelab.provider';
 import { ProviderFailureError, rawFailureText } from '../errors/failure-reason';
 import { adultSafePrompt } from '../../content-safety/adult-anchor';
+import { isMinorSafetyBlock } from '../errors/content-safety.error';
+import { isMinorRefusal } from '../errors/minor-refusal';
 import {
+  asMinimaxH3StartFailure,
   buildKieMinimaxH3ImageToVideoInput,
   buildKieMinimaxH3TextToVideoInput,
+  isMinimaxH3ContentRefusal,
   KIE_MINIMAX_H3_I2V_MODEL,
   KIE_MINIMAX_H3_T2V_MODEL,
   KieMinimaxH3Client,
   MinimaxH3Engine,
   MinimaxH3FailureStage,
   MinimaxH3FallbackMode,
+  MinimaxH3UncertainStartError,
   parseMinimaxH3Engine,
   parseMinimaxH3FallbackMode,
   shouldDivertMinimaxH3,
+  unwrapMinimaxH3Failure,
 } from './kie-minimax-h3.client';
+
+function failureDetail(error: unknown): string {
+  return (error instanceof Error ? rawFailureText(error) : String(error)).slice(0, 200);
+}
 
 /**
  * Teto do prompt que vai à WaveSpeed (o mesmo dos DTOs de vídeo): a âncora de adulto entra no fim sem passar dele.
@@ -456,7 +466,11 @@ export class WavespeedVideoProvider {
         };
         if (input.aspectRatio) body.aspect_ratio = input.aspectRatio;
 
-        const predictionId = await this.createPrediction(MINIMAX_H3_T2V_MODEL, body);
+        const predictionId = await this.createPrediction(MINIMAX_H3_T2V_MODEL, body).catch(
+          (error: unknown) => {
+            throw asMinimaxH3StartFailure(error);
+          },
+        );
         this.logger.log(`[MINIMAX_H3_T2V] prediction created: ${predictionId}`);
         return predictionId;
       },
@@ -504,7 +518,11 @@ export class WavespeedVideoProvider {
         };
         if (input.lastImageUrl) body.last_image = input.lastImageUrl;
 
-        const predictionId = await this.createPrediction(MINIMAX_H3_I2V_MODEL, body);
+        const predictionId = await this.createPrediction(MINIMAX_H3_I2V_MODEL, body).catch(
+          (error: unknown) => {
+            throw asMinimaxH3StartFailure(error);
+          },
+        );
         this.logger.log(`[MINIMAX_H3_I2V] prediction created: ${predictionId}`);
         return predictionId;
       },
@@ -529,7 +547,8 @@ export class WavespeedVideoProvider {
   /**
    * Cria a tarefa no primário e espera o vídeo; se falhar e o shouldDivertMinimaxH3 deixar, refaz uma vez no outro
    * provedor. Devolve a URL do vídeo no provedor (a re-hospedagem fica com quem chama). `start` de cada lado só cria
-   * a tarefa: o que ele lança conta como falha de início; o que a espera lança conta como falha final.
+   * a tarefa: o que ele lança conta como falha de início; o que a espera lança conta como falha final. Início incerto
+   * (MinimaxH3UncertainStartError: a tarefa pode existir) nunca desvia.
    */
   private async runMinimaxH3(
     generationId: string,
@@ -538,23 +557,40 @@ export class WavespeedVideoProvider {
     const primary = this.minimaxH3Primary;
     const secondary = this.otherMinimaxH3Engine(primary);
     let stage: MinimaxH3FailureStage = 'start';
+    let primaryError: unknown;
     try {
       const taskId = await start[primary]();
       stage = 'final';
       return await this.waitMinimaxH3(primary, taskId);
-    } catch (error) {
+    } catch (caught) {
+      primaryError = unwrapMinimaxH3Failure(caught);
       if (
+        caught instanceof MinimaxH3UncertainStartError ||
         !this.isMinimaxH3EngineReady(secondary) ||
-        !shouldDivertMinimaxH3(this.minimaxH3Fallback, stage, error)
+        !shouldDivertMinimaxH3(this.minimaxH3Fallback, stage, primaryError, FAILURE_MESSAGES['vídeo'])
       ) {
-        throw error;
+        throw primaryError;
       }
-      const detail = error instanceof Error ? rawFailureText(error) : String(error);
-      this.logger.warn(
-        `[MINIMAX_H3] gen=${generationId} ${primary} falhou (${stage === 'start' ? 'início' : 'fim'}) → desvio para ${secondary} (modo ${this.minimaxH3Fallback}): ${detail.slice(0, 200)}`,
-      );
+    }
+
+    this.logger.warn(
+      `[MINIMAX_H3] gen=${generationId} ${primary} falhou (${stage === 'start' ? 'início' : 'fim'}) → desvio para ${secondary} (modo ${this.minimaxH3Fallback}): ${failureDetail(primaryError)}`,
+    );
+    try {
       const taskId = await start[secondary]();
-      return this.waitMinimaxH3(secondary, taskId);
+      return await this.waitMinimaxH3(secondary, taskId);
+    } catch (caught) {
+      const secondaryError = unwrapMinimaxH3Failure(caught);
+      // A recusa do secundário (menor inclusive) é o motivo que vale; falha técnica dele não esconde o do primário
+      // (moderação na WaveSpeed + 402 na kie tem de sair como bloqueio, não como "tente de novo").
+      const keepSecondary =
+        isMinimaxH3ContentRefusal(secondaryError) ||
+        isMinorSafetyBlock(secondaryError) ||
+        isMinorRefusal(secondaryError);
+      this.logger.warn(
+        `[MINIMAX_H3] gen=${generationId} desvio para ${secondary} também falhou: ${failureDetail(secondaryError)}; sobe o erro do ${keepSecondary ? secondary : primary}`,
+      );
+      throw keepSecondary ? secondaryError : primaryError;
     }
   }
 

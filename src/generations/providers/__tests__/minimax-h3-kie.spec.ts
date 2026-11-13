@@ -3,6 +3,7 @@ import { WavespeedVideoProvider } from '../wavespeed-video.provider';
 import { UploadsService } from '../../../uploads/uploads.service';
 import { adultSafePrompt } from '../../../content-safety/adult-anchor';
 import { ProviderFailureError } from '../../errors/failure-reason';
+import { ContentSafetyError } from '../../errors/content-safety.error';
 import {
   parseMinimaxH3Engine,
   parseMinimaxH3FallbackMode,
@@ -15,10 +16,23 @@ type FetchCall = { url: string; init?: RequestInit };
 type WavespeedOutcome =
   | 'success'
   | 'start-500'
+  | 'start-econnrefused'
+  | 'start-no-id'
   | 'failed-moderation'
   | 'failed-minor'
-  | 'failed-generic';
-type KieOutcome = 'success' | 'start-402' | 'fail-430' | 'fail-500';
+  | 'failed-generic'
+  | 'failed-empty'
+  | 'processing';
+type KieOutcome =
+  | 'success'
+  | 'start-402'
+  | 'start-430-empty'
+  | 'start-430-flagged'
+  | 'start-timeout'
+  | 'start-no-task'
+  | 'fail-430'
+  | 'fail-430-generic'
+  | 'fail-500';
 
 const WS_BASE = 'https://ws.test';
 const KIE_BASE = 'https://kie.test';
@@ -32,6 +46,19 @@ const KIE_ENV = {
   NANO_BANANA_BASE_URL: KIE_BASE,
 };
 const BOTH_KEYS = { ...WS_ENV, ...KIE_ENV };
+
+/** As mensagens de vídeo do provider (FAILURE_MESSAGES['vídeo']). */
+const VIDEO_MESSAGES = {
+  unavailable:
+    'Não foi possível gerar o vídeo agora. Tente novamente em alguns instantes.',
+  unexpected:
+    'O serviço de vídeo não respondeu como esperado. Tente novamente em alguns instantes.',
+  missingOutput:
+    'A geração foi concluída mas o vídeo não pôde ser recuperado. Tente novamente.',
+  failed: 'A geração de vídeo falhou. Tente novamente.',
+  tooSlow:
+    'A geração de vídeo demorou mais que o esperado. Tente novamente em alguns instantes.',
+};
 
 const PROMPT = 'adult woman, 30 years old, slow dance in a hotel room';
 const I2V_INPUT = {
@@ -102,6 +129,14 @@ describe('WavespeedVideoProvider · MiniMax H3 na kie (primário e desvio)', () 
       if (url === WS_I2V || url === WS_T2V) {
         if (wsOutcome === 'start-500')
           return new Response('Internal Server Error', { status: 500 });
+        if (wsOutcome === 'start-econnrefused')
+          throw Object.assign(new TypeError('fetch failed'), {
+            cause: Object.assign(new Error('connect ECONNREFUSED'), {
+              code: 'ECONNREFUSED',
+            }),
+          });
+        if (wsOutcome === 'start-no-id')
+          return jsonResponse({ code: 200, data: {} });
         return jsonResponse({ code: 200, data: { id: 'pred-1' } });
       }
       if (url.startsWith(`${WS_BASE}/api/v3/predictions/`)) {
@@ -114,12 +149,19 @@ describe('WavespeedVideoProvider · MiniMax H3 na kie (primário e desvio)', () 
               outputs: ['https://out.test/ws.mp4'],
             },
           });
+        if (wsOutcome === 'processing')
+          return jsonResponse({
+            code: 200,
+            data: { id: 'pred-1', status: 'processing' },
+          });
         const error =
           wsOutcome === 'failed-moderation'
             ? 'Content flagged by moderation: the request violates our content policy'
             : wsOutcome === 'failed-minor'
               ? 'Content moderation blocked: sexual/minors'
-              : 'Inference worker crashed';
+              : wsOutcome === 'failed-empty'
+                ? null
+                : 'Inference worker crashed';
         return jsonResponse({
           code: 200,
           data: { id: 'pred-1', status: 'failed', error },
@@ -132,6 +174,20 @@ describe('WavespeedVideoProvider · MiniMax H3 na kie (primário e desvio)', () 
             msg: 'Credits insufficient',
             data: null,
           });
+        if (kieOutcome === 'start-430-empty')
+          return jsonResponse({ code: 430, msg: '', data: null });
+        if (kieOutcome === 'start-430-flagged')
+          return jsonResponse({
+            code: 430,
+            msg: 'Your prompt was flagged',
+            data: null,
+          });
+        if (kieOutcome === 'start-timeout')
+          throw Object.assign(new Error('This operation was aborted'), {
+            name: 'AbortError',
+          });
+        if (kieOutcome === 'start-no-task')
+          return jsonResponse({ code: 200, msg: 'success', data: {} });
         return jsonResponse({
           code: 200,
           msg: 'success',
@@ -139,7 +195,7 @@ describe('WavespeedVideoProvider · MiniMax H3 na kie (primário e desvio)', () 
         });
       }
       if (url.startsWith(`${KIE_BASE}/api/v1/jobs/recordInfo?taskId=`)) {
-        if (kieOutcome === 'fail-430')
+        if (kieOutcome === 'fail-430' || kieOutcome === 'fail-430-generic')
           return jsonResponse({
             code: 200,
             msg: 'success',
@@ -147,7 +203,10 @@ describe('WavespeedVideoProvider · MiniMax H3 na kie (primário e desvio)', () 
               taskId: 'task-1',
               state: 'fail',
               failCode: '430',
-              failMsg: 'Content rejected by moderation',
+              failMsg:
+                kieOutcome === 'fail-430'
+                  ? 'Content rejected by moderation'
+                  : 'Generation failed',
             },
           });
         if (kieOutcome === 'fail-500')
@@ -407,7 +466,7 @@ describe('WavespeedVideoProvider · MiniMax H3 na kie (primário e desvio)', () 
         }).generateMinimaxH3ImageToVideo(I2V_INPUT),
       ).catch((caught: unknown) => caught);
 
-      expect(error).toBeInstanceOf(Error);
+      expect(error).toBeInstanceOf(ContentSafetyError);
       expect(error).not.toBeInstanceOf(ProviderFailureError);
       expect((error as Error).message).toBe(
         'Content rejected by moderation (430)',
@@ -451,6 +510,190 @@ describe('WavespeedVideoProvider · MiniMax H3 na kie (primário e desvio)', () 
     });
   });
 
+  describe('moderação da kie no createTask (430 no corpo)', () => {
+    const env = {
+      ...BOTH_KEYS,
+      MINIMAX_H3_PROVIDER: 'kie',
+      MINIMAX_H3_KIE_FALLBACK: 'tecnico',
+    };
+
+    it('430 sem texto: sai como bloqueio com o código e não desvia', async () => {
+      mockProviders({ kie: 'start-430-empty' });
+      const error = await run(
+        buildProvider(env).generateMinimaxH3ImageToVideo(I2V_INPUT),
+      ).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ContentSafetyError);
+      expect((error as ContentSafetyError).message).toBe(
+        'content moderation (430)',
+      );
+      expect((error as ContentSafetyError).supportCode).toBe('430');
+      expect(wavespeedCalls()).toHaveLength(0);
+    });
+
+    it('430 com texto vago: leva o "(430)" e não desvia', async () => {
+      mockProviders({ kie: 'start-430-flagged' });
+      const error = await run(
+        buildProvider(env).generateMinimaxH3TextToVideo(T2V_INPUT),
+      ).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ContentSafetyError);
+      expect((error as Error).message).toBe('Your prompt was flagged (430)');
+      expect(wavespeedCalls()).toHaveLength(0);
+    });
+
+    it('430 no resultado com failMsg genérico: ContentSafetyError, sem desvio', async () => {
+      mockProviders({ kie: 'fail-430-generic' });
+      const error = await run(
+        buildProvider(env).generateMinimaxH3ImageToVideo(I2V_INPUT),
+      ).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ContentSafetyError);
+      expect((error as Error).message).toBe('Generation failed (430)');
+      expect((error as ContentSafetyError).supportCode).toBe('430');
+      expect(wavespeedCalls()).toHaveLength(0);
+    });
+  });
+
+  describe('início incerto (a tarefa pode existir) não desvia', () => {
+    it("WaveSpeed 2xx sem id + 'tecnico+recusa': erro de hoje, kie intocada", async () => {
+      mockProviders({ wavespeed: 'start-no-id' });
+      const error = await run(
+        buildProvider({
+          ...BOTH_KEYS,
+          MINIMAX_H3_KIE_FALLBACK: 'tecnico+recusa',
+        }).generateMinimaxH3ImageToVideo(I2V_INPUT),
+      ).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(ProviderFailureError);
+      expect((error as Error).message).toBe(
+        'O serviço de vídeo não respondeu como esperado. Tente novamente em alguns instantes.',
+      );
+      expect(kieCalls()).toHaveLength(0);
+    });
+
+    it("kie com tempo esgotado no createTask + 'tecnico': WaveSpeed intocada", async () => {
+      mockProviders({ kie: 'start-timeout' });
+      await expect(
+        run(
+          buildProvider({
+            ...BOTH_KEYS,
+            MINIMAX_H3_PROVIDER: 'kie',
+            MINIMAX_H3_KIE_FALLBACK: 'tecnico',
+          }).generateMinimaxH3ImageToVideo(I2V_INPUT),
+        ),
+      ).rejects.toBeInstanceOf(ProviderFailureError);
+      expect(wavespeedCalls()).toHaveLength(0);
+    });
+
+    it("kie code 200 sem taskId + 'tecnico': WaveSpeed intocada", async () => {
+      mockProviders({ kie: 'start-no-task' });
+      await expect(
+        run(
+          buildProvider({
+            ...BOTH_KEYS,
+            MINIMAX_H3_PROVIDER: 'kie',
+            MINIMAX_H3_KIE_FALLBACK: 'tecnico',
+          }).generateMinimaxH3TextToVideo(T2V_INPUT),
+        ),
+      ).rejects.toBeInstanceOf(ProviderFailureError);
+      expect(wavespeedCalls()).toHaveLength(0);
+    });
+
+    it("rede ANTES do envio (ECONNREFUSED) na WaveSpeed + 'tecnico': desvia", async () => {
+      mockProviders({ wavespeed: 'start-econnrefused' });
+      const result = await run(
+        buildProvider({
+          ...BOTH_KEYS,
+          MINIMAX_H3_KIE_FALLBACK: 'tecnico',
+        }).generateMinimaxH3ImageToVideo(I2V_INPUT),
+      );
+
+      expect(kieCalls().filter((call) => call.url === KIE_CREATE)).toHaveLength(
+        1,
+      );
+      expect(result.modelUsed).toBe('wavespeed-ai/minimax-h3/image-to-video');
+    });
+  });
+
+  describe("'tecnico+recusa': falha final sem motivo do provedor não desvia", () => {
+    const env = { ...BOTH_KEYS, MINIMAX_H3_KIE_FALLBACK: 'tecnico+recusa' };
+
+    it("'failed' sem texto", async () => {
+      mockProviders({ wavespeed: 'failed-empty' });
+      await expect(
+        run(buildProvider(env).generateMinimaxH3ImageToVideo(I2V_INPUT)),
+      ).rejects.toThrow('A geração de vídeo falhou. Tente novamente.');
+      expect(kieCalls()).toHaveLength(0);
+    });
+
+    it('demora além da janela (a tarefa ainda pode terminar e cobrar)', async () => {
+      mockProviders({ wavespeed: 'processing' });
+      await expect(
+        run(buildProvider(env).generateMinimaxH3ImageToVideo(I2V_INPUT)),
+      ).rejects.toThrow('demorou mais que o esperado');
+      expect(kieCalls()).toHaveLength(0);
+    });
+
+    it("'failed' com o motivo do provedor desvia", async () => {
+      mockProviders({ wavespeed: 'failed-generic' });
+      const result = await run(
+        buildProvider(env).generateMinimaxH3ImageToVideo(I2V_INPUT),
+      );
+      expect(kieCalls().filter((call) => call.url === KIE_CREATE)).toHaveLength(
+        1,
+      );
+      expect(result.modelUsed).toBe('wavespeed-ai/minimax-h3/image-to-video');
+    });
+  });
+
+  describe('desvio que também falha: o motivo certo sobe', () => {
+    it('moderação na WaveSpeed + 402 na kie: sobe a moderação, não o "tente de novo"', async () => {
+      mockProviders({ wavespeed: 'failed-moderation', kie: 'start-402' });
+      const error = await run(
+        buildProvider({
+          ...BOTH_KEYS,
+          MINIMAX_H3_KIE_FALLBACK: 'tecnico+recusa',
+        }).generateMinimaxH3ImageToVideo(I2V_INPUT),
+      ).catch((caught: unknown) => caught);
+
+      expect(kieCalls().filter((call) => call.url === KIE_CREATE)).toHaveLength(
+        1,
+      );
+      expect(error).not.toBeInstanceOf(ProviderFailureError);
+      expect((error as Error).message).toMatch(/moderation/);
+    });
+
+    it('início falho na WaveSpeed + 430 na kie: sobe o bloqueio da kie', async () => {
+      mockProviders({ wavespeed: 'start-500', kie: 'fail-430' });
+      const error = await run(
+        buildProvider({
+          ...BOTH_KEYS,
+          MINIMAX_H3_KIE_FALLBACK: 'tecnico',
+        }).generateMinimaxH3ImageToVideo(I2V_INPUT),
+      ).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ContentSafetyError);
+      expect((error as Error).message).toBe(
+        'Content rejected by moderation (430)',
+      );
+    });
+
+    it('início falho na WaveSpeed + falha técnica na kie: sobe o erro da WaveSpeed', async () => {
+      mockProviders({ wavespeed: 'start-500', kie: 'start-402' });
+      const error = await run(
+        buildProvider({
+          ...BOTH_KEYS,
+          MINIMAX_H3_KIE_FALLBACK: 'tecnico',
+        }).generateMinimaxH3ImageToVideo(I2V_INPUT),
+      ).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ProviderFailureError);
+      expect((error as ProviderFailureError).providerDetail).toMatch(/^500 /);
+    });
+  });
+
   describe('shouldDivertMinimaxH3', () => {
     const technical = new ProviderFailureError(
       'Não foi possível gerar o vídeo agora.',
@@ -458,6 +701,19 @@ describe('WavespeedVideoProvider · MiniMax H3 na kie (primário e desvio)', () 
     );
     const moderation = new Error('Content flagged by moderation');
     const minor = new Error('Content moderation blocked: sexual/minors');
+    const failedWithoutText = new Error(VIDEO_MESSAGES.failed);
+    const statusWithoutText = new ProviderFailureError(
+      VIDEO_MESSAGES.failed,
+      'status=timeout',
+    );
+    const kieWithoutText = new ProviderFailureError(
+      VIDEO_MESSAGES.failed,
+      'unknown error (500)',
+    );
+    const kieWithText = new ProviderFailureError(
+      VIDEO_MESSAGES.failed,
+      'internal error (500)',
+    );
 
     it.each([
       ['off', 'start', 'técnica', false, technical],
@@ -467,10 +723,17 @@ describe('WavespeedVideoProvider · MiniMax H3 na kie (primário e desvio)', () 
       ['tecnico+recusa', 'final', 'moderação', true, moderation],
       ['tecnico+recusa', 'start', 'menor', false, minor],
       ['tecnico+recusa', 'final', 'menor', false, minor],
+      ['tecnico+recusa', 'final', "'failed' sem texto", false, failedWithoutText],
+      ['tecnico+recusa', 'final', 'timeout sem erro', false, statusWithoutText],
+      ['tecnico+recusa', 'final', 'kie sem failMsg', false, kieWithoutText],
+      ['tecnico+recusa', 'final', 'kie com failMsg', true, kieWithText],
+      ['tecnico+recusa', 'final', 'consulta fora do ar', false, technical],
     ] as const)(
       'modo %s, falha %s (%s) → desvia=%s',
       (mode, stage, _label, expected, error) => {
-        expect(shouldDivertMinimaxH3(mode, stage, error)).toBe(expected);
+        expect(
+          shouldDivertMinimaxH3(mode, stage, error, VIDEO_MESSAGES),
+        ).toBe(expected);
       },
     );
   });
