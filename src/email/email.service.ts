@@ -584,7 +584,7 @@ export class EmailService implements OnModuleInit {
    */
   async sendPurchaseWithoutAccountEmail(
     to: string,
-    params: { locale: MailLocale; productName: string },
+    params: { locale: MailLocale; productName: string; brand?: Brand },
   ): Promise<boolean> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping purchase-without-account email');
@@ -601,7 +601,7 @@ export class EmailService implements OnModuleInit {
     const html = renderBrandEmail({
       locale: params.locale,
       preheader: copy.preheader,
-      bannerUrl: brandBannerUrl(params.locale, to),
+      bannerUrl: this.bannerFor(params.locale, to, params.brand),
       title: copy.title,
       paragraphs: [copy.received(escapeHtml(params.productName), escapeHtml(to)), copy.howTo],
       cta: { label: copy.button, url: signupUrl },
@@ -610,7 +610,8 @@ export class EmailService implements OnModuleInit {
     });
 
     try {
-      const { error } = await this.client.emails.send({ from: this.fromEmail, to: [to], subject: copy.subject, html });
+      // Produto de outra marca (Funvmake): remetente, nome e link da marca da venda.
+      const { error } = await this.client.emails.send({ ...this.branded({ subject: copy.subject, html }, params.brand), to: [to] });
       if (error) {
         this.logger.error(`Failed to send purchase-without-account email to ${to}: ${JSON.stringify(error)}`);
         return false;

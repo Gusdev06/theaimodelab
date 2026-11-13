@@ -318,6 +318,7 @@ export class PerfectpayWebhookService {
       webhookLogId: ctx.webhookLogId,
       locale: resolvePerfectpayBuyerLocale(payload, this.productLocales()),
       productName,
+      codeCandidates: this.extractPlanCandidates(payload),
     });
   }
 

@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 import type { MailLocale } from '../email/brand-email';
+import { resolveBrand } from '../brand/brand';
 
 /**
  * Plano ou pacote PAGO sem conta com o e-mail da compra (B-01, auditoria da jornada 13/11).
@@ -56,6 +57,8 @@ export class NoAccountPurchasesService {
     webhookLogId?: string | null;
     locale: MailLocale;
     productName: string;
+    /** Códigos do plano/oferta da venda: dizem se é produto de outra marca (checkout_codes.brand). */
+    codeCandidates?: readonly string[];
   }): Promise<{ recorded: boolean; emailSent: boolean }> {
     const email = NoAccountPurchasesService.normalizeEmail(params.email);
     try {
@@ -87,9 +90,11 @@ export class NoAccountPurchasesService {
         },
       });
 
+      const brandKey = await this.brandOfSale(params.gateway, params.codeCandidates ?? []);
       const emailSent = await this.emailService.sendPurchaseWithoutAccountEmail(email, {
         locale: params.locale,
         productName: params.productName,
+        ...(brandKey !== 'taml' ? { brand: resolveBrand(brandKey) } : {}),
       });
       this.logger.warn(
         `Venda ${params.saleCode} (${params.gateway}, ${params.productName}) sem conta para ${email}: guardada; ` +
@@ -99,6 +104,24 @@ export class NoAccountPurchasesService {
     } catch (error) {
       this.logger.error(`Falha ao guardar a venda ${params.saleCode} sem conta (${email}): ${this.message(error)}`);
       return { recorded: false, emailSent: false };
+    }
+  }
+
+  /**
+   * Marca do produto vendido: venda de produto da Funvmake (código em checkout_codes com brand 'funvmake') não pode
+   * receber e-mail com a arte e o link da The AI Model Lab. Falha ou código desconhecido = origem.
+   */
+  private async brandOfSale(gateway: NoAccountGateway, candidates: readonly string[]): Promise<string> {
+    if (candidates.length === 0) return 'taml';
+    try {
+      const row = await this.prisma.checkoutCode.findFirst({
+        where: { gateway, code: { in: [...candidates] }, isActive: true, brand: { not: 'taml' } },
+        select: { brand: true },
+      });
+      return row?.brand ?? 'taml';
+    } catch (error) {
+      this.logger.warn(`Marca da venda sem conta não lida (segue como origem): ${this.message(error)}`);
+      return 'taml';
     }
   }
 

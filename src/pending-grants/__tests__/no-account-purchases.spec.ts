@@ -43,6 +43,7 @@ function setup() {
       findUnique: jest.fn(async ({ where }: { where: Row }) => users.find((u) => u.email === where.email) ?? null),
     },
     plan: { findFirst: jest.fn(async () => ({ id: 'plan-pro', slug: 'pro', name: 'Pro' })) },
+    checkoutCode: { findFirst: jest.fn(async (): Promise<{ brand: string } | null> => null) },
     creditPackage: {
       findFirst: jest.fn(async () => ({ id: 'pkg-mega', name: 'Mega', credits: 25000 })),
     },
@@ -201,6 +202,27 @@ describe('Compra paga sem conta (B-01)', () => {
 
     const marker = logs.find((row) => row.provider === NO_ACCOUNT_PROVIDER)!;
     expect(marker.processed).toBe(true);
+  });
+
+  it('produto da Funvmake: o e-mail de "crie sua conta" sai com a marca da venda, sem a arte da origem', async () => {
+    const previous = process.env.FUNVMAKE_FRONTEND_URL;
+    process.env.FUNVMAKE_FRONTEND_URL = 'https://funvmake.example';
+    try {
+      const { prisma, perfectpay, emailService } = setup();
+      prisma.checkoutCode.findFirst.mockResolvedValueOnce({ brand: 'funvmake' });
+      await perfectpay.handle(planSale('approved'));
+      expect(prisma.checkoutCode.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ gateway: 'perfectpay', brand: { not: 'taml' } }) }),
+      );
+      expect(emailService.sendPurchaseWithoutAccountEmail).toHaveBeenCalledWith('compradora@mail.com', {
+        locale: 'es',
+        productName: 'Pro',
+        brand: expect.objectContaining({ key: 'funvmake' }),
+      });
+    } finally {
+      if (previous === undefined) delete process.env.FUNVMAKE_FRONTEND_URL;
+      else process.env.FUNVMAKE_FRONTEND_URL = previous;
+    }
   });
 
   it('Cakto: pacote pago sem conta entra no cadastro, uma vez', async () => {

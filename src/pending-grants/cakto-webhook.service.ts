@@ -360,6 +360,7 @@ export class CaktoWebhookService {
         'pt',
       ),
       productName,
+      codeCandidates: this.extractOfferCandidates(data),
     });
   }
 
