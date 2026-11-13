@@ -84,9 +84,7 @@ describe('SeedreamProvider · plano B na WaveSpeed (TKT-216)', () => {
     for (let i = 0; i < 50 && !outcome; i++)
       await jest.advanceTimersByTimeAsync(5_000);
     const settled = outcome as
-      | { ok: true; value: T }
-      | { ok: false; error: unknown }
-      | null;
+      { ok: true; value: T } | { ok: false; error: unknown } | null;
     if (!settled) throw new Error('a geração não terminou no tempo simulado');
     if (!settled.ok) throw settled.error;
     return settled.value;
@@ -129,14 +127,16 @@ describe('SeedreamProvider · plano B na WaveSpeed (TKT-216)', () => {
     expect(result).toEqual({
       outputUrls: ['https://cdn.test/generations/gen-1/output_0.jpg'],
       modelUsed: 'sem-censura',
+      engine: 'pro',
     });
     const wsCreate = calls.find(
       (call) =>
         call.url === 'https://ws.test/api/v3/bytedance/seedream-v5.0-pro',
     );
     const sent = sentBody(wsCreate);
+    // a âncora de adulto (adult-anchor) vem colada no fim do prompt
     expect(sent).toMatchObject({
-      prompt: 'adult woman, 28 years old',
+      prompt: expect.stringContaining('adult woman, 28 years old'),
       resolution: '2k',
       aspect_ratio: '3:4',
     });

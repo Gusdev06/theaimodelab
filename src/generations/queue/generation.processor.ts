@@ -28,7 +28,12 @@ import {
   type MinimaxH3AspectRatio,
 } from '../providers/wavespeed-video.provider';
 import { SeedreamLiteProvider } from '../providers/seedream-lite.provider';
-import { SeedreamProvider } from '../providers/seedream.provider';
+import {
+  SeedreamProvider,
+  SeedreamGenerationResult,
+  UnlockedEngine,
+  isUnlockedEngineSwapContext,
+} from '../providers/seedream.provider';
 import { GptImageProvider } from '../providers/gpt-image.provider';
 import { DeepDeepProvider } from '../providers/deepdeep.provider';
 import { WavespeedAudioProvider } from '../providers/wavespeed-audio.provider';
@@ -1034,8 +1039,12 @@ export class GenerationProcessor extends WorkerHost {
         // "Unlocked" (sem-censura) é o modelo sem censura: não aplica o wrapper
         // de segurança que força roupa no personagem.
         skipSafetyWrapper: true,
+        // motor do Unlocked (UNLOCKED_ENGINE): canário estável por usuário
+        engineSwapEligible: true,
+        canaryKey: data.userId,
       });
 
+      await this.recordUnlockedEngine(data.generationId, result.engine);
       await this.completeGeneration(data.generationId, result, startTime);
       return;
     }
@@ -1184,8 +1193,12 @@ export class GenerationProcessor extends WorkerHost {
         // "Unlocked" (sem-censura) é o modelo sem censura: não aplica o wrapper
         // de segurança que força roupa no personagem.
         skipSafetyWrapper: true,
+        // motor do Unlocked (UNLOCKED_ENGINE): canário estável por usuário
+        engineSwapEligible: true,
+        canaryKey: data.userId,
       });
 
+      await this.recordUnlockedEngine(data.generationId, result.engine);
       await this.completeGeneration(data.generationId, result, startTime);
       return;
     }
@@ -2866,7 +2879,7 @@ export class GenerationProcessor extends WorkerHost {
     // Skip if CRON already finalized this generation
     const preCheck = await this.prisma.generation.findUnique({
       where: { id: generationId },
-      select: { status: true },
+      select: { status: true, userId: true },
     });
     if (
       preCheck?.status === GenerationStatus.FAILED ||
@@ -2892,7 +2905,7 @@ export class GenerationProcessor extends WorkerHost {
     const imageUrls =
       ownCopies && ownCopies.length === storedUrls.length ? ownCopies : storedUrls;
 
-    let result: { outputUrls: string[]; modelUsed: string };
+    let result: SeedreamGenerationResult;
     try {
       result = await this.seedreamProvider.generateImage({
         id: generationId,
@@ -2902,6 +2915,10 @@ export class GenerationProcessor extends WorkerHost {
         imageUrls: imageUrls.length ? imageUrls : undefined,
         // Fallback também sem censura — não aplica o wrapper que força roupa.
         skipSafetyWrapper: true,
+        // o desvio das imagens segue o canário do Unlocked; troca de rosto, provador e o desvio do próprio Seedream
+        // Lite ficam no Pro (ver isUnlockedEngineSwapContext)
+        engineSwapEligible: isUnlockedEngineSwapContext(context),
+        canaryKey: preCheck?.userId ?? undefined,
       });
     } catch (fallbackError) {
       // O motivo que o usuário precisa ver é o bloqueio original, não o erro do
@@ -2938,6 +2955,7 @@ export class GenerationProcessor extends WorkerHost {
           ...params,
           seedreamSafetyFallback: true,
           seedreamFallbackFrom: context,
+          ...(result.engine === 'lite' ? { unlockedEngine: 'lite' } : {}),
         },
       },
     });
@@ -3047,6 +3065,36 @@ export class GenerationProcessor extends WorkerHost {
       where: { id: generationId },
       data: { processingStartedAt: new Date() },
     });
+  }
+
+  /**
+   * Grava em `parameters.unlockedEngine` quando o Unlocked rodou no motor alternativo (UNLOCKED_ENGINE=lite), para o
+   * cockpit separar custo e falha por motor. No Pro não grava nada: sem a chave = Pro, igual a antes.
+   */
+  private async recordUnlockedEngine(
+    generationId: string,
+    engine: UnlockedEngine,
+  ): Promise<void> {
+    if (engine !== 'lite') return;
+    try {
+      const existing = await this.prisma.generation.findUnique({
+        where: { id: generationId },
+        select: { parameters: true },
+      });
+      const params =
+        existing?.parameters && typeof existing.parameters === 'object'
+          ? (existing.parameters as Record<string, unknown>)
+          : {};
+      await this.prisma.generation.update({
+        where: { id: generationId },
+        data: { parameters: { ...params, unlockedEngine: engine } },
+      });
+    } catch (error) {
+      // só rótulo de custo: não derruba uma geração que já deu certo
+      this.logger.warn(
+        `[UNLOCKED_ENGINE] gen=${generationId} não gravou o motor: ${(error as Error).message}`,
+      );
+    }
   }
 
   private async completeGeneration(

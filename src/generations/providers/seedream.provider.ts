@@ -1,9 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'crypto';
 import * as sharp from 'sharp';
 import { UploadsService } from '../../uploads/uploads.service';
 import { GenerationResult } from './theaimodelab.provider';
-import { ContentSafetyError } from '../errors/content-safety.error';
+import {
+  ContentSafetyError,
+  isMinorSafetyBlock,
+} from '../errors/content-safety.error';
+import { isMinorRefusal } from '../errors/minor-refusal';
 import { ProviderFailureError } from '../errors/failure-reason';
 import { adultSafePrompt } from '../../content-safety/adult-anchor';
 
@@ -13,6 +18,28 @@ import { adultSafePrompt } from '../../content-safety/adult-anchor';
 // SeedreamLiteProvider — não há env própria.
 const KIE_MODEL_T2I = 'seedream/5-pro-text-to-image';
 const KIE_MODEL_I2I = 'seedream/5-pro-image-to-image';
+
+// Motor do Unlocked (13/11/2026): o Seedream 5 Lite, na mesma conta da KIE, custa bem menos que o Pro. Fica atrás de
+// UNLOCKED_ENGINE=lite, com canário por usuário (UNLOCKED_ENGINE_CANARY_PCT, padrão 100 quando o motor é lite) e o
+// Pro como reserva automática se o Lite falhar ou recusar (recusa por menor nunca é refeita). Sem a env = Pro, igual
+// a antes. Só vale para quem pede (`engineSwapEligible`): Unlocked direto e desvio de segurança; troca de rosto e
+// Undress seguem no Pro.
+const KIE_LITE_T2I = 'seedream/5-lite-text-to-image';
+const KIE_LITE_I2I = 'seedream/5-lite-image-to-image';
+export type UnlockedEngine = 'pro' | 'lite';
+const LITE_POLL_ATTEMPTS = 45;
+
+/**
+ * Desvio de segurança que pode rodar no motor alternativo do Unlocked: só o das imagens (processImage*,
+ * processNanoBanana). Troca de rosto e provador ficam no Pro, e o desvio do próprio Seedream Lite também (mandar de
+ * volta ao Lite que acabou de recusar é chamada perdida).
+ */
+export function isUnlockedEngineSwapContext(context: string): boolean {
+  return (
+    /^process(Image|NanoBanana)/.test(context) &&
+    !context.endsWith(':seedream-5-lite')
+  );
+}
 
 // Plano B do Unlocked (TKT-216): quando a KIE nem aceita a tarefa (saldo zerado, 5xx, rede), a mesma geração roda no
 // Seedream V5.0 Pro da WaveSpeed, que era o motor do Unlocked até agosto. Só com UNLOCKED_WAVESPEED_FALLBACK=true e
@@ -99,6 +126,15 @@ export interface SeedreamImageInput {
   skipSafetyWrapper?: boolean;
   /** Tag salva em `modelUsed` (default `sem-censura`; undress usa `deepdeep`). */
   modelUsedTag?: string;
+  /** Pode rodar no motor alternativo do Unlocked (UNLOCKED_ENGINE). Só Unlocked direto e desvio de segurança. */
+  engineSwapEligible?: boolean;
+  /** Chave do canário (o id do usuário): a mesma pessoa cai sempre no mesmo motor. Sem ela, usa o id da geração. */
+  canaryKey?: string;
+}
+
+/** Resultado do Seedream com o motor que de fato gerou (para o custo por motor no cockpit). */
+export interface SeedreamGenerationResult extends GenerationResult {
+  engine: UnlockedEngine;
 }
 
 interface CreateTaskResponse {
@@ -150,6 +186,8 @@ export class SeedreamProvider {
   private readonly wavespeedBaseUrl: string;
   private readonly wavespeedApiKey: string;
   private readonly wavespeedFallbackEnabled: boolean;
+  private readonly unlockedEngine: UnlockedEngine;
+  private readonly unlockedCanaryPct: number;
 
   constructor(
     private readonly configService: ConfigService,
@@ -177,6 +215,23 @@ export class SeedreamProvider {
     this.wavespeedFallbackEnabled =
       (fallbackFlag === 'true' || fallbackFlag === '1') &&
       !!this.wavespeedApiKey;
+    const engineFlag = String(
+      this.configService.get<string>('UNLOCKED_ENGINE', '') ?? '',
+    )
+      .trim()
+      .toLowerCase();
+    this.unlockedEngine = engineFlag === 'lite' ? 'lite' : 'pro';
+    const pctRaw = String(
+      this.configService.get<string>('UNLOCKED_ENGINE_CANARY_PCT', '') ?? '',
+    ).trim();
+    // Sem valor (ou inválido) = 0%: o canário precisa ser dito por extenso (env em branco no painel nunca vira "todos").
+    const pct = /^\d{1,3}$/.test(pctRaw) ? Number(pctRaw) : 0;
+    this.unlockedCanaryPct = Math.min(100, pct);
+    if (this.unlockedEngine === 'lite') {
+      this.logger.log(
+        `[UNLOCKED_ENGINE] motor alternativo=lite canário=${this.unlockedCanaryPct}%${this.unlockedCanaryPct === 0 ? ' (UNLOCKED_ENGINE_CANARY_PCT vazio ou inválido: ninguém no Lite)' : ''}`,
+      );
+    }
     if (!this.apiKey) {
       this.logger.warn(
         'NANO_BANANA_API_KEY (KIE) is not set. Image generation will fail with a 401 from the provider.',
@@ -184,15 +239,70 @@ export class SeedreamProvider {
     }
   }
 
-  async generateImage(input: SeedreamImageInput): Promise<GenerationResult> {
+  async generateImage(
+    input: SeedreamImageInput,
+  ): Promise<SeedreamGenerationResult> {
     if (!this.apiKey) {
       this.logger.error('NANO_BANANA_API_KEY (KIE) is not configured.');
       throw new Error(USER_ERRORS.configMissing);
     }
 
-    const quality = QUALITY_MAP[input.resolution] ?? 'high';
+    if (this.pickEngine(input) === 'lite') {
+      try {
+        return await this.generateOnKie(input, 'lite');
+      } catch (error) {
+        // Recusa de CONTEÚDO do Lite é terminal, como a do Pro sempre foi: o Pro não vira "segunda opinião" (com o
+        // nsfw_checker desligado, o que sobra de moderação é o duro: menor, CSAM, pessoa real). Só a falha técnica
+        // (saldo, rede, 5xx, tempo, upload) refaz no Pro.
+        if (
+          error instanceof ContentSafetyError ||
+          isMinorSafetyBlock(error) ||
+          isMinorRefusal(error)
+        ) {
+          throw error;
+        }
+        this.logger.warn(
+          `[UNLOCKED_ENGINE] gen=${input.id} o Lite não entregou (${(error as Error).message}); refazendo no Pro`,
+        );
+      }
+    }
+    return this.generateOnKie(input, 'pro');
+  }
+
+  /**
+   * Motor desta geração. Pro, salvo quando UNLOCKED_ENGINE=lite, a chamada aceita troca de motor e a pessoa (canaryKey)
+   * cai dentro do canário. O sorteio é estável: o mesmo usuário vê sempre o mesmo motor.
+   */
+  pickEngine(input: SeedreamImageInput): UnlockedEngine {
+    if (this.unlockedEngine !== 'lite' || !input.engineSwapEligible) {
+      return 'pro';
+    }
+    if (this.unlockedCanaryPct >= 100) return 'lite';
+    if (this.unlockedCanaryPct <= 0) return 'pro';
+    const digest = createHash('sha256')
+      .update(`unlocked-engine:${input.canaryKey || input.id}`)
+      .digest();
+    return digest.readUInt32BE(0) % 100 < this.unlockedCanaryPct
+      ? 'lite'
+      : 'pro';
+  }
+
+  private async generateOnKie(
+    input: SeedreamImageInput,
+    engine: UnlockedEngine,
+  ): Promise<SeedreamGenerationResult> {
     const hasImages = !!input.imageUrls?.length;
-    const model = hasImages ? KIE_MODEL_I2I : KIE_MODEL_T2I;
+    // Pro: basic = 1K, high = 2K. Lite: basic = 2K (high = 3K): o Lite sempre em 2K, a resolução do Unlocked.
+    const quality =
+      engine === 'lite' ? 'basic' : (QUALITY_MAP[input.resolution] ?? 'high');
+    const model =
+      engine === 'lite'
+        ? hasImages
+          ? KIE_LITE_I2I
+          : KIE_LITE_T2I
+        : hasImages
+          ? KIE_MODEL_I2I
+          : KIE_MODEL_T2I;
 
     // Prompt: o modelo sem censura (skipSafetyWrapper: Unlocked, despir, desvio de segurança) recebe o pedido com a
     // âncora de adulto (toda pessoa gerada é adulta; gíria de juventude vira "mulher adulta"); o resto ganha o wrapper
@@ -206,7 +316,7 @@ export class SeedreamProvider {
     const aspectRatio = await this.resolveAspectRatio(input);
 
     this.logger.log(
-      `[SEEDREAM_PRO] mode=${hasImages ? 'image-to-image' : 'text-to-image'} quality=${quality} aspectRatio=${aspectRatio} images=${input.imageUrls?.length ?? 0} skipSafety=${!!input.skipSafetyWrapper} prompt="${input.prompt.slice(0, 120)}"`,
+      `[SEEDREAM_PRO] engine=${engine} mode=${hasImages ? 'image-to-image' : 'text-to-image'} quality=${quality} aspectRatio=${aspectRatio} images=${input.imageUrls?.length ?? 0} skipSafety=${!!input.skipSafetyWrapper} prompt="${input.prompt.slice(0, 120)}"`,
     );
 
     const body = {
@@ -215,6 +325,7 @@ export class SeedreamProvider {
         prompt: finalPrompt,
         aspect_ratio: aspectRatio,
         quality,
+        // JPEG nos dois motores: sem isso o Lite devolve PNG de ~5 MB (testado em 13/11: com jpeg, ~400 KB)
         output_format: 'jpeg',
         // Este é o provider "sem-censura" (undress / face-swap unlocked /
         // fallback de segurança) — nunca bloqueamos no checker da KIE.
@@ -225,10 +336,12 @@ export class SeedreamProvider {
 
     let taskId: string;
     try {
-      taskId = await this.submitTask(body);
+      taskId = await this.submitTask(body, engine === 'lite');
     } catch (error) {
       // recusa de conteúdo segue o caminho de sempre; só a falha técnica de início vai ao plano B
+      // o Lite não vai à WaveSpeed: quem cuida da falha dele é o Pro, que tem o próprio plano B
       if (
+        engine === 'lite' ||
         error instanceof ContentSafetyError ||
         !this.canUseWavespeedFallback(input)
       ) {
@@ -246,7 +359,11 @@ export class SeedreamProvider {
     }
     this.logger.log(`[SEEDREAM_PRO] Task submitted: ${taskId}`);
 
-    const resultUrls = await this.pollTaskStatus(taskId);
+    // o Lite responde em ~40 s: espera curta (~3 min) para o Pro ainda caber no prazo do cron de travadas (20 min)
+    const resultUrls = await this.pollTaskStatus(
+      taskId,
+      engine === 'lite' ? LITE_POLL_ATTEMPTS : undefined,
+    );
     this.logger.log(
       `[SEEDREAM_PRO] Task ${taskId} completed — resultUrls=${resultUrls.length}`,
     );
@@ -262,7 +379,11 @@ export class SeedreamProvider {
     }
 
     this.logger.log(`${outputUrls.length} image(s) uploaded to S3`);
-    return { outputUrls, modelUsed: input.modelUsedTag ?? 'sem-censura' };
+    return {
+      outputUrls,
+      modelUsed: input.modelUsedTag ?? 'sem-censura',
+      engine,
+    };
   }
 
   /**
@@ -328,7 +449,10 @@ export class SeedreamProvider {
     return w / h;
   }
 
-  private async submitTask(body: Record<string, unknown>): Promise<string> {
+  private async submitTask(
+    body: Record<string, unknown>,
+    keepProviderDetail = false,
+  ): Promise<string> {
     const url = `${this.baseUrl}/api/v1/jobs/createTask`;
 
     // Retry once em erros transientes (429/5xx).
@@ -359,7 +483,10 @@ export class SeedreamProvider {
         this.logger.error(
           `[SEEDREAM_PRO] createTask failed: ${data.msg} (code ${data.code})`,
         );
-        throw new Error(USER_ERRORS.startFailed);
+        throw this.startError(
+          keepProviderDetail,
+          `${data.msg} (code ${data.code})`,
+        );
       }
 
       lastStatus = response.status;
@@ -381,7 +508,20 @@ export class SeedreamProvider {
     this.logger.error(
       `[SEEDREAM_PRO] createTask failed status=${lastStatus} body=${lastErrorText}`,
     );
-    throw new Error(USER_ERRORS.startFailed);
+    throw this.startError(
+      keepProviderDetail,
+      `status=${lastStatus} ${lastErrorText.slice(0, 500)}`,
+    );
+  }
+
+  /**
+   * Erro de início. No Pro segue o Error genérico de sempre. No Lite guarda o texto do provedor
+   * (ProviderFailureError.providerDetail) para a trava de menor ler antes de decidir refazer no Pro.
+   */
+  private startError(keepProviderDetail: boolean, providerDetail: string) {
+    return keepProviderDetail
+      ? new ProviderFailureError(USER_ERRORS.startFailed, providerDetail)
+      : new Error(USER_ERRORS.startFailed);
   }
 
   private async pollTaskStatus(
@@ -582,7 +722,7 @@ export class SeedreamProvider {
     finalPrompt: string,
     aspectRatio: string,
     originalError: Error,
-  ): Promise<GenerationResult> {
+  ): Promise<SeedreamGenerationResult> {
     const hasImages = !!input.imageUrls?.length;
     const model = hasImages ? WS_MODEL_EDIT : WS_MODEL_T2I;
     const body: Record<string, unknown> = {
@@ -611,7 +751,7 @@ export class SeedreamProvider {
       this.logger.log(
         `[WAVESPEED_SEEDREAM] gen=${input.id} ${outputUrls.length} image(s) uploaded to S3`,
       );
-      return { outputUrls, modelUsed: 'sem-censura' };
+      return { outputUrls, modelUsed: 'sem-censura', engine: 'pro' };
     } catch (fallbackError) {
       if (fallbackError instanceof ContentSafetyError) throw fallbackError;
       this.logger.error(
