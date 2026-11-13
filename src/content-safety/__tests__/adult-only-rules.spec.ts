@@ -62,6 +62,11 @@ describe('adult-only-rules (cópia da trava do site)', () => {
       'estudante universitária de 20 anos',
       'turning 19 soon, adult woman',
       'faz 18 anos que trabalho como modelo, mulher nua',
+      // o "in" de lugar e o "next to" não são aniversário que vem; "turned" já passou
+      'she turned 18 in march, adult woman',
+      'woman standing next to the pool, she will be 20 next year',
+      'born in 2007, adult woman',
+      '18th birthday party photos, adult woman',
     ];
     it.each(adultTexts)('construtor (estrito): %s', (text) => {
       expect(checkAdultOnly(text, { adult: true }).ok).toBe(true);
@@ -89,6 +94,19 @@ describe('adult-only-rules (cópia da trava do site)', () => {
       'she will turn 18 tomorrow',
       'faz 18 anos mês que vem',
       'cumple 18 en marzo',
+      // revisão 13/11: "in" + prazo, "be" com futuro, "fazer" e o aniversário ordinal que ainda vem
+      'she turns 18 in a month',
+      'turning 18 in two weeks',
+      'turns 18 in 3 weeks',
+      "she'll be 18 next month",
+      'she will be 18 soon',
+      'vai fazer 18 anos em março',
+      '18th birthday next week',
+      'her 18th birthday is tomorrow',
+      // ano de nascimento: a idade mínima possível é ano atual - ano - 1
+      `born in ${new Date().getFullYear() - 18}`,
+      `nascida em ${new Date().getFullYear() - 1}`,
+      `born in ${new Date().getFullYear()}`,
     ];
     it.each(minorTexts)('construtor (estrito): %s', (text) => {
       expect(checkAdultOnly(text, { adult: true }).ok).toBe(false);

@@ -1598,10 +1598,35 @@ const isUnderFloor = (value: number) => value >= 1 && value < ageFloor;
  * tem menos de 18, então barra até 25, como antes de 13/11. Não é idade adulta escrita (essa é "22 anos", "aged 19").
  */
 const OPEN_COMPARATOR_MAX = 25;
-/** Verbo de fazer anos ("turning 18 soon", "faz 18 mês que vem", "cumple 18 pronto"). */
-const TURNING_VERBS = new Set(['turning', 'turns', 'turn', 'faz', 'fazendo', 'completa', 'completando', 'cumple', 'cumpliendo', 'cumplira']);
+/** Verbo de fazer anos ("turning 18 soon", "faz 18 mês que vem", "vai fazer 18 em março", "cumple 18 pronto"). */
+const TURNING_VERBS = new Set(['turning', 'turns', 'turn', 'faz', 'fazendo', 'fazer', 'fara', 'completa', 'completando', 'completar', 'completara', 'cumple', 'cumpliendo', 'cumplira', 'cumplir']);
+/** "be" só conta como fazer anos com o futuro antes ("she'll be 18 next month", "will be 18 soon", "going to be 18"). */
+const BE_FUTURE_BEFORE = new Set(['will', 'll', 'shall', 'gonna', 'to']);
 /** Depois do número: o aniversário ainda não chegou. */
 const FUTURE_MARKERS = new Set(['soon', 'next', 'tomorrow', 'shortly', 'later', 'this', 'breve', 'em', 'mes', 'semana', 'ano', 'amanha', 'logo', 'pronto', 'manana', 'proximo', 'proxima', 'dentro', 'en']);
+/** "in"/"within" + prazo ("in a month", "in two weeks", "in march"): sem o prazo, "in" é lugar ("turn 18 in the pool"). */
+const FUTURE_SPAN_WORDS = new Set([
+  'day', 'days', 'week', 'weeks', 'month', 'months', 'year', 'years', 'hour', 'hours',
+  'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+]);
+const FUTURE_SPAN_FILLERS = new Set(['a', 'an', 'the', 'one', 'two', 'three', 'four', 'five', 'six', 'few', 'couple', 'of', 'just', 'only', 'about', 'like']);
+
+/**
+ * Fim do marcador de futuro que começa em `index` ("soon", "next month", "in two weeks", "en marzo") ou -1.
+ * "next to" é lugar; "in"/"within" só com prazo logo depois.
+ */
+function futureEnd(tokens: string[], index: number): number {
+  const token = tokens[index] ?? '';
+  if (token === 'next' && tokens[index + 1] === 'to') return -1;
+  if (FUTURE_MARKERS.has(token)) return index;
+  if (token === 'in' || token === 'within') {
+    let next = index + 1;
+    while (next < index + 4 && FUTURE_SPAN_FILLERS.has(tokens[next] ?? '')) next++;
+    if (FUTURE_SPAN_WORDS.has(tokens[next] ?? '')) return next;
+    if (/^\d{1,2}$/.test(tokens[next] ?? '') && FUTURE_SPAN_WORDS.has(tokens[next + 1] ?? '')) return next + 1;
+  }
+  return -1;
+}
 
 /**
  * Idade abaixo do piso (18 por padrão) escrita no texto. `strict` (18+ e desenhado) lê também o verbo sem sujeito e o número sozinho
@@ -1661,12 +1686,15 @@ function underageNumber(text: string, strict: boolean, labelOnCommerce: boolean)
     // R5b aniversário que ainda vem ("turning 18 soon", "turns 18 next week", "will turn 18 tomorrow", "faz 18 mês que
     // vem", "cumple 18 pronto"): hoje tem N - 1. Com o piso de 25 o número sozinho já barrava; com o piso de 18 precisa
     // da regra (13/11), e ela vale também no pedido livre, onde a frase passava
-    if (TURNING_VERBS.has(token)) {
+    if (TURNING_VERBS.has(token) || (token === 'be' && BE_FUTURE_BEFORE.has(at(index - 1)))) {
       const found = numberAt(tokens, index + 1);
       let next = found ? found.end + 1 : -1;
       if (found && UNITS.has(at(next))) next++;
       if (found && at(next) === 'old') next++;
-      if (found && !found.decimal && found.value >= 1 && found.value <= ageFloor && FUTURE_MARKERS.has(at(next))) return phrase(index, next);
+      if (found && !found.decimal && found.value >= 1 && found.value <= ageFloor) {
+        const end = futureEnd(tokens, next);
+        if (end !== -1) return phrase(index, end);
+      }
     }
     // R6 meia idade sem unidade ("17 e meio", "17 and a half", "17 y medio") e "17 de idade"
     const half = numberAt(tokens, index);
@@ -1680,6 +1708,14 @@ function underageNumber(text: string, strict: boolean, labelOnCommerce: boolean)
     if (ordinal !== undefined && ordinal !== null) {
       const next = at(index + (ordinalDigits !== null ? 2 : 1));
       if (['birthday', 'bday', 'cumpleanos', 'aniversario'].includes(next) && isUnderFloor(ordinal)) return phrase(index, index + (ordinalDigits !== null ? 2 : 1));
+      // aniversário do piso que ainda vem ("18th birthday next week", "18th birthday is tomorrow"): hoje tem 17
+      if (['birthday', 'bday', 'cumpleanos', 'aniversario'].includes(next) && ordinal >= 1 && ordinal <= ageFloor) {
+        let after = index + (ordinalDigits !== null ? 3 : 2);
+        if (['is', 'e', 'es', 'sera', 'will', 'coming', 'comes'].includes(at(after))) after++;
+        if (at(after) === 'be' || at(after) === 'up') after++;
+        const end = futureEnd(tokens, after);
+        if (end !== -1) return phrase(index, end);
+      }
       if (['grade', 'grader', 'graders', 'serie', 'ano', 'curso', 'grau'].includes(next) && ordinal <= 12) return phrase(index, index + (ordinalDigits !== null ? 2 : 1));
     }
     if (ROMAN[token] && ['mis', 'sus', 'seus', 'meus', 'festa', 'fiesta', 'de', 'los', 'os', 'nos', 'baile'].includes(at(index - 1))) return phrase(index - 1, index);
@@ -1690,7 +1726,9 @@ function underageNumber(text: string, strict: boolean, labelOnCommerce: boolean)
       while (['em', 'in', 'en', 'no', 'el', 'of', 'de', 'da', 'do'].includes(at(back))) back--;
       const before = at(back);
       if (BIRTH_WORDS.has(before) || ['safra', 'geracao', 'generation', 'generacion', 'nascimento', 'birth', 'nacimiento'].includes(before) || ['baby', 'babies', 'bebe'].includes(at(index + 1))) {
-        if (isUnderFloor(CURRENT_YEAR - year)) return phrase(back, index);
+        // idade mínima possível = ano atual - ano - 1 (o aniversário deste ano pode não ter chegado): "born in 2008" pode
+        // ter 17; nascida no ano passado ou neste dá 0 ou -1, que também é menor (antes o piso >= 1 deixava passar)
+        if (year <= CURRENT_YEAR && CURRENT_YEAR - year - 1 < ageFloor) return phrase(back, index);
       }
       if (['class', 'turma', 'promocao', 'promocion'].includes(before) && year >= CURRENT_YEAR - 7) return phrase(back, index);
     }
