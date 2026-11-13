@@ -14,6 +14,8 @@ export type I18nTranslations = {
             "UNAUTHORIZED": string;
             "USER_NOT_FOUND": string;
             "GOOGLE_TOKEN_INVALID": string;
+            "INVALID_CODE": string;
+            "RESEND_WAIT": string;
         };
         "credits": {
             "INSUFFICIENT_CREDITS": string;
@@ -47,6 +49,22 @@ export type I18nTranslations = {
             "CURRENCY_NOT_SUPPORTED": string;
             "STRIPE_ERROR": string;
             "WEBHOOK_INVALID": string;
+        };
+        "validation": {
+            "EMAIL_INVALID": string;
+            "EMAIL_REQUIRED": string;
+            "NAME_REQUIRED": string;
+            "NAME_TOO_SHORT": string;
+            "NAME_TOO_LONG": string;
+            "PASSWORD_REQUIRED": string;
+            "PASSWORD_TOO_SHORT": string;
+            "PASSWORD_TOO_LONG": string;
+            "PASSWORD_WEAK": string;
+            "REFERRAL_CODE_TOO_LONG": string;
+            "REFERRAL_CODE_INVALID": string;
+            "CODE_REQUIRED": string;
+            "CODE_LENGTH": string;
+            "CODE_DIGITS": string;
         };
         "common": {
             "NOT_FOUND": string;
