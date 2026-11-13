@@ -2,8 +2,21 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { UploadsService } from '../../uploads/uploads.service';
 import { GenerationResult } from './theaimodelab.provider';
-import { ProviderFailureError } from '../errors/failure-reason';
+import { ProviderFailureError, rawFailureText } from '../errors/failure-reason';
 import { adultSafePrompt } from '../../content-safety/adult-anchor';
+import {
+  buildKieMinimaxH3ImageToVideoInput,
+  buildKieMinimaxH3TextToVideoInput,
+  KIE_MINIMAX_H3_I2V_MODEL,
+  KIE_MINIMAX_H3_T2V_MODEL,
+  KieMinimaxH3Client,
+  MinimaxH3Engine,
+  MinimaxH3FailureStage,
+  MinimaxH3FallbackMode,
+  parseMinimaxH3Engine,
+  parseMinimaxH3FallbackMode,
+  shouldDivertMinimaxH3,
+} from './kie-minimax-h3.client';
 
 /**
  * Teto do prompt que vai à WaveSpeed (o mesmo dos DTOs de vídeo): a âncora de adulto entra no fim sem passar dele.
@@ -236,6 +249,10 @@ export class WavespeedVideoProvider {
   private readonly logger = new Logger(WavespeedVideoProvider.name);
   private readonly baseUrl: string;
   private readonly apiKey: string;
+  /** MiniMax H3 na kie: null sem a NANO_BANANA_API_KEY (aí a kie nunca é usada, nem como desvio). */
+  private readonly kieMinimaxH3: KieMinimaxH3Client | null;
+  private readonly minimaxH3Primary: MinimaxH3Engine;
+  private readonly minimaxH3Fallback: MinimaxH3FallbackMode;
 
   constructor(
     private readonly configService: ConfigService,
@@ -251,6 +268,35 @@ export class WavespeedVideoProvider {
     if (!this.apiKey) {
       this.logger.warn(
         'WAVESPEED_API_KEY is not set. LTX Spicy video generation will fail with a 401 from the provider.',
+      );
+    }
+
+    const kieApiKey = String(
+      this.configService.get<string>('NANO_BANANA_API_KEY', '') ?? '',
+    ).trim();
+    this.kieMinimaxH3 = kieApiKey
+      ? new KieMinimaxH3Client(
+          this.configService.get<string>('NANO_BANANA_BASE_URL', 'https://api.kie.ai') ??
+            'https://api.kie.ai',
+          kieApiKey,
+          FAILURE_MESSAGES['vídeo'],
+        )
+      : null;
+    const engineFlag = parseMinimaxH3Engine(
+      this.configService.get<string>('MINIMAX_H3_PROVIDER', ''),
+    );
+    this.minimaxH3Primary = engineFlag === 'kie' && this.kieMinimaxH3 ? 'kie' : 'wavespeed';
+    this.minimaxH3Fallback = parseMinimaxH3FallbackMode(
+      this.configService.get<string>('MINIMAX_H3_KIE_FALLBACK', ''),
+    );
+    if (engineFlag === 'kie' && !this.kieMinimaxH3) {
+      this.logger.warn(
+        '[MINIMAX_H3] MINIMAX_H3_PROVIDER=kie sem NANO_BANANA_API_KEY: o H3 segue só na WaveSpeed.',
+      );
+    }
+    if (this.minimaxH3Primary !== 'wavespeed' || this.minimaxH3Fallback !== 'off') {
+      this.logger.log(
+        `[MINIMAX_H3] primário=${this.minimaxH3Primary} desvio=${this.minimaxH3Fallback}${this.minimaxH3Fallback !== 'off' && !this.isMinimaxH3EngineReady(this.otherMinimaxH3Engine(this.minimaxH3Primary)) ? ' (sem a chave do outro provedor: desvio desligado)' : ''}`,
       );
     }
   }
@@ -386,33 +432,46 @@ export class WavespeedVideoProvider {
   }
 
   // ─── MiniMax H3 — text-to-video ──────────────────────────────
+  // Roda na WaveSpeed ou na kie (MINIMAX_H3_PROVIDER / MINIMAX_H3_KIE_FALLBACK); o modelUsed é sempre o da
+  // WaveSpeed para o cockpit não mudar.
   async generateMinimaxH3TextToVideo(
     input: MinimaxH3TextToVideoInput,
   ): Promise<GenerationResult> {
-    if (!this.apiKey) {
-      throw new Error(
-        'Não foi possível gerar o vídeo agora. Entre em contato com o suporte.',
-      );
-    }
+    const prompt = adultSafePrompt(input.prompt, PROMPT_MAX_WITH_ANCHOR);
 
-    const duration = Math.min(15, Math.max(5, Math.round(input.durationSeconds)));
+    const resultUrl = await this.runMinimaxH3(input.id, {
+      wavespeed: async () => {
+        this.assertWavespeedKey();
+        const duration = Math.min(15, Math.max(5, Math.round(input.durationSeconds)));
 
-    this.logger.log(
-      `[MINIMAX_H3_T2V] gen=${input.id} resolution=${input.resolution} duration=${duration}s aspect=${input.aspectRatio ?? '16:9'} prompt="${input.prompt.slice(0, 80)}"`,
-    );
+        this.logger.log(
+          `[MINIMAX_H3_T2V] gen=${input.id} resolution=${input.resolution} duration=${duration}s aspect=${input.aspectRatio ?? '16:9'} prompt="${input.prompt.slice(0, 80)}"`,
+        );
 
-    const body: Record<string, unknown> = {
-      prompt: adultSafePrompt(input.prompt, PROMPT_MAX_WITH_ANCHOR),
-      resolution: input.resolution,
-      duration,
-      seed: -1,
-    };
-    if (input.aspectRatio) body.aspect_ratio = input.aspectRatio;
+        const body: Record<string, unknown> = {
+          prompt,
+          resolution: input.resolution,
+          duration,
+          seed: -1,
+        };
+        if (input.aspectRatio) body.aspect_ratio = input.aspectRatio;
 
-    const predictionId = await this.createPrediction(MINIMAX_H3_T2V_MODEL, body);
-    this.logger.log(`[MINIMAX_H3_T2V] prediction created: ${predictionId}`);
-
-    const resultUrl = await this.pollPrediction(predictionId);
+        const predictionId = await this.createPrediction(MINIMAX_H3_T2V_MODEL, body);
+        this.logger.log(`[MINIMAX_H3_T2V] prediction created: ${predictionId}`);
+        return predictionId;
+      },
+      kie: () => {
+        const kieInput = buildKieMinimaxH3TextToVideoInput({
+          prompt,
+          durationSeconds: input.durationSeconds,
+          aspectRatio: input.aspectRatio,
+        });
+        this.logger.log(
+          `[MINIMAX_H3] provedor=kie modo=t2v gen=${input.id} duration=${String(kieInput.duration)}s aspect=${String(kieInput.aspect_ratio)} resolution=${String(kieInput.resolution)} prompt="${input.prompt.slice(0, 80)}"`,
+        );
+        return this.requireKieMinimaxH3().createTask(KIE_MINIMAX_H3_T2V_MODEL, kieInput);
+      },
+    });
     const outputUrl = await this.downloadAndUpload(resultUrl, input.id, 0);
 
     return { outputUrls: [outputUrl], modelUsed: MINIMAX_H3_T2V_MODEL };
@@ -422,37 +481,113 @@ export class WavespeedVideoProvider {
   async generateMinimaxH3ImageToVideo(
     input: MinimaxH3ImageToVideoInput,
   ): Promise<GenerationResult> {
+    if (!input.imageUrl) {
+      throw new Error('MiniMax H3: imagem de entrada ausente.');
+    }
+    const prompt = adultSafePrompt(input.prompt, PROMPT_MAX_WITH_ANCHOR);
+
+    const resultUrl = await this.runMinimaxH3(input.id, {
+      wavespeed: async () => {
+        this.assertWavespeedKey();
+        const duration = Math.min(15, Math.max(5, Math.round(input.durationSeconds)));
+
+        this.logger.log(
+          `[MINIMAX_H3_I2V] gen=${input.id} resolution=${input.resolution} duration=${duration}s lastFrame=${input.lastImageUrl ? 'yes' : 'no'} prompt="${input.prompt.slice(0, 80)}"`,
+        );
+
+        const body: Record<string, unknown> = {
+          prompt,
+          image: input.imageUrl,
+          resolution: input.resolution,
+          duration,
+          seed: -1,
+        };
+        if (input.lastImageUrl) body.last_image = input.lastImageUrl;
+
+        const predictionId = await this.createPrediction(MINIMAX_H3_I2V_MODEL, body);
+        this.logger.log(`[MINIMAX_H3_I2V] prediction created: ${predictionId}`);
+        return predictionId;
+      },
+      kie: () => {
+        const kieInput = buildKieMinimaxH3ImageToVideoInput({
+          prompt,
+          imageUrl: input.imageUrl,
+          lastImageUrl: input.lastImageUrl,
+          durationSeconds: input.durationSeconds,
+        });
+        this.logger.log(
+          `[MINIMAX_H3] provedor=kie modo=i2v gen=${input.id} duration=${String(kieInput.duration)}s resolution=${String(kieInput.resolution)} lastFrame=${input.lastImageUrl ? 'yes' : 'no'} prompt="${input.prompt.slice(0, 80)}"`,
+        );
+        return this.requireKieMinimaxH3().createTask(KIE_MINIMAX_H3_I2V_MODEL, kieInput);
+      },
+    });
+    const outputUrl = await this.downloadAndUpload(resultUrl, input.id, 0);
+
+    return { outputUrls: [outputUrl], modelUsed: MINIMAX_H3_I2V_MODEL };
+  }
+
+  /**
+   * Cria a tarefa no primário e espera o vídeo; se falhar e o shouldDivertMinimaxH3 deixar, refaz uma vez no outro
+   * provedor. Devolve a URL do vídeo no provedor (a re-hospedagem fica com quem chama). `start` de cada lado só cria
+   * a tarefa: o que ele lança conta como falha de início; o que a espera lança conta como falha final.
+   */
+  private async runMinimaxH3(
+    generationId: string,
+    start: Record<MinimaxH3Engine, () => Promise<string>>,
+  ): Promise<string> {
+    const primary = this.minimaxH3Primary;
+    const secondary = this.otherMinimaxH3Engine(primary);
+    let stage: MinimaxH3FailureStage = 'start';
+    try {
+      const taskId = await start[primary]();
+      stage = 'final';
+      return await this.waitMinimaxH3(primary, taskId);
+    } catch (error) {
+      if (
+        !this.isMinimaxH3EngineReady(secondary) ||
+        !shouldDivertMinimaxH3(this.minimaxH3Fallback, stage, error)
+      ) {
+        throw error;
+      }
+      const detail = error instanceof Error ? rawFailureText(error) : String(error);
+      this.logger.warn(
+        `[MINIMAX_H3] gen=${generationId} ${primary} falhou (${stage === 'start' ? 'início' : 'fim'}) → desvio para ${secondary} (modo ${this.minimaxH3Fallback}): ${detail.slice(0, 200)}`,
+      );
+      const taskId = await start[secondary]();
+      return this.waitMinimaxH3(secondary, taskId);
+    }
+  }
+
+  private waitMinimaxH3(engine: MinimaxH3Engine, taskId: string): Promise<string> {
+    return engine === 'kie'
+      ? this.requireKieMinimaxH3().waitForResult(taskId)
+      : this.pollPrediction(taskId);
+  }
+
+  private otherMinimaxH3Engine(engine: MinimaxH3Engine): MinimaxH3Engine {
+    return engine === 'kie' ? 'wavespeed' : 'kie';
+  }
+
+  private isMinimaxH3EngineReady(engine: MinimaxH3Engine): boolean {
+    return engine === 'kie' ? this.kieMinimaxH3 !== null : !!this.apiKey;
+  }
+
+  private requireKieMinimaxH3(): KieMinimaxH3Client {
+    if (!this.kieMinimaxH3) {
+      throw new ProviderFailureError(
+        FAILURE_MESSAGES['vídeo'].unavailable,
+        'kie sem NANO_BANANA_API_KEY',
+      );
+    }
+    return this.kieMinimaxH3;
+  }
+
+  private assertWavespeedKey(): void {
     if (!this.apiKey) {
       throw new Error(
         'Não foi possível gerar o vídeo agora. Entre em contato com o suporte.',
       );
     }
-    if (!input.imageUrl) {
-      throw new Error('MiniMax H3: imagem de entrada ausente.');
-    }
-
-    const duration = Math.min(15, Math.max(5, Math.round(input.durationSeconds)));
-
-    this.logger.log(
-      `[MINIMAX_H3_I2V] gen=${input.id} resolution=${input.resolution} duration=${duration}s lastFrame=${input.lastImageUrl ? 'yes' : 'no'} prompt="${input.prompt.slice(0, 80)}"`,
-    );
-
-    const body: Record<string, unknown> = {
-      prompt: adultSafePrompt(input.prompt, PROMPT_MAX_WITH_ANCHOR),
-      image: input.imageUrl,
-      resolution: input.resolution,
-      duration,
-      seed: -1,
-    };
-    if (input.lastImageUrl) body.last_image = input.lastImageUrl;
-
-    const predictionId = await this.createPrediction(MINIMAX_H3_I2V_MODEL, body);
-    this.logger.log(`[MINIMAX_H3_I2V] prediction created: ${predictionId}`);
-
-    const resultUrl = await this.pollPrediction(predictionId);
-    const outputUrl = await this.downloadAndUpload(resultUrl, input.id, 0);
-
-    return { outputUrls: [outputUrl], modelUsed: MINIMAX_H3_I2V_MODEL };
   }
 
   // ─── Wan 2.2 Animate — troca de pessoa (replace) ou movimento (animate) ────────────
