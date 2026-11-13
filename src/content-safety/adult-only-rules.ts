@@ -2,7 +2,8 @@
  * CÓPIA da trava do site (FUNVMAKE/web/lib/influencer-safety.ts, v3 de 15/10/2026, red team de 8 lentes). O corpus do
  * red team fica fora deste repositório e o teste o lê por SAFETY_CORPUS_PATH. Mudou lá, muda aqui. Adaptações para a API (sem elas, o comportamento
  * é o do construtor, conferido pelo corpus):
- *  - `floor`: piso de idade (padrão 25 como no construtor; a API usa 18, a idade legal de toda geração);
+ *  - `floor`: piso de idade. Padrão 18, a idade legal (regra do dono, 13/11/2026: "a lei é 18+"; o piso de 25 do
+ *    construtor saiu). Um piso maior continua possível por opção (aí "early twenties" volta a barrar);
  *  - `free`: pedido livre de geração. Medido contra prompts reais do histórico (só contagens), o modo do construtor
  *    recusava muito pedido adulto legítimo ("tiny blemishes", "fazendo uma pose", "only one woman", "seed": 1,
  *    "turned three-quarters"). No modo livre: artigo não é número ("um vestido", "one woman"), número seguido de coisa
@@ -19,7 +20,7 @@
  *    continuam barrando. Fora do modo `free` (construtor de modelo) nada muda.
  *
  * Original:
- * Trava dos textos livres do construtor de modelo (nome, nicho e detalhes): a modelo é sempre adulta (25+), nunca
+ * Trava dos textos livres do construtor de modelo (nome, nicho e detalhes): a modelo é sempre adulta (18+), nunca
  * "parecida com" uma pessoa real e, no lado de vender, nunca conteúdo adulto. Roda na tela (erro na hora e Gerar
  * desligado), dentro do prompt (texto barrado não entra) e na leitura de escolhas vindas de fora (?look=, ficha
  * guardada). É só a camada da tela: a mesma regra precisa existir na API (TKT-125).
@@ -50,11 +51,14 @@ export interface SafetyOptions {
   lookalike?: boolean;
   /** rótulo que não vai para o prompt (nome, nicho): no lado de vender só os termos duros contam */
   label?: boolean;
-  /** idade mínima escrita no texto (padrão 25, o piso do construtor de modelo; a API usa 18) */
+  /** idade mínima escrita no texto (padrão 18, a idade legal; regra do dono, 13/11) */
   floor?: number;
   /** pedido livre de geração (API): leitura de idade e pistas infantis calibradas para prompt de verdade */
   free?: boolean;
 }
+
+/** Piso de idade padrão: a idade legal (regra do dono, 13/11/2026: "a lei é 18+"). Era 25, o piso do construtor. */
+export const DEFAULT_AGE_FLOOR = 18;
 
 const OK: SafetyVerdict = { ok: true };
 const CURRENT_YEAR = new Date().getFullYear();
@@ -562,7 +566,10 @@ const SCHOOL_CLOTHING_FREE = new Set([
   'seifuku',
   'uniforme (?:escolar|de escola|de colegio|do colegio|da escola|del colegio|de (?:la )?escuela|de prepa|de secundaria)',
 ]);
-/** Do piso de 25 do construtor ("early twenties" = 20 a 23 anos): no pedido livre (piso 18) é idade adulta. */
+/**
+ * Do antigo piso de 25 do construtor ("early twenties" = 20 a 23 anos). Com o piso de 18 (padrão desde 13/11) é idade
+ * adulta e não barra em nenhum modo; só volta a barrar quando alguém pede um piso acima de 20 (opção `floor`).
+ */
 const FLOOR_25_TERMS = new Set(['early (?:20s|20 s|twenties)', 'veintipocos', '(?:20|vinte) e poucos']);
 /**
  * Gíria de juventude que, em conteúdo adulto, quase sempre fala de MULHER ADULTA ("novinha", "ninfeta", "colegial" de
@@ -1075,7 +1082,10 @@ function compile(terms: readonly string[], flags = ''): RegExp {
 }
 
 const LISTS = {
-  minorHard: compile(MINOR_HARD),
+  // piso 18 (padrão): "early twenties", "veintipocos" e "vinte e poucos" são adultas
+  minorHard: compile(MINOR_HARD.filter((term) => !FLOOR_25_TERMS.has(term))),
+  // piso acima de 20 pedido por opção: a lista inteira
+  minorHardHighFloor: compile(MINOR_HARD),
   // pedido livre: sem os termos do piso 25, "little space" só colado (o termo de ageplay; "a little space between" é
   // espaço) e "pedo" sem "pedonal/pedonale" (zona de pedestres em espanhol/italiano)
   // (06/11) sem a gíria de juventude e sem os papéis que adulta faz
@@ -1579,13 +1589,47 @@ function personBefore(tokens: readonly string[], index: number): boolean {
 }
 
 /** Piso de idade da conferência em andamento (checkAdultOnly é síncrona: definido no começo de cada chamada). */
-let ageFloor = 25;
+let ageFloor = DEFAULT_AGE_FLOOR;
 /** Pedido livre (opção `free`), também definido no começo de cada chamada. */
 let freeMode = false;
 const isUnderFloor = (value: number) => value >= 1 && value < ageFloor;
+/**
+ * Teto do comparativo sem ponta de baixo ("under 22", "younger than 21", "menos de 25"): o trecho cobre também quem
+ * tem menos de 18, então barra até 25, como antes de 13/11. Não é idade adulta escrita (essa é "22 anos", "aged 19").
+ */
+const OPEN_COMPARATOR_MAX = 25;
+/** Verbo de fazer anos ("turning 18 soon", "faz 18 mês que vem", "vai fazer 18 em março", "cumple 18 pronto"). */
+const TURNING_VERBS = new Set(['turning', 'turns', 'turn', 'faz', 'fazendo', 'fazer', 'fara', 'completa', 'completando', 'completar', 'completara', 'cumple', 'cumpliendo', 'cumplira', 'cumplir']);
+/** "be" só conta como fazer anos com o futuro antes ("she'll be 18 next month", "will be 18 soon", "going to be 18"). */
+const BE_FUTURE_BEFORE = new Set(['will', 'll', 'shall', 'gonna', 'to']);
+/** Depois do número: o aniversário ainda não chegou. */
+const FUTURE_MARKERS = new Set(['soon', 'next', 'tomorrow', 'shortly', 'later', 'this', 'breve', 'em', 'mes', 'semana', 'ano', 'amanha', 'logo', 'pronto', 'manana', 'proximo', 'proxima', 'dentro', 'en']);
+/** "in"/"within" + prazo ("in a month", "in two weeks", "in march"): sem o prazo, "in" é lugar ("turn 18 in the pool"). */
+const FUTURE_SPAN_WORDS = new Set([
+  'day', 'days', 'week', 'weeks', 'month', 'months', 'year', 'years', 'hour', 'hours',
+  'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+]);
+const FUTURE_SPAN_FILLERS = new Set(['a', 'an', 'the', 'one', 'two', 'three', 'four', 'five', 'six', 'few', 'couple', 'of', 'just', 'only', 'about', 'like']);
 
 /**
- * Idade abaixo de 25 escrita no texto. `strict` (18+ e desenhado) lê também o verbo sem sujeito e o número sozinho
+ * Fim do marcador de futuro que começa em `index` ("soon", "next month", "in two weeks", "en marzo") ou -1.
+ * "next to" é lugar; "in"/"within" só com prazo logo depois.
+ */
+function futureEnd(tokens: string[], index: number): number {
+  const token = tokens[index] ?? '';
+  if (token === 'next' && tokens[index + 1] === 'to') return -1;
+  if (FUTURE_MARKERS.has(token)) return index;
+  if (token === 'in' || token === 'within') {
+    let next = index + 1;
+    while (next < index + 4 && FUTURE_SPAN_FILLERS.has(tokens[next] ?? '')) next++;
+    if (FUTURE_SPAN_WORDS.has(tokens[next] ?? '')) return next;
+    if (/^\d{1,2}$/.test(tokens[next] ?? '') && FUTURE_SPAN_WORDS.has(tokens[next + 1] ?? '')) return next + 1;
+  }
+  return -1;
+}
+
+/**
+ * Idade abaixo do piso (18 por padrão) escrita no texto. `strict` (18+ e desenhado) lê também o verbo sem sujeito e o número sozinho
  * num trecho ("Valentina, 16, loira"); no lado de vender, onde copy de produto tem número, só com uma pessoa antes.
  * `labelOnCommerce`: rótulo do lado de vender, só a regra da unidade ("16 anos").
  */
@@ -1617,7 +1661,7 @@ function underageNumber(text: string, strict: boolean, labelOnCommerce: boolean)
         (STRONG_COMPARATORS.has(token)
           ? !countsSomething(at((found?.end ?? 0) + 1)) && !timeAt(tokens, (found?.end ?? 0) + 1)
           : found !== null && closesAsAge(tokens, found.end));
-      if (freeAge && found && !found.decimal && found.value >= 1 && found.value <= 25 && !COUNT_NOUNS.has(at(found.end + 1))) return phrase(index, found.end);
+      if (freeAge && found && !found.decimal && found.value >= 1 && found.value <= OPEN_COMPARATOR_MAX && !COUNT_NOUNS.has(at(found.end + 1))) return phrase(index, found.end);
     }
     if (token === 'between' || token === 'entre') {
       const low = numberAt(tokens, index + 1);
@@ -1636,7 +1680,21 @@ function underageNumber(text: string, strict: boolean, labelOnCommerce: boolean)
       while (['os', 'los', 'the', 'seus', 'sus'].includes(at(next))) next++;
       const found = numberAt(tokens, next);
       const freeAge = !freeMode || (found !== null && closesAsAge(tokens, found.end));
-      if (freeAge && found && !found.decimal && found.value >= 1 && found.value <= 25 && !COUNT_NOUNS.has(at(found.end + 1))) return phrase(index, found.end);
+      // "quase N" = N - 1 anos: barra quando N - 1 fica abaixo do piso ("quase 18" barra; "quase 19" é adulta de 18)
+      if (freeAge && found && !found.decimal && found.value >= 1 && found.value <= ageFloor && !COUNT_NOUNS.has(at(found.end + 1))) return phrase(index, found.end);
+    }
+    // R5b aniversário que ainda vem ("turning 18 soon", "turns 18 next week", "will turn 18 tomorrow", "faz 18 mês que
+    // vem", "cumple 18 pronto"): hoje tem N - 1. Com o piso de 25 o número sozinho já barrava; com o piso de 18 precisa
+    // da regra (13/11), e ela vale também no pedido livre, onde a frase passava
+    if (TURNING_VERBS.has(token) || (token === 'be' && BE_FUTURE_BEFORE.has(at(index - 1)))) {
+      const found = numberAt(tokens, index + 1);
+      let next = found ? found.end + 1 : -1;
+      if (found && UNITS.has(at(next))) next++;
+      if (found && at(next) === 'old') next++;
+      if (found && !found.decimal && found.value >= 1 && found.value <= ageFloor) {
+        const end = futureEnd(tokens, next);
+        if (end !== -1) return phrase(index, end);
+      }
     }
     // R6 meia idade sem unidade ("17 e meio", "17 and a half", "17 y medio") e "17 de idade"
     const half = numberAt(tokens, index);
@@ -1650,6 +1708,14 @@ function underageNumber(text: string, strict: boolean, labelOnCommerce: boolean)
     if (ordinal !== undefined && ordinal !== null) {
       const next = at(index + (ordinalDigits !== null ? 2 : 1));
       if (['birthday', 'bday', 'cumpleanos', 'aniversario'].includes(next) && isUnderFloor(ordinal)) return phrase(index, index + (ordinalDigits !== null ? 2 : 1));
+      // aniversário do piso que ainda vem ("18th birthday next week", "18th birthday is tomorrow"): hoje tem 17
+      if (['birthday', 'bday', 'cumpleanos', 'aniversario'].includes(next) && ordinal >= 1 && ordinal <= ageFloor) {
+        let after = index + (ordinalDigits !== null ? 3 : 2);
+        if (['is', 'e', 'es', 'sera', 'will', 'coming', 'comes'].includes(at(after))) after++;
+        if (at(after) === 'be' || at(after) === 'up') after++;
+        const end = futureEnd(tokens, after);
+        if (end !== -1) return phrase(index, end);
+      }
       if (['grade', 'grader', 'graders', 'serie', 'ano', 'curso', 'grau'].includes(next) && ordinal <= 12) return phrase(index, index + (ordinalDigits !== null ? 2 : 1));
     }
     if (ROMAN[token] && ['mis', 'sus', 'seus', 'meus', 'festa', 'fiesta', 'de', 'los', 'os', 'nos', 'baile'].includes(at(index - 1))) return phrase(index - 1, index);
@@ -1660,7 +1726,9 @@ function underageNumber(text: string, strict: boolean, labelOnCommerce: boolean)
       while (['em', 'in', 'en', 'no', 'el', 'of', 'de', 'da', 'do'].includes(at(back))) back--;
       const before = at(back);
       if (BIRTH_WORDS.has(before) || ['safra', 'geracao', 'generation', 'generacion', 'nascimento', 'birth', 'nacimiento'].includes(before) || ['baby', 'babies', 'bebe'].includes(at(index + 1))) {
-        if (isUnderFloor(CURRENT_YEAR - year)) return phrase(back, index);
+        // idade mínima possível = ano atual - ano - 1 (o aniversário deste ano pode não ter chegado): "born in 2008" pode
+        // ter 17; nascida no ano passado ou neste dá 0 ou -1, que também é menor (antes o piso >= 1 deixava passar)
+        if (year <= CURRENT_YEAR && CURRENT_YEAR - year - 1 < ageFloor) return phrase(back, index);
       }
       if (['class', 'turma', 'promocao', 'promocion'].includes(before) && year >= CURRENT_YEAR - 7) return phrase(back, index);
     }
@@ -1741,7 +1809,7 @@ function underageNumber(text: string, strict: boolean, labelOnCommerce: boolean)
   return null;
 }
 
-/** O texto diz uma idade adulta (25 a 99): "de 26 anos", "aged 30", "tem 28", "Ana, 29". */
+/** O texto diz uma idade adulta (do piso, 18 por padrão, a 99): "de 19 anos", "aged 30", "tem 22", "Ana, 29". */
 function hasAdultAge(text: string): boolean {
   const tokens = ageTokens(text);
   for (let index = 0; index < tokens.length; index++) {
@@ -1907,7 +1975,7 @@ function findLookalike(original: string, texts: readonly string[]): string | nul
  * vender) e pessoa real.
  */
 export function checkAdultOnly(text: string, options: SafetyOptions = {}): SafetyVerdict {
-  ageFloor = options.floor ?? 25;
+  ageFloor = options.floor ?? DEFAULT_AGE_FLOOR;
   freeMode = Boolean(options.free);
   if (!text || !text.trim()) return OK;
   if (CHILD_EMOJI.test(text)) return { ok: false, reason: 'minor', term: text.match(CHILD_EMOJI)?.[0] ?? '' };
@@ -1926,7 +1994,7 @@ export function checkAdultOnly(text: string, options: SafetyOptions = {}): Safet
   }
   const age = underageNumber(text, strict, labelOnCommerce);
   if (age) return { ok: false, reason: 'minor', term: age };
-  const minor = findIn(texts, freeMode ? LISTS.minorHardFree : LISTS.minorHard);
+  const minor = findIn(texts, freeMode ? LISTS.minorHardFree : ageFloor > 20 ? LISTS.minorHardHighFloor : LISTS.minorHard);
   if (minor) return { ok: false, reason: 'minor', term: minor };
   if (!labelOnCommerce) {
     const persona = findIn(texts, freeMode ? LISTS.minorPersonaFree : LISTS.minorPersona);
