@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EmailService } from '../email/email.service';
+import { resolveBuyerLocale } from './buyer-locale';
 import { WebhookLogsService } from '../webhook-logs/webhook-logs.service';
 import {
   DEFAULT_HUBLA_BUNDLE,
@@ -79,7 +80,21 @@ export class HotmartWebhookService {
 
     if (created) {
       const buyerName = this.extractName(payload);
-      await this.emailService.sendPendingGrantsEmailEs(email, buyerName);
+      // Idioma da compradora pelo país e pela moeda (B-08: antes saía sempre em inglês).
+      const locale = resolveBuyerLocale({
+        countries: [
+          payload?.data?.buyer?.address?.country_iso,
+          payload?.data?.buyer?.address?.country,
+          payload?.data?.purchase?.checkout_country?.iso,
+          payload?.buyer?.country,
+        ],
+        currencies: [
+          payload?.data?.purchase?.price?.currency_value,
+          payload?.data?.purchase?.original_offer_price?.currency_value,
+          payload?.currency,
+        ],
+      });
+      await this.emailService.sendPendingGrantsEmail(email, buyerName, locale, 'basic');
     }
 
     return { processed: true };
