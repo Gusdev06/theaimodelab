@@ -50,6 +50,11 @@ export type I18nTranslations = {
             "STRIPE_ERROR": string;
             "WEBHOOK_INVALID": string;
         };
+        "common": {
+            "NOT_FOUND": string;
+            "BAD_REQUEST": string;
+            "INTERNAL_ERROR": string;
+        };
         "validation": {
             "EMAIL_INVALID": string;
             "EMAIL_REQUIRED": string;
@@ -65,11 +70,6 @@ export type I18nTranslations = {
             "CODE_REQUIRED": string;
             "CODE_LENGTH": string;
             "CODE_DIGITS": string;
-        };
-        "common": {
-            "NOT_FOUND": string;
-            "BAD_REQUEST": string;
-            "INTERNAL_ERROR": string;
         };
     };
 };
