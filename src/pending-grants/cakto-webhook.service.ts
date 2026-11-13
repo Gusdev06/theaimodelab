@@ -130,6 +130,11 @@ export class CaktoWebhookService {
 
     const kind = this.classifyEvent(payload, data);
 
+    // Venda guardada sem conta (B-01) que voltou: o cadastro futuro não pode ativá-la.
+    if ((kind === 'refund' || kind === 'chargeback') && !ctx.replay && this.noAccountPurchases) {
+      await this.noAccountPurchases.cancelBeforeAccount('cakto', this.extractSaleCode(data), kind);
+    }
+
     if (!plan) {
       // Pacote de crédito avulso (one-off, BRL via Cakto). Concede créditos bônus
       // reutilizando o mesmo caminho do fluxo Perfect Pay de pacotes.

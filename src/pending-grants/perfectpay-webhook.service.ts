@@ -145,6 +145,10 @@ export class PerfectpayWebhookService {
     // Reembolso/chargeback de pack ou da isca: resolve aqui e NÃO revoga a
     // assinatura do comprador (antes revogava, e o pack/bundle ficava — TKT-099).
     if (kind === 'refund' || kind === 'chargeback') {
+      // Venda guardada sem conta (B-01) que voltou: o cadastro futuro não pode ativá-la.
+      if (!ctx.replay && this.noAccountPurchases) {
+        await this.noAccountPurchases.cancelBeforeAccount('perfectpay', this.extractSaleCode(payload), kind);
+      }
       const handled = await this.handleNonSubscriptionRefund(payload, kind);
       if (handled) return handled;
     }

@@ -125,6 +125,27 @@ export class NoAccountPurchasesService {
     return out;
   }
 
+  /**
+   * Reembolso ou chargeback de uma venda que ainda estava guardada esperando a conta: fecha o marcador para o
+   * cadastro/login nunca ativar uma compra devolvida. Nunca lança. Devolve quantos marcadores fechou.
+   */
+  async cancelBeforeAccount(gateway: NoAccountGateway, saleCode: string | null | undefined, reason: string): Promise<number> {
+    if (!saleCode) return 0;
+    try {
+      const { count } = await this.prisma.webhookLog.updateMany({
+        where: { provider: NO_ACCOUNT_PROVIDER, eventType: `${gateway}:${saleCode}`, processed: false },
+        data: { processed: true, error: `${reason} antes da conta: não aplicar`.slice(0, 500) },
+      });
+      if (count > 0) {
+        this.logger.warn(`Venda ${saleCode} (${gateway}) guardada sem conta foi ${reason}: não será aplicada`);
+      }
+      return count;
+    } catch (error) {
+      this.logger.error(`Falha ao fechar a venda guardada ${saleCode} (${gateway}) após ${reason}: ${this.message(error)}`);
+      return 0;
+    }
+  }
+
   async markApplied(id: string, userId: string): Promise<void> {
     await this.prisma.webhookLog.update({
       where: { id },

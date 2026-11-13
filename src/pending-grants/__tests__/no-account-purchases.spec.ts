@@ -33,6 +33,11 @@ function setup() {
         Object.assign(row, data);
         return row;
       }),
+      updateMany: jest.fn(async ({ where, data }: { where: Row; data: Row }) => {
+        const rows = logs.filter((row) => matches(row, where));
+        rows.forEach((row) => Object.assign(row, data));
+        return { count: rows.length };
+      }),
     },
     user: {
       findUnique: jest.fn(async ({ where }: { where: Row }) => users.find((u) => u.email === where.email) ?? null),
@@ -59,6 +64,8 @@ function setup() {
       paidSales.add(saleCode);
       creditPurchases.push(saleCode);
     }),
+    refundExternalPayment: jest.fn(async () => ({ found: false })),
+    revokePerfectpaySubscription: jest.fn(async () => ({ processed: false, reason: 'no subscription' })),
   };
 
   const emailService = {
@@ -168,6 +175,32 @@ describe('Compra paga sem conta (B-01)', () => {
     const replay = await perfectpay.replayPaidSale(planSale('approved'));
     expect(replay.processed).toBe(false);
     expect(emailService.sendPurchaseWithoutAccountEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('reembolso antes da conta existir: o cadastro não ativa a venda devolvida', async () => {
+    const { logs, users, perfectpay, claimer, activations } = setup();
+    await perfectpay.handle(planSale('approved'));
+    await perfectpay.handle({ ...planSale('approved'), sale_status_enum: 7, sale_status_enum_key: 'refunded', sale_status_detail: 'refunded' });
+
+    const marker = logs.find((row) => row.provider === NO_ACCOUNT_PROVIDER)!;
+    expect(marker.processed).toBe(true);
+    expect(marker.error).toMatch(/^refund antes da conta/);
+
+    users.push({ id: 'user-1', email: 'compradora@mail.com', referredByCode: null });
+    const claim = await claimer.claimForUser({ id: 'user-1', email: 'compradora@mail.com' });
+    expect(claim).toEqual({ applied: 0, failed: 0 });
+    expect(activations).toHaveLength(0);
+  });
+
+  it('Cakto: chargeback antes da conta fecha o pacote guardado', async () => {
+    const { logs, prisma, cakto } = setup();
+    prisma.plan.findFirst.mockResolvedValue(null as never);
+    const sale = { id: 'ord-7', status: 'paid', amount: 97, currency: 'BRL', offer: { id: 'mega1' }, customer: { email: 'c@mail.com' } };
+    await cakto.handle({ secret: 'seg', event: 'purchase_approved', data: sale });
+    await cakto.handle({ secret: 'seg', event: 'chargeback', data: { ...sale, status: 'chargedback' } });
+
+    const marker = logs.find((row) => row.provider === NO_ACCOUNT_PROVIDER)!;
+    expect(marker.processed).toBe(true);
   });
 
   it('Cakto: pacote pago sem conta entra no cadastro, uma vez', async () => {
