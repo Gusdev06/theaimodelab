@@ -1,5 +1,5 @@
 import { BrandKey, brandKeyFor, resolveBrand } from '../brand/brand';
-import { Injectable, ConflictException, UnauthorizedException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, ConflictException, UnauthorizedException, BadRequestException, Logger, Optional } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
@@ -19,6 +19,7 @@ import { accountDisabledException } from './strategies/jwt.strategy';
 import { ReferralsService } from '../referrals/referrals.service';
 import { accessTokenAllowed, googleAudiences } from './google-clients';
 import { mailLocaleFor } from '../email/brand-email';
+import { NoAccountPurchasesClaimer } from '../pending-grants/no-account-purchases.claimer';
 
 const SIGNUP_BONUS_CREDITS = 50;
 
@@ -65,6 +66,7 @@ export class AuthService {
     private readonly metaConversionsService: MetaConversionsService,
     private readonly welcomeCreditsService: WelcomeCreditsService,
     private readonly referralsService: ReferralsService,
+    @Optional() private readonly noAccountPurchases?: NoAccountPurchasesClaimer,
   ) { }
 
   /**
@@ -261,6 +263,9 @@ export class AuthService {
       this.logger.error(`Failed to send Meta Lead event: ${err.message}`);
     });
 
+    // Compra feita antes da conta (plano/pacote): aplica antes de entrar, para o app já abrir com ela.
+    await this.claimNoAccountPurchases(user);
+
     // Gera os tokens
     const tokens = await this.generateTokens(user);
 
@@ -319,8 +324,26 @@ export class AuthService {
       });
   }
 
+  /**
+   * Plano ou pacote pago ANTES de existir conta com este e-mail (B-01): aplica agora, pelo mesmo handler do
+   * webhook e com a mesma idempotência do pagamento. Nunca lança nem derruba o cadastro/login.
+   */
+  private async claimNoAccountPurchases(user: User): Promise<void> {
+    if (!this.noAccountPurchases) return;
+    try {
+      const { applied } = await this.noAccountPurchases.claimForUser(user);
+      if (applied > 0) this.logger.log(`${applied} compra(s) feita(s) antes da conta aplicada(s) em ${user.id}`);
+    } catch (error) {
+      this.logger.warn(
+        `Compras sem conta de ${user.id} não aplicadas: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
   private async generateTokens(user: User) {
     this.claimPendingGrants(user);
+    // login, refresh e Google: a venda guardada entra em segundo plano (consulta barata pelo índice do e-mail)
+    void this.claimNoAccountPurchases(user);
     const payload = {
       sub: user.id,
       email: user.email,
@@ -676,6 +699,9 @@ export class AuthService {
 
     // Envia welcome email para novos usuários Google (fire-and-forget)
     if (isNewUser) {
+      // Compra feita antes da conta (plano/pacote): aplica antes de entrar.
+      await this.claimNoAccountPurchases(user);
+
       // Concede créditos de boas-vindas (env WELCOME_CREDITS_AMOUNT; default OFF).
       // Idempotente e à prova de falhas — nunca quebra o login/cadastro Google.
       await this.welcomeCreditsService.grantIfEligible(user.id);
