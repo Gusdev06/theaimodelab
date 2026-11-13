@@ -188,6 +188,7 @@ export class SeedreamProvider {
   private readonly wavespeedFallbackEnabled: boolean;
   private readonly unlockedEngine: UnlockedEngine;
   private readonly unlockedCanaryPct: number;
+  private readonly unlockedScope: 'all' | 'i2i';
 
   constructor(
     private readonly configService: ConfigService,
@@ -227,9 +228,17 @@ export class SeedreamProvider {
     // Sem valor (ou inválido) = 0%: o canário precisa ser dito por extenso (env em branco no painel nunca vira "todos").
     const pct = /^\d{1,3}$/.test(pctRaw) ? Number(pctRaw) : 0;
     this.unlockedCanaryPct = Math.min(100, pct);
+    // Escopo: 'i2i' = só edição com foto (no voto cego do dono, 13/11, o Lite empatou com o Pro na edição e perdeu
+    // no só-texto). Padrão 'all', o comportamento do PR #43.
+    const scopeFlag = String(
+      this.configService.get<string>('UNLOCKED_ENGINE_SCOPE', '') ?? '',
+    )
+      .trim()
+      .toLowerCase();
+    this.unlockedScope = scopeFlag === 'i2i' ? 'i2i' : 'all';
     if (this.unlockedEngine === 'lite') {
       this.logger.log(
-        `[UNLOCKED_ENGINE] motor alternativo=lite canário=${this.unlockedCanaryPct}%${this.unlockedCanaryPct === 0 ? ' (UNLOCKED_ENGINE_CANARY_PCT vazio ou inválido: ninguém no Lite)' : ''}`,
+        `[UNLOCKED_ENGINE] motor alternativo=lite canário=${this.unlockedCanaryPct}% escopo=${this.unlockedScope}${this.unlockedCanaryPct === 0 ? ' (UNLOCKED_ENGINE_CANARY_PCT vazio ou inválido: ninguém no Lite)' : ''}`,
       );
     }
     if (!this.apiKey) {
@@ -277,6 +286,7 @@ export class SeedreamProvider {
     if (this.unlockedEngine !== 'lite' || !input.engineSwapEligible) {
       return 'pro';
     }
+    if (this.unlockedScope === 'i2i' && !input.imageUrls?.length) return 'pro';
     if (this.unlockedCanaryPct >= 100) return 'lite';
     if (this.unlockedCanaryPct <= 0) return 'pro';
     const digest = createHash('sha256')
