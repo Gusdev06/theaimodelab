@@ -26,7 +26,10 @@ const KIE_MODEL_I2I = 'seedream/5-pro-image-to-image';
 // Undress seguem no Pro.
 const KIE_LITE_T2I = 'seedream/5-lite-text-to-image';
 const KIE_LITE_I2I = 'seedream/5-lite-image-to-image';
-export type UnlockedEngine = 'pro' | 'lite';
+// Seedream 5.5 no Unlocked SÓ TEXTO (UNLOCKED_ENGINE_T2I=s55): US$ 0,0315 em 2K contra US$ 0,07 do Pro; bancada de
+// 13/11: 32/32 entregues, 0 recusa, 26 s de mediana. Só sem foto: na edição a kie cobra cada imagem de entrada à parte.
+const KIE_S55_T2I = 'seedream/5-5-text-to-image';
+export type UnlockedEngine = 'pro' | 'lite' | 's55';
 const LITE_POLL_ATTEMPTS = 45;
 
 /**
@@ -189,6 +192,7 @@ export class SeedreamProvider {
   private readonly unlockedEngine: UnlockedEngine;
   private readonly unlockedCanaryPct: number;
   private readonly unlockedScope: 'all' | 'i2i';
+  private readonly unlockedTextEngine: 'default' | 's55';
 
   constructor(
     private readonly configService: ConfigService,
@@ -236,9 +240,15 @@ export class SeedreamProvider {
       .trim()
       .toLowerCase();
     this.unlockedScope = scopeFlag === 'i2i' ? 'i2i' : 'all';
-    if (this.unlockedEngine === 'lite') {
+    const textFlag = String(
+      this.configService.get<string>('UNLOCKED_ENGINE_T2I', '') ?? '',
+    )
+      .trim()
+      .toLowerCase();
+    this.unlockedTextEngine = textFlag === 's55' ? 's55' : 'default';
+    if (this.unlockedEngine === 'lite' || this.unlockedTextEngine === 's55') {
       this.logger.log(
-        `[UNLOCKED_ENGINE] motor alternativo=lite canário=${this.unlockedCanaryPct}% escopo=${this.unlockedScope}${this.unlockedCanaryPct === 0 ? ' (UNLOCKED_ENGINE_CANARY_PCT vazio ou inválido: ninguém no Lite)' : ''}`,
+        `[UNLOCKED_ENGINE] edição=${this.unlockedEngine === 'lite' ? 'lite' : 'pro'} só-texto=${this.unlockedTextEngine === 's55' ? 's55' : this.unlockedEngine === 'lite' && this.unlockedScope === 'all' ? 'lite' : 'pro'} canário=${this.unlockedCanaryPct}% escopo=${this.unlockedScope}${this.unlockedCanaryPct === 0 ? ' (UNLOCKED_ENGINE_CANARY_PCT vazio ou inválido: ninguém no Lite)' : ''}`,
       );
     }
     if (!this.apiKey) {
@@ -256,9 +266,10 @@ export class SeedreamProvider {
       throw new Error(USER_ERRORS.configMissing);
     }
 
-    if (this.pickEngine(input) === 'lite') {
+    const engine = this.pickEngine(input);
+    if (engine !== 'pro') {
       try {
-        return await this.generateOnKie(input, 'lite');
+        return await this.generateOnKie(input, engine);
       } catch (error) {
         // Recusa de CONTEÚDO do Lite é terminal, como a do Pro sempre foi: o Pro não vira "segunda opinião" (com o
         // nsfw_checker desligado, o que sobra de moderação é o duro: menor, CSAM, pessoa real). Só a falha técnica
@@ -271,7 +282,7 @@ export class SeedreamProvider {
           throw error;
         }
         this.logger.warn(
-          `[UNLOCKED_ENGINE] gen=${input.id} o Lite não entregou (${(error as Error).message}); refazendo no Pro`,
+          `[UNLOCKED_ENGINE] gen=${input.id} o motor ${engine} não entregou (${(error as Error).message}); refazendo no Pro`,
         );
       }
     }
@@ -283,17 +294,23 @@ export class SeedreamProvider {
    * cai dentro do canário. O sorteio é estável: o mesmo usuário vê sempre o mesmo motor.
    */
   pickEngine(input: SeedreamImageInput): UnlockedEngine {
-    if (this.unlockedEngine !== 'lite' || !input.engineSwapEligible) {
-      return 'pro';
-    }
-    if (this.unlockedScope === 'i2i' && !input.imageUrls?.length) return 'pro';
-    if (this.unlockedCanaryPct >= 100) return 'lite';
+    if (!input.engineSwapEligible) return 'pro';
+    const hasImages = !!input.imageUrls?.length;
+    let candidate: UnlockedEngine = 'pro';
+    if (!hasImages && this.unlockedTextEngine === 's55') candidate = 's55';
+    else if (
+      this.unlockedEngine === 'lite' &&
+      (this.unlockedScope === 'all' || hasImages)
+    )
+      candidate = 'lite';
+    if (candidate === 'pro') return 'pro';
+    if (this.unlockedCanaryPct >= 100) return candidate;
     if (this.unlockedCanaryPct <= 0) return 'pro';
     const digest = createHash('sha256')
       .update(`unlocked-engine:${input.canaryKey || input.id}`)
       .digest();
     return digest.readUInt32BE(0) % 100 < this.unlockedCanaryPct
-      ? 'lite'
+      ? candidate
       : 'pro';
   }
 
@@ -306,13 +323,17 @@ export class SeedreamProvider {
     const quality =
       engine === 'lite' ? 'basic' : (QUALITY_MAP[input.resolution] ?? 'high');
     const model =
-      engine === 'lite'
-        ? hasImages
-          ? KIE_LITE_I2I
-          : KIE_LITE_T2I
-        : hasImages
-          ? KIE_MODEL_I2I
-          : KIE_MODEL_T2I;
+      engine === 's55'
+        ? KIE_S55_T2I
+        : engine === 'lite'
+          ? hasImages
+            ? KIE_LITE_I2I
+            : KIE_LITE_T2I
+          : hasImages
+            ? KIE_MODEL_I2I
+            : KIE_MODEL_T2I;
+    // o 5.5 usa `size` (1K/1.5K/2K) no lugar de `quality`; o Unlocked sai sempre em 2K nele
+    const sizing = engine === 's55' ? { size: '2K' } : { quality };
 
     // Prompt: o modelo sem censura (skipSafetyWrapper: Unlocked, despir, desvio de segurança) recebe o pedido com a
     // âncora de adulto (toda pessoa gerada é adulta; gíria de juventude vira "mulher adulta"); o resto ganha o wrapper
@@ -334,8 +355,8 @@ export class SeedreamProvider {
       input: {
         prompt: finalPrompt,
         aspect_ratio: aspectRatio,
-        quality,
-        // JPEG nos dois motores: sem isso o Lite devolve PNG de ~5 MB (testado em 13/11: com jpeg, ~400 KB)
+        ...sizing,
+        // JPEG em todos os motores: sem isso o Lite devolve PNG de ~5 MB (testado em 13/11: com jpeg, ~400 KB)
         output_format: 'jpeg',
         // Este é o provider "sem-censura" (undress / face-swap unlocked /
         // fallback de segurança) — nunca bloqueamos no checker da KIE.
@@ -346,12 +367,12 @@ export class SeedreamProvider {
 
     let taskId: string;
     try {
-      taskId = await this.submitTask(body, engine === 'lite');
+      taskId = await this.submitTask(body, engine !== 'pro');
     } catch (error) {
       // recusa de conteúdo segue o caminho de sempre; só a falha técnica de início vai ao plano B
       // o Lite não vai à WaveSpeed: quem cuida da falha dele é o Pro, que tem o próprio plano B
       if (
-        engine === 'lite' ||
+        engine !== 'pro' ||
         error instanceof ContentSafetyError ||
         !this.canUseWavespeedFallback(input)
       ) {
@@ -372,7 +393,7 @@ export class SeedreamProvider {
     // o Lite responde em ~40 s: espera curta (~3 min) para o Pro ainda caber no prazo do cron de travadas (20 min)
     const resultUrls = await this.pollTaskStatus(
       taskId,
-      engine === 'lite' ? LITE_POLL_ATTEMPTS : undefined,
+      engine !== 'pro' ? LITE_POLL_ATTEMPTS : undefined,
     );
     this.logger.log(
       `[SEEDREAM_PRO] Task ${taskId} completed — resultUrls=${resultUrls.length}`,
