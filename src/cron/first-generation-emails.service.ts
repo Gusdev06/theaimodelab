@@ -22,6 +22,11 @@ const WINDOW_MINUTES = 60;
 const MIN_DURATION_MS = 60_000;
 /** Teto por rodada. */
 const BATCH = 200;
+/**
+ * Geração que termina na janela foi criada no máximo há tanto tempo. Limita a busca pelo índice de created_at
+ * (completed_at e updated_at não têm índice; sem isso, cada rodada varreria todas as gerações concluídas).
+ */
+const MAX_RUNTIME_MS = 3 * 60 * 60_000;
 
 const keyFor = (kind: FirstGenerationEmailKind, userId: string) => `first-gen-${kind}-${userId}`;
 
@@ -90,11 +95,15 @@ export class FirstGenerationEmailsService {
     const candidates: Candidate[] = await this.prisma.generation.findMany({
       where: {
         status: GenerationStatus.COMPLETED,
+        createdAt: { gte: new Date(from.getTime() - MAX_RUNTIME_MS) },
         completedAt: { gte: from, lte: to },
         isDeleted: false,
         user: {
           isActive: true,
           emailSequenceLogs: { none: { sequence: SEQUENCE_NAME, emailKey: { startsWith: 'first-gen-ready-' } } },
+          // Pré-filtro no banco: quem já tinha cena concluída antes da janela não é 1ª vez. Sem isso, as contas que
+          // geram muito ocupam o lote de 200 e a cliente nova do fim da janela nunca é vista.
+          generations: { none: { status: GenerationStatus.COMPLETED, completedAt: { lt: from } } },
         },
       },
       orderBy: { completedAt: 'asc' },
@@ -126,11 +135,14 @@ export class FirstGenerationEmailsService {
     const candidates: Candidate[] = await this.prisma.generation.findMany({
       where: {
         status: GenerationStatus.FAILED,
+        createdAt: { gte: new Date(from.getTime() - MAX_RUNTIME_MS) },
         updatedAt: { gte: from, lte: to },
         isDeleted: false,
         user: {
           isActive: true,
           emailSequenceLogs: { none: { sequence: SEQUENCE_NAME, emailKey: { startsWith: 'first-gen-failed-' } } },
+          // Pré-filtro no banco (a regra exata fica no laço abaixo): conta com cena concluída antes da janela fica fora.
+          generations: { none: { status: GenerationStatus.COMPLETED, completedAt: { lt: from } } },
         },
       },
       orderBy: { updatedAt: 'asc' },

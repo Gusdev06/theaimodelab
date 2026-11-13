@@ -30,6 +30,12 @@ function setup(gens: Gen[], refunds: string[] = []) {
       if (where.completedAt && !inRange(g.completedAt, where.completedAt)) return false;
       if (where.updatedAt && !inRange(g.updatedAt, where.updatedAt)) return false;
       if (where.createdAt && !inRange(g.createdAt, where.createdAt)) return false;
+      if (where.user?.generations?.none) {
+        const none = where.user.generations.none;
+        if (gens.some((o) => o.userId === g.userId && o.status === none.status && inRange(o.completedAt, none.completedAt))) {
+          return false;
+        }
+      }
       if (where.user?.emailSequenceLogs?.none) {
         const prefix = where.user.emailSequenceLogs.none.emailKey.startsWith;
         if (logs.some((l) => l.userId === g.userId && l.emailKey.startsWith(prefix))) return false;
@@ -103,6 +109,15 @@ describe('FirstGenerationEmailsService', () => {
 
     const cameBack = setup([gen({}), gen({ id: 'g2', status: 'PROCESSING', createdAt: minutesAgo(12), completedAt: null })]);
     expect((await cameBack.service.runOnce(NOW)).ready).toBe(0);
+  });
+
+  it('conta com cena concluída antes da janela fica fora já na busca (não ocupa o lote)', async () => {
+    const old = gen({ id: 'g0', createdAt: minutesAgo(600), completedAt: minutesAgo(598), updatedAt: minutesAgo(598) });
+    const { service, email } = setup([old, gen({ id: 'g2' })]);
+    expect(await service.runOnce(NOW)).toEqual({ ready: 0, failed: 0 });
+    expect(email.sendRawEmail).not.toHaveBeenCalled();
+    const findMany = (service as any).prisma.generation.findMany as jest.Mock;
+    expect(findMany.mock.calls[0][0].where.createdAt.gte).toEqual(new Date(minutesAgo(70).getTime() - 3 * 60 * 60_000));
   });
 
   it('ainda dentro dos 10 min: espera', async () => {
