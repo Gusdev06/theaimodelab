@@ -41,7 +41,7 @@ function setup() {
     subscription: { create: jest.fn() },
     creditBalance: { create: jest.fn() },
     creditTransaction: { create: jest.fn() },
-    emailVerificationToken: { update: jest.fn() },
+    emailVerificationToken: { update: jest.fn(), updateMany: jest.fn(async () => ({ count: 1 })) },
   };
   const prisma = {
     user: {
@@ -79,7 +79,7 @@ function setup() {
     { attachOnSignup: jest.fn(async () => undefined), tryReward: jest.fn(async () => undefined) } as never,
     claimer as never,
   );
-  return { service, email, welcome, claimer };
+  return { service, email, welcome, claimer, tx };
 }
 
 describe('AuthService · bônus de boas-vindas na confirmação do e-mail', () => {
@@ -117,6 +117,19 @@ describe('AuthService · bônus de boas-vindas na confirmação do e-mail', () =
       locale: 'es',
       credits: 200,
     });
+  });
+
+  it('duplo toque no Confirmar: só a chamada que consumiu o código concede o welcome', async () => {
+    const { service, email, welcome, tx } = setup();
+    tx.emailVerificationToken.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    const result = await service.verifyEmail('123456');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(result).toEqual({ message: 'Email verificado com sucesso', welcomeCreditsGranted: 0 });
+    expect(welcome.grantIfEligible).not.toHaveBeenCalled();
+    expect(email.sendWelcomeEmail).not.toHaveBeenCalled();
+    expect(tx.user.update).not.toHaveBeenCalled();
   });
 
   it('o código é buscado pelo hash', async () => {

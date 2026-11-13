@@ -822,17 +822,26 @@ export class AuthService {
       });
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    // Consome o código de forma atômica: com o bônus caindo aqui, um duplo toque no "Confirmar" (ou duas abas)
+    // não pode passar 2× e creditar o welcome em dobro. Só a chamada que virou o `used` segue.
+    const consumed = await this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.emailVerificationToken.updateMany({
+        where: { id: verificationToken.id, used: false },
+        data: { used: true },
+      });
+      if (count === 0) return false;
+
       await tx.user.update({
         where: { id: verificationToken.userId },
         data: { emailVerified: true },
       });
-
-      await tx.emailVerificationToken.update({
-        where: { id: verificationToken.id },
-        data: { used: true },
-      });
+      return true;
     });
+
+    if (!consumed) {
+      // A outra chamada já confirmou e já cuida do bônus e do e-mail de boas-vindas.
+      return { message: 'Email verificado com sucesso', welcomeCreditsGranted: 0 };
+    }
 
     // A indicação desta conta pode estar só esperando o e-mail confirmado (tryReward nunca lança).
     void this.referralsService.tryReward(verificationToken.userId);
