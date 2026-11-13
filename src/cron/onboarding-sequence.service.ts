@@ -217,7 +217,9 @@ export class OnboardingSequenceService {
       const brandAppUrl = brand.key === 'taml' ? appUrl : brand.frontendUrl;
       const brandLogoUrl = brand.key === 'taml' ? logoUrl : brand.logoUrl || logoUrl;
       const content = template.content[resolveEmailLocale(recipient.locale)];
-      const innerHtml = await renderMarkdownToEmailHtml(content.body(brandAppUrl));
+      const innerHtml = await renderMarkdownToEmailHtml(
+        content.body(brandAppUrl, { mia: brand.key === 'taml' }),
+      );
       const wrappedHtml = wrapInBroadcastTemplate(innerHtml, brandLogoUrl);
       const vars = buildMergeVars({
         name: recipient.name,

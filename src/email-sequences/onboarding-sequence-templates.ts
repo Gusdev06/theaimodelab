@@ -13,10 +13,15 @@
  * (renderMarkdownToEmailHtml + wrapInBroadcastTemplate + merge tags
  * {{firstName}}, {{name}}, {{plan}}).
  *
+ * A Mia (personagem da marca, ver mia-email.ts) abre as boas-vindas do cadastro e da assinatura ativa: MIA29 3D,
+ * acolhedora. O cron passa `{ mia: false }` para conta de outra marca (Funvmake).
+ *
  * Assuntos evitam termos que elevam score de spam ("+18", "sem censura",
  * nomes de plataformas adultas) — a reputação do domínio no Resend é a mesma
  * dos emails transacionais. Vale pros três idiomas.
  */
+
+import { miaEmailBlock, type EmailVisualOptions } from './mia-email';
 
 export type SequenceName = 'onboarding' | 'post_subscription';
 
@@ -26,7 +31,7 @@ export const EMAIL_LOCALES: EmailLocale[] = ['pt-BR', 'en', 'es'];
 
 export interface LocalizedEmailContent {
   subject: string;
-  body: (appUrl: string) => string;
+  body: (appUrl: string, visual?: EmailVisualOptions) => string;
 }
 
 export interface SequenceEmail {
@@ -57,7 +62,7 @@ export const ONBOARDING_EMAILS: SequenceEmail[] = [
     content: {
       'pt-BR': {
         subject: 'Sua conta está pronta, {{firstName}} — veja o que dá pra criar',
-        body: (appUrl) => `Oi {{firstName}}, bem-vindo à AI Model Lab 👋
+        body: (appUrl, visual) => `${miaEmailBlock('welcome', 'pt-BR', visual)}Oi {{firstName}}, bem-vindo à AI Model Lab 👋
 
 Sua conta está ativa. A partir de agora você tem acesso à esteira completa pra criar modelos de IA hiper-realistas — com o mesmo rosto em toda geração, foto e vídeo, do lifestyle ao conteúdo exclusivo.
 
@@ -77,7 +82,7 @@ Qualquer dúvida, é só responder este email — a gente lê tudo.
       },
       en: {
         subject: "Your account is ready, {{firstName}} — here's what you can create",
-        body: (appUrl) => `Hi {{firstName}}, welcome to AI Model Lab 👋
+        body: (appUrl, visual) => `${miaEmailBlock('welcome', 'en', visual)}Hi {{firstName}}, welcome to AI Model Lab 👋
 
 Your account is live. You now have access to the full pipeline for creating hyper-realistic AI models — with the same face in every generation, photo and video, from lifestyle shots to exclusive content.
 
@@ -97,7 +102,7 @@ Questions? Just reply to this email — we read everything.
       },
       es: {
         subject: 'Tu cuenta está lista, {{firstName}} — mira lo que puedes crear',
-        body: (appUrl) => `Hola {{firstName}}, bienvenido a AI Model Lab 👋
+        body: (appUrl, visual) => `${miaEmailBlock('welcome', 'es', visual)}Hola {{firstName}}, bienvenido a AI Model Lab 👋
 
 Tu cuenta está activa. Desde ahora tienes acceso al pipeline completo para crear modelos de IA hiperrealistas — con el mismo rostro en cada generación, foto y video, del lifestyle al contenido exclusivo.
 
@@ -484,7 +489,7 @@ export const POST_SUBSCRIPTION_EMAILS: SequenceEmail[] = [
     content: {
       'pt-BR': {
         subject: 'Assinatura ativa ✅ — seus créditos já estão na conta',
-        body: (appUrl) => `{{firstName}}, sua assinatura {{plan}} está ativa e seus créditos já estão disponíveis. 🎉
+        body: (appUrl, visual) => `${miaEmailBlock('activation', 'pt-BR', visual)}{{firstName}}, sua assinatura {{plan}} está ativa e seus créditos já estão disponíveis. 🎉
 
 Faz assim agora (leva 2 minutos):
 
@@ -500,7 +505,7 @@ Dica de quem já opera: **defina a persona antes de sair gerando.** Nome, vibe, 
       },
       en: {
         subject: 'Subscription active ✅ — your credits are in',
-        body: (appUrl) => `{{firstName}}, your {{plan}} subscription is active and your credits are ready to use. 🎉
+        body: (appUrl, visual) => `${miaEmailBlock('activation', 'en', visual)}{{firstName}}, your {{plan}} subscription is active and your credits are ready to use. 🎉
 
 Do this now (takes 2 minutes):
 
@@ -516,7 +521,7 @@ A tip from people who already run this: **define the persona before you start ge
       },
       es: {
         subject: 'Suscripción activa ✅ — tus créditos ya están en tu cuenta',
-        body: (appUrl) => `{{firstName}}, tu suscripción {{plan}} está activa y tus créditos ya están disponibles. 🎉
+        body: (appUrl, visual) => `${miaEmailBlock('activation', 'es', visual)}{{firstName}}, tu suscripción {{plan}} está activa y tus créditos ya están disponibles. 🎉
 
 Haz esto ahora (toma 2 minutos):
 

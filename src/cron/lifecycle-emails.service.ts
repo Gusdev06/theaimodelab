@@ -14,6 +14,7 @@ import {
   buildCreditsDepletedEmail,
   buildWinbackEmail,
 } from '../email-sequences/lifecycle-templates';
+import { showMiaFor } from '../email-sequences/mia-email';
 import { resolveEmailLocale } from '../email-sequences/onboarding-sequence-templates';
 
 // 1x/dia às 14h UTC = 11h BRT — 1h depois do onboarding (13h UTC) pra não
@@ -173,6 +174,7 @@ export class LifecycleEmailsService {
           monthlyCredits: monthly,
         },
         resolveEmailLocale(sub.user.locale),
+        { mia: showMiaFor(sub.user.signupBrand) },
       );
 
       const ok = await this.sendLifecycleEmail(
@@ -288,6 +290,7 @@ export class LifecycleEmailsService {
             : null,
         },
         resolveEmailLocale(sub.user.locale),
+        { mia: showMiaFor(sub.user.signupBrand) },
       );
 
       const ok = await this.sendLifecycleEmail(
@@ -388,6 +391,7 @@ export class LifecycleEmailsService {
           generationsCount,
         },
         resolveEmailLocale(sub.user.locale),
+        { mia: showMiaFor(sub.user.signupBrand) },
       );
 
       const ok = await this.sendLifecycleEmail(
