@@ -355,6 +355,34 @@ describe('SeedreamProvider · motor do Unlocked (UNLOCKED_ENGINE)', () => {
     expect(provider.pickEngine(eligible('g', 'u'))).toBe('lite');
   });
 
+  it('UNLOCKED_ENGINE_SCOPE=i2i: edição com foto vai ao Lite, só texto fica no Pro', () => {
+    const provider = buildProvider({
+      ...LITE_ALL,
+      UNLOCKED_ENGINE_SCOPE: 'i2i',
+    });
+    expect(provider.pickEngine(eligible('g', 'u'))).toBe('pro');
+    expect(provider.pickEngine({ ...eligible('g', 'u'), imageUrls: [] })).toBe(
+      'pro',
+    );
+    expect(
+      provider.pickEngine({
+        ...eligible('g', 'u'),
+        imageUrls: ['https://cdn.test/in.jpg'],
+      }),
+    ).toBe('lite');
+  });
+
+  it('sem UNLOCKED_ENGINE_SCOPE (ou valor desconhecido) vale para tudo, como no PR #43', () => {
+    for (const scope of [undefined, '', 'qualquer']) {
+      const provider = buildProvider(
+        scope === undefined
+          ? LITE_ALL
+          : { ...LITE_ALL, UNLOCKED_ENGINE_SCOPE: scope },
+      );
+      expect(provider.pickEngine(eligible('g', 'u'))).toBe('lite');
+    }
+  });
+
   it('desvio de segurança: só o das imagens entra no canário', () => {
     expect(isUnlockedEngineSwapContext('processImage:nano-banana-2')).toBe(
       true,
