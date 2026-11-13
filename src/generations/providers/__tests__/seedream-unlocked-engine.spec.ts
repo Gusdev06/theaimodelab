@@ -383,6 +383,74 @@ describe('SeedreamProvider · motor do Unlocked (UNLOCKED_ENGINE)', () => {
     }
   });
 
+  describe('Seedream 5.5 no só-texto (UNLOCKED_ENGINE_T2I=s55)', () => {
+    const S55 = {
+      ...KIE_ENV,
+      UNLOCKED_ENGINE: 'lite',
+      UNLOCKED_ENGINE_SCOPE: 'i2i',
+      UNLOCKED_ENGINE_T2I: 's55',
+      UNLOCKED_ENGINE_CANARY_PCT: '100',
+    };
+
+    it('só texto vai ao 5.5 com size 2K (sem quality); edição com foto segue no Lite', async () => {
+      mockKie(() => 'success');
+      const provider = buildProvider(S55);
+
+      const text = await run(provider.generateImage(eligible('t1', 'u1')));
+      const edit = await run(
+        provider.generateImage({
+          ...eligible('t2', 'u1'),
+          imageUrls: ['https://cdn.test/in.jpg'],
+        }),
+      );
+
+      expect(text.engine).toBe('s55');
+      expect(edit.engine).toBe('lite');
+      const [sentText, sentEdit] = created();
+      expect(sentText.model).toBe('seedream/5-5-text-to-image');
+      expect(sentText.input).toMatchObject({
+        size: '2K',
+        output_format: 'jpeg',
+        nsfw_checker: false,
+      });
+      expect(sentText.input).not.toHaveProperty('quality');
+      expect(sentText.input).not.toHaveProperty('image_urls');
+      expect(sentEdit.model).toBe('seedream/5-lite-image-to-image');
+    });
+
+    it('sem UNLOCKED_ENGINE_T2I o só texto segue no Pro (o que está no ar hoje)', () => {
+      const provider = buildProvider({ ...S55, UNLOCKED_ENGINE_T2I: '' });
+      expect(provider.pickEngine(eligible('g', 'u'))).toBe('pro');
+    });
+
+    it('o 5.5 respeita o canário e o engineSwapEligible', () => {
+      const off = buildProvider({ ...S55, UNLOCKED_ENGINE_CANARY_PCT: '0' });
+      expect(off.pickEngine(eligible('g', 'u'))).toBe('pro');
+      const on = buildProvider(S55);
+      expect(on.pickEngine({ ...BASE_INPUT, id: 'g' })).toBe('pro');
+    });
+
+    it('falha técnica no 5.5 refaz no Pro; recusa de conteúdo é terminal', async () => {
+      mockKie((model) => (model.includes('5-5') ? 'fail-500' : 'success'));
+      const tech = await run(
+        buildProvider(S55).generateImage(eligible('t3', 'u3')),
+      );
+      expect(tech.engine).toBe('pro');
+      expect(createdModels()).toEqual([
+        'seedream/5-5-text-to-image',
+        'seedream/5-pro-text-to-image',
+      ]);
+
+      fetchMock.mockRestore();
+      calls = [];
+      mockKie((model) => (model.includes('5-5') ? 'fail-430' : 'success'));
+      await expect(
+        run(buildProvider(S55).generateImage(eligible('t4', 'u4'))),
+      ).rejects.toBeInstanceOf(ContentSafetyError);
+      expect(createdModels()).toEqual(['seedream/5-5-text-to-image']);
+    });
+  });
+
   it('desvio de segurança: só o das imagens entra no canário', () => {
     expect(isUnlockedEngineSwapContext('processImage:nano-banana-2')).toBe(
       true,

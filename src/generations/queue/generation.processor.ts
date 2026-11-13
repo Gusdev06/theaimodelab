@@ -2955,7 +2955,7 @@ export class GenerationProcessor extends WorkerHost {
           ...params,
           seedreamSafetyFallback: true,
           seedreamFallbackFrom: context,
-          ...(result.engine === 'lite' ? { unlockedEngine: 'lite' } : {}),
+          ...(result.engine !== 'pro' ? { unlockedEngine: result.engine } : {}),
         },
       },
     });
@@ -3075,7 +3075,7 @@ export class GenerationProcessor extends WorkerHost {
     generationId: string,
     engine: UnlockedEngine,
   ): Promise<void> {
-    if (engine !== 'lite') return;
+    if (engine === 'pro') return;
     try {
       const existing = await this.prisma.generation.findUnique({
         where: { id: generationId },
