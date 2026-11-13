@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -10,6 +11,14 @@ import { WebhookLogsService } from '../webhook-logs/webhook-logs.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaymentsService } from '../payments/payments.service';
 import { CheckoutCodesService, SalePackage } from '../checkout-codes/checkout-codes.service';
+import { NoAccountPurchasesService } from './no-account-purchases.service';
+import { resolveBuyerLocale } from './buyer-locale';
+
+/** De onde veio a venda: webhook ao vivo (com log) ou reprocesso de venda guardada sem conta (B-01). */
+interface SaleContext {
+  webhookLogId: string | null;
+  replay: boolean;
+}
 
 /**
  * Webhook da Cakto (https://cakto.com.br) — gateway BRL do Brasil, coexiste com o
@@ -56,6 +65,7 @@ export class CaktoWebhookService {
     private readonly prisma: PrismaService,
     private readonly paymentsService: PaymentsService,
     private readonly checkoutCodes: CheckoutCodesService,
+    @Optional() private readonly noAccountPurchases?: NoAccountPurchasesService,
   ) {}
 
   async handle(
@@ -65,17 +75,36 @@ export class CaktoWebhookService {
   ): Promise<{ processed: boolean; reason?: string }> {
     this.verifySecret(payload, headers, querySecret);
 
-    const data = this.extractData(payload);
-    const eventType = this.extractEventType(payload, data);
-    const externalEventId = this.extractEventId(payload, data);
-    const email = this.extractEmail(data);
-
-    await this.webhookLogs.create(
+    const envelope = this.extractData(payload);
+    const log = await this.webhookLogs.create(
       'cakto',
-      eventType ?? 'unknown',
-      externalEventId,
+      this.extractEventType(payload, envelope) ?? 'unknown',
+      this.extractEventId(payload, envelope),
       payload,
     );
+
+    return this.process(payload, { webhookLogId: log?.id ?? null, replay: false });
+  }
+
+  /**
+   * Reaplica uma venda aprovada que chegou antes da conta existir (B-01). O payload vem do nosso banco (já
+   * passou pelo segredo), então não confere segredo, não grava log nem manda e-mail. Idempotente pelo id da venda.
+   */
+  async replayPaidSale(payload: any): Promise<{ processed: boolean; reason?: string }> {
+    const data = this.extractData(payload);
+    if (this.classifyEvent(payload, data) !== 'paid') {
+      return { processed: false, reason: 'replay: not a paid event' };
+    }
+    return this.process(payload, { webhookLogId: null, replay: true });
+  }
+
+  private async process(
+    payload: any,
+    ctx: SaleContext,
+  ): Promise<{ processed: boolean; reason?: string }> {
+    const data = this.extractData(payload);
+    const eventType = this.extractEventType(payload, data);
+    const email = this.extractEmail(data);
 
     // Casa o plano pelo offer code da Cakto. Se nada casar, tentamos casar um
     // PACOTE de crédito avulso (produto de pagamento único). Se nada casar, o
@@ -100,6 +129,11 @@ export class CaktoWebhookService {
     }
 
     const kind = this.classifyEvent(payload, data);
+
+    // Venda guardada sem conta (B-01) que voltou: o cadastro futuro não pode ativá-la.
+    if ((kind === 'refund' || kind === 'chargeback') && !ctx.replay && this.noAccountPurchases) {
+      await this.noAccountPurchases.cancelBeforeAccount('cakto', this.extractSaleCode(data), kind);
+    }
 
     if (!plan) {
       // Pacote de crédito avulso (one-off, BRL via Cakto). Concede créditos bônus
@@ -147,7 +181,7 @@ export class CaktoWebhookService {
             'Email do comprador não encontrado no payload',
           );
         }
-        return this.handleCreditPurchase(data, email, creditPackage);
+        return this.handleCreditPurchase(payload, data, email, creditPackage, ctx);
       }
 
       return {
@@ -201,7 +235,7 @@ export class CaktoWebhookService {
       throw new BadRequestException('Email do comprador não encontrado no payload');
     }
 
-    return this.handlePlanSubscription(data, email, plan);
+    return this.handlePlanSubscription(payload, data, email, plan, ctx);
   }
 
   /**
@@ -209,9 +243,11 @@ export class CaktoWebhookService {
    * Exige conta com o email da compra (idempotente pelo id da venda).
    */
   private async handlePlanSubscription(
+    payload: any,
     data: any,
     email: string,
     plan: { id: string; slug: string; name: string },
+    ctx: SaleContext,
   ): Promise<{ processed: boolean; reason?: string }> {
     const saleCode = this.extractSaleCode(data);
     if (!saleCode) {
@@ -225,8 +261,9 @@ export class CaktoWebhookService {
 
     if (!user) {
       this.logger.warn(
-        `Cakto: assinatura do plano "${plan.name}" (venda ${saleCode}) mas nenhuma conta tem o email ${email}. Não ativado.`,
+        `Cakto: assinatura do plano "${plan.name}" (venda ${saleCode}) mas nenhuma conta tem o email ${email}. Guardada até a conta existir.`,
       );
+      await this.keepForFutureAccount(payload, data, email, saleCode, plan.name, ctx);
       return { processed: false, reason: `no account for email ${email}` };
     }
 
@@ -253,9 +290,11 @@ export class CaktoWebhookService {
    * `externalPaymentId` — a 2ª entrega da mesma venda é ignorada lá dentro.
    */
   private async handleCreditPurchase(
+    payload: any,
     data: any,
     email: string,
     creditPackage: { id: string; name: string; credits: number },
+    ctx: SaleContext,
   ): Promise<{ processed: boolean; reason?: string }> {
     const saleCode = this.extractSaleCode(data);
     if (!saleCode) {
@@ -271,8 +310,9 @@ export class CaktoWebhookService {
 
     if (!user) {
       this.logger.warn(
-        `Cakto: compra do pacote "${creditPackage.name}" (venda ${saleCode}) mas nenhuma conta tem o email ${email}. Não creditado.`,
+        `Cakto: compra do pacote "${creditPackage.name}" (venda ${saleCode}) mas nenhuma conta tem o email ${email}. Guardada até a conta existir.`,
       );
+      await this.keepForFutureAccount(payload, data, email, saleCode, creditPackage.name, ctx);
       return { processed: false, reason: `no account for email ${email}` };
     }
 
@@ -291,6 +331,37 @@ export class CaktoWebhookService {
     );
 
     return { processed: true };
+  }
+
+  /**
+   * Venda paga sem conta (B-01): guarda para aplicar no cadastro/login com este e-mail e avisa a compradora.
+   * A Cakto é o gateway BRL: sem país/moeda no payload, o e-mail sai em português.
+   */
+  private async keepForFutureAccount(
+    payload: any,
+    data: any,
+    email: string,
+    saleCode: string,
+    productName: string,
+    ctx: SaleContext,
+  ): Promise<void> {
+    if (ctx.replay || !this.noAccountPurchases) return;
+    await this.noAccountPurchases.record({
+      gateway: 'cakto',
+      email,
+      saleCode,
+      payload,
+      webhookLogId: ctx.webhookLogId,
+      locale: resolveBuyerLocale(
+        {
+          countries: [data?.customer?.country, data?.customer?.address?.country, data?.customer?.address?.country_code],
+          currencies: [data?.currency, data?.baseCurrency],
+        },
+        'pt',
+      ),
+      productName,
+      codeCandidates: this.extractOfferCandidates(data),
+    });
   }
 
   // ────────────────────────────────────────────────────────────

@@ -133,3 +133,37 @@ export function resolvePerfectpayBuyerLocale(
 
   return 'en';
 }
+
+/** Moedas da América Latina de língua espanhola (USD e EUR não dizem nada sobre o idioma). */
+const SPANISH_CURRENCIES = new Set([
+  'MXN', 'ARS', 'COP', 'CLP', 'PEN', 'UYU', 'PYG', 'BOB', 'GTQ', 'HNL', 'NIO',
+  'CRC', 'PAB', 'DOP', 'CUP', 'VES',
+]);
+
+/** Idioma pela moeda da venda; null quando a moeda não decide (USD, EUR, vazio). */
+export function localeFromCurrency(currency: unknown): BuyerLocale | null {
+  if (typeof currency !== 'string') return null;
+  const code = currency.trim().toUpperCase();
+  if (code === 'BRL') return 'pt';
+  if (SPANISH_CURRENCIES.has(code)) return 'es';
+  return null;
+}
+
+/**
+ * Idioma do comprador para gateways sem mapa de produto (Greenn, Hotmart, Cartpanda, Cakto): país primeiro,
+ * depois moeda; sem pista, o `fallback` (inglês, o comportamento antigo).
+ */
+export function resolveBuyerLocale(
+  hints: { countries?: unknown[]; currencies?: unknown[] },
+  fallback: BuyerLocale = 'en',
+): BuyerLocale {
+  for (const country of hints.countries ?? []) {
+    const byCountry = localeFromCountry(country);
+    if (byCountry) return byCountry;
+  }
+  for (const currency of hints.currencies ?? []) {
+    const byCurrency = localeFromCurrency(currency);
+    if (byCurrency) return byCurrency;
+  }
+  return fallback;
+}

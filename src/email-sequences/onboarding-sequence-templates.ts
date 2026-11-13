@@ -72,9 +72,9 @@ O que você consegue fazer aqui dentro:
 - **Fotos Full HD e vídeos ultra realistas** — prontos pra feed, packs e assinantes
 - **Motion Control e voz** — sua modelo se move e fala como uma pessoa real
 
-O primeiro passo leva menos de 2 minutos: escolha um plano, entre no workspace e gere a primeira foto da sua modelo.
+Os créditos de boas-vindas já estão na sua conta: a sua 1ª foto já está paga. Abra os Reels, escolha a cena e toque em gerar. Leva menos de 1 minuto.
 
-[Criar minha primeira modelo →](${appUrl}/checkout)
+[Gerar minha 1ª foto →](${appUrl}/pt-br/x/reels?utm_source=email&utm_campaign=onboarding_1_welcome)
 
 Qualquer dúvida, é só responder este email — a gente lê tudo.
 
@@ -92,9 +92,9 @@ Here's what you can do inside:
 - **Full HD photos and ultra-realistic videos** — ready for your feed, packs and subscribers
 - **Motion Control and voice** — your model moves and talks like a real person
 
-The first step takes less than 2 minutes: pick a plan, open the workspace and generate your model's first photo.
+Your welcome credits are already in your account: your 1st photo is on us. Open Reels, pick a scene and tap generate. It takes less than a minute.
 
-[Create my first model →](${appUrl}/checkout)
+[Generate my 1st photo →](${appUrl}/en/x/reels?utm_source=email&utm_campaign=onboarding_1_welcome)
 
 Questions? Just reply to this email — we read everything.
 
@@ -112,9 +112,9 @@ Lo que puedes hacer aquí dentro:
 - **Fotos Full HD y videos ultrarrealistas** — listos para tu feed, packs y suscriptores
 - **Motion Control y voz** — tu modelo se mueve y habla como una persona real
 
-El primer paso toma menos de 2 minutos: elige un plan, entra al workspace y genera la primera foto de tu modelo.
+Los créditos de bienvenida ya están en tu cuenta: tu 1.ª foto ya está pagada. Abre los Reels, elige la escena y toca generar. Toma menos de 1 minuto.
 
-[Crear mi primera modelo →](${appUrl}/checkout)
+[Generar mi 1.ª foto →](${appUrl}/es/x/reels?utm_source=email&utm_campaign=onboarding_1_welcome)
 
 ¿Dudas? Responde este email — leemos todo.
 

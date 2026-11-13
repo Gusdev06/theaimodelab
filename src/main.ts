@@ -1,5 +1,5 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { CodedValidationPipe } from './common/i18n/coded-validation';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import * as express from 'express';
 import helmet from 'helmet';
@@ -28,12 +28,12 @@ async function bootstrap() {
   app.enableCors({
     origin: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-lang'],
     credentials: true,
   });
 
   // Global validation pipe
-  app.useGlobalPipes(new ValidationPipe({
+  app.useGlobalPipes(new CodedValidationPipe({
     whitelist: true,
     transform: true,
     forbidNonWhitelisted: true,

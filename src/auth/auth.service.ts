@@ -1,5 +1,5 @@
 import { BrandKey, brandKeyFor, resolveBrand } from '../brand/brand';
-import { Injectable, ConflictException, UnauthorizedException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, ConflictException, UnauthorizedException, BadRequestException, Logger, Optional } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
@@ -18,6 +18,8 @@ import { WelcomeCreditsService } from './welcome-credits.service';
 import { accountDisabledException } from './strategies/jwt.strategy';
 import { ReferralsService } from '../referrals/referrals.service';
 import { accessTokenAllowed, googleAudiences } from './google-clients';
+import { mailLocaleFor } from '../email/brand-email';
+import { NoAccountPurchasesClaimer } from '../pending-grants/no-account-purchases.claimer';
 
 const SIGNUP_BONUS_CREDITS = 50;
 
@@ -64,6 +66,7 @@ export class AuthService {
     private readonly metaConversionsService: MetaConversionsService,
     private readonly welcomeCreditsService: WelcomeCreditsService,
     private readonly referralsService: ReferralsService,
+    @Optional() private readonly noAccountPurchases?: NoAccountPurchasesClaimer,
   ) { }
 
   /**
@@ -113,7 +116,12 @@ export class AuthService {
     });
 
     if (existingUser) {
-      throw new ConflictException(t('errors.auth.EMAIL_ALREADY_EXISTS'));
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        message: t('errors.auth.EMAIL_ALREADY_EXISTS'),
+        code: 'EMAIL_ALREADY_EXISTS',
+      });
     }
 
     // Hash da senha
@@ -202,9 +210,9 @@ export class AuthService {
       return newUser;
     });
 
-    // Concede créditos de boas-vindas (env WELCOME_CREDITS_AMOUNT; default OFF).
-    // Idempotente e à prova de falhas — nunca quebra o signup.
-    await this.welcomeCreditsService.grantIfEligible(user.id);
+    // Créditos de boas-vindas (welcome_credits_amount): no cadastro por e-mail caem na CONFIRMAÇÃO do e-mail
+    // (verifyEmail), não aqui. A conta entra no app na hora com os 50 do cadastro; os 150 viram a promessa
+    // "confirme e libere sua 1ª foto". Google, que já vem verificado, recebe tudo no cadastro (googleAuth).
 
     // Indicação entre usuários: só quando o código não é de afiliado ativo (esse vira referredByCode).
     // Nunca lança — falha aqui não quebra o signup.
@@ -229,9 +237,15 @@ export class AuthService {
       },
     });
 
-    this.emailService.sendVerificationEmail(user.email, user.name, verificationCode, this.emailBrand(brand, user.signupBrand)).catch((err) => {
-      this.logger.error(`Failed to send verification email: ${err.message}`);
-    });
+    const pendingWelcome = await this.welcomeCreditsService.pendingAmountFor(user.id);
+    this.emailService
+      .sendVerificationEmail(user.email, user.name, verificationCode, this.emailBrand(brand, user.signupBrand), {
+        locale: mailLocaleFor(user),
+        bonusCredits: pendingWelcome,
+      })
+      .catch((err) => {
+        this.logger.error(`Failed to send verification email: ${err.message}`);
+      });
 
     this.metaConversionsService.trackLead(
       {
@@ -248,6 +262,9 @@ export class AuthService {
     ).catch((err) => {
       this.logger.error(`Failed to send Meta Lead event: ${err.message}`);
     });
+
+    // Compra feita antes da conta (plano/pacote): aplica antes de entrar, para o app já abrir com ela.
+    await this.claimNoAccountPurchases(user);
 
     // Gera os tokens
     const tokens = await this.generateTokens(user);
@@ -279,8 +296,54 @@ export class AuthService {
       );
   }
 
+  /** Saldo total (plano + bônus) para citar no e-mail de boas-vindas. Falha vira undefined (e-mail sem número). */
+  private async totalCredits(userId: string): Promise<number | undefined> {
+    try {
+      const balance = await this.prisma.creditBalance.findUnique({
+        where: { userId },
+        select: { planCreditsRemaining: true, bonusCreditsRemaining: true },
+      });
+      return balance ? balance.planCreditsRemaining + balance.bonusCreditsRemaining : undefined;
+    } catch (err) {
+      this.logger.warn(`totalCredits(${userId}) falhou: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
+  /** Boas-vindas no idioma da conta com o saldo real (fire-and-forget: nunca atrasa nem derruba o fluxo). */
+  private sendWelcome(user: User, brand: BrandKey | null | undefined): void {
+    void this.totalCredits(user.id)
+      .then((credits) =>
+        this.emailService.sendWelcomeEmail(user.email, user.name, this.emailBrand(brand, user.signupBrand), {
+          locale: mailLocaleFor(user),
+          credits,
+        }),
+      )
+      .catch((err: Error) => {
+        this.logger.error(`Failed to send welcome email: ${err.message}`);
+      });
+  }
+
+  /**
+   * Plano ou pacote pago ANTES de existir conta com este e-mail (B-01): aplica agora, pelo mesmo handler do
+   * webhook e com a mesma idempotência do pagamento. Nunca lança nem derruba o cadastro/login.
+   */
+  private async claimNoAccountPurchases(user: User): Promise<void> {
+    if (!this.noAccountPurchases) return;
+    try {
+      const { applied } = await this.noAccountPurchases.claimForUser(user);
+      if (applied > 0) this.logger.log(`${applied} compra(s) feita(s) antes da conta aplicada(s) em ${user.id}`);
+    } catch (error) {
+      this.logger.warn(
+        `Compras sem conta de ${user.id} não aplicadas: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
   private async generateTokens(user: User) {
     this.claimPendingGrants(user);
+    // login, refresh e Google: a venda guardada entra em segundo plano (consulta barata pelo índice do e-mail)
+    void this.claimNoAccountPurchases(user);
     const payload = {
       sub: user.id,
       email: user.email,
@@ -530,6 +593,7 @@ export class AuthService {
       this.rememberBrand(user, brand);
       // Se o usuário existe mas não tinha OAuth, atualiza
       if (!user.oauthProvider) {
+        const wasUnverified = !user.emailVerified;
         user = await this.prisma.user.update({
           where: { id: user.id },
           data: {
@@ -539,6 +603,11 @@ export class AuthService {
             avatarUrl: user.avatarUrl || googleUser.avatarUrl,
           },
         });
+        // Conta por e-mail que nunca confirmou e agora entrou pelo Google: e-mail confirmado, o bônus pendente cai
+        // (idempotente: quem já recebeu não recebe de novo).
+        if (wasUnverified) {
+          await this.welcomeCreditsService.grantIfEligible(user.id);
+        }
       }
     } else {
       isNewUser = true;
@@ -630,6 +699,9 @@ export class AuthService {
 
     // Envia welcome email para novos usuários Google (fire-and-forget)
     if (isNewUser) {
+      // Compra feita antes da conta (plano/pacote): aplica antes de entrar.
+      await this.claimNoAccountPurchases(user);
+
       // Concede créditos de boas-vindas (env WELCOME_CREDITS_AMOUNT; default OFF).
       // Idempotente e à prova de falhas — nunca quebra o login/cadastro Google.
       await this.welcomeCreditsService.grantIfEligible(user.id);
@@ -644,9 +716,7 @@ export class AuthService {
         });
       }
 
-      this.emailService.sendWelcomeEmail(user.email, user.name, this.emailBrand(brand, user.signupBrand)).catch((err) => {
-        this.logger.error(`Failed to send welcome email: ${err.message}`);
-      });
+      this.sendWelcome(user, brand);
 
       this.metaConversionsService.trackLead(
         {
@@ -729,7 +799,10 @@ export class AuthService {
   /**
    * Verifica email do usuário usando o token enviado por email
    */
-  async verifyEmail(code: string, brand?: BrandKey | null): Promise<{ message: string }> {
+  async verifyEmail(
+    code: string,
+    brand?: BrandKey | null,
+  ): Promise<{ message: string; welcomeCreditsGranted: number }> {
     const tokenHash = createHash('sha256').update(code).digest('hex');
 
     const verificationToken = await this.prisma.emailVerificationToken.findFirst({
@@ -741,23 +814,41 @@ export class AuthService {
     });
 
     if (!verificationToken) {
-      throw new BadRequestException('Código inválido ou expirado');
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: t('errors.auth.INVALID_CODE'),
+        code: 'INVALID_CODE',
+      });
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    // Consome o código de forma atômica: com o bônus caindo aqui, um duplo toque no "Confirmar" (ou duas abas)
+    // não pode passar 2× e creditar o welcome em dobro. Só a chamada que virou o `used` segue.
+    const consumed = await this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.emailVerificationToken.updateMany({
+        where: { id: verificationToken.id, used: false },
+        data: { used: true },
+      });
+      if (count === 0) return false;
+
       await tx.user.update({
         where: { id: verificationToken.userId },
         data: { emailVerified: true },
       });
-
-      await tx.emailVerificationToken.update({
-        where: { id: verificationToken.id },
-        data: { used: true },
-      });
+      return true;
     });
+
+    if (!consumed) {
+      // A outra chamada já confirmou e já cuida do bônus e do e-mail de boas-vindas.
+      return { message: 'Email verificado com sucesso', welcomeCreditsGranted: 0 };
+    }
 
     // A indicação desta conta pode estar só esperando o e-mail confirmado (tryReward nunca lança).
     void this.referralsService.tryReward(verificationToken.userId);
+
+    // Cadastro por e-mail: os créditos de boas-vindas caem agora (idempotente; nunca lança). O site usa o número
+    // devolvido para mostrar "+150 créditos" na hora.
+    const welcomeCreditsGranted = await this.welcomeCreditsService.grantIfEligible(verificationToken.userId);
 
     // Busca o usuário para enviar welcome email
     const user = await this.prisma.user.findUnique({
@@ -766,12 +857,10 @@ export class AuthService {
 
     if (user) {
       this.rememberBrand(user, brand);
-      this.emailService.sendWelcomeEmail(user.email, user.name, this.emailBrand(brand, user.signupBrand)).catch((err) => {
-        this.logger.error(`Failed to send welcome email: ${err.message}`);
-      });
+      this.sendWelcome(user, brand);
     }
 
-    return { message: 'Email verificado com sucesso' };
+    return { message: 'Email verificado com sucesso', welcomeCreditsGranted };
   }
 
   /**
@@ -794,7 +883,12 @@ export class AuthService {
     });
 
     if (lastToken && lastToken.createdAt.getTime() > Date.now() - 60 * 1000) {
-      throw new BadRequestException('Aguarde 1 minuto antes de solicitar outro email de verificação');
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: t('errors.auth.RESEND_WAIT'),
+        code: 'RESEND_WAIT',
+      });
     }
 
     // Invalida tokens anteriores
@@ -815,9 +909,15 @@ export class AuthService {
       },
     });
 
-    this.emailService.sendVerificationEmail(user.email, user.name, verificationCode, this.emailBrand(brand, user.signupBrand)).catch((err) => {
-      this.logger.error(`Failed to send verification email: ${err.message}`);
-    });
+    const pendingWelcome = await this.welcomeCreditsService.pendingAmountFor(user.id);
+    this.emailService
+      .sendVerificationEmail(user.email, user.name, verificationCode, this.emailBrand(brand, user.signupBrand), {
+        locale: mailLocaleFor(user),
+        bonusCredits: pendingWelcome,
+      })
+      .catch((err) => {
+        this.logger.error(`Failed to send verification email: ${err.message}`);
+      });
 
     return { message: 'Se o email existir e não estiver verificado, um novo link será enviado' };
   }

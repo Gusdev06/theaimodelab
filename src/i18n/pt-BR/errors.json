@@ -6,7 +6,9 @@
     "EMAIL_NOT_VERIFIED": "Confirme seu email antes de fazer login",
     "UNAUTHORIZED": "Não autorizado",
     "USER_NOT_FOUND": "Usuário não encontrado",
-    "GOOGLE_TOKEN_INVALID": "Token Google inválido ou expirado"
+    "GOOGLE_TOKEN_INVALID": "Token Google inválido ou expirado",
+    "INVALID_CODE": "Código inválido ou expirado. Confira o último e-mail ou peça um novo.",
+    "RESEND_WAIT": "Aguarde 1 minuto antes de pedir outro código."
   },
   "credits": {
     "INSUFFICIENT_CREDITS": "Créditos insuficientes. Necessário: {required}, disponível: {available}",
@@ -45,5 +47,21 @@
     "NOT_FOUND": "Recurso não encontrado",
     "BAD_REQUEST": "Requisição inválida",
     "INTERNAL_ERROR": "Erro interno do servidor"
+  },
+  "validation": {
+    "EMAIL_INVALID": "Digite um e-mail válido.",
+    "EMAIL_REQUIRED": "Digite seu e-mail.",
+    "NAME_REQUIRED": "Digite seu nome.",
+    "NAME_TOO_SHORT": "O nome precisa ter pelo menos 2 letras.",
+    "NAME_TOO_LONG": "O nome pode ter no máximo 100 caracteres.",
+    "PASSWORD_REQUIRED": "Crie uma senha.",
+    "PASSWORD_TOO_SHORT": "A senha precisa ter pelo menos 8 caracteres.",
+    "PASSWORD_TOO_LONG": "A senha pode ter no máximo 100 caracteres.",
+    "PASSWORD_WEAK": "Use pelo menos 8 caracteres com 1 letra maiúscula, 1 minúscula e 1 número.",
+    "REFERRAL_CODE_TOO_LONG": "O código de indicação pode ter no máximo 50 caracteres.",
+    "REFERRAL_CODE_INVALID": "Código de indicação inválido.",
+    "CODE_REQUIRED": "Digite o código de 6 números.",
+    "CODE_LENGTH": "O código tem 6 números.",
+    "CODE_DIGITS": "O código tem só números."
   }
 }
