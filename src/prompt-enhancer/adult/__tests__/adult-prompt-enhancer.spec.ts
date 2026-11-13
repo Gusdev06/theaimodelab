@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  ADULT_ENHANCER_SYSTEM_PROMPT,
   adultEnhancerMessage,
   composeEnhanced,
   deterministicEnhancement,
@@ -29,6 +30,17 @@ describe('política do melhorador 18+', () => {
     expect(parseEnhancement('{"prompt":"   "}')).toBeNull();
     expect(parseEnhancement('I cannot help with that')).toBeNull();
     expect(parseEnhancement('')).toBeNull();
+  });
+
+  it('piso de idade 18 (regra do dono, 13/11): a casa escreve 20+ por padrão e mantém a idade adulta da cliente', () => {
+    expect(ADULT_ENHANCER_SYSTEM_PROMPT).toContain('20 or older by default');
+    expect(ADULT_ENHANCER_SYSTEM_PROMPT).toContain('adult age (18 or older), keep it exactly');
+    expect(ADULT_ENHANCER_SYSTEM_PROMPT).not.toMatch(/25 or older/);
+    for (const age of ['19', '22']) {
+      const text = deterministicEnhancement(`mulher de ${age} anos de lingerie na cama`, IMAGE).prompt;
+      expect(text).toContain(`mulher de ${age} anos`);
+      expect(text).not.toContain('27 years old');
+    }
   });
 
   it('composeEnhanced anexa a lista "evitar" no fim, uma vez só', () => {

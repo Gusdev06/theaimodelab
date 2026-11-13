@@ -66,7 +66,7 @@ export interface MinorAssessment {
   slang?: string;
 }
 
-/** Idade legal de toda geração na API (o construtor de modelo usa 25 como piso da personagem). */
+/** Idade legal de toda geração na plataforma (regra do dono, 13/11/2026: "a lei é 18+"; o piso de 25 saiu de tudo). */
 const AGE_FLOOR = 18;
 
 /** Termo encontrado parece idade ("16", "under 18", "born in 2010")? Só muda a categoria do registro. */

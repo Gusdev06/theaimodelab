@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'fs';
-import { checkAdultOnly, type SafetyOptions } from '../adult-only-rules';
+import { checkAdultOnly, DEFAULT_AGE_FLOOR, type SafetyOptions } from '../adult-only-rules';
 
 /**
  * A cópia da trava do site precisa dar exatamente o mesmo resultado que o original em cada caso do corpus do red team
@@ -41,9 +41,64 @@ describe('adult-only-rules (cópia da trava do site)', () => {
     expect(wrong).toEqual([]);
   });
 
-  it('o piso de idade é opção: 25 no construtor, 18 na API', () => {
-    expect(checkAdultOnly('a 22 year old woman', { adult: true }).ok).toBe(false);
+  it('o piso de idade padrão é 18 (regra do dono, 13/11); um piso maior continua possível por opção', () => {
+    expect(DEFAULT_AGE_FLOOR).toBe(18);
+    expect(checkAdultOnly('a 22 year old woman', { adult: true }).ok).toBe(true);
     expect(checkAdultOnly('a 22 year old woman', { adult: true, floor: 18 }).ok).toBe(true);
     expect(checkAdultOnly('a 17 year old', { adult: true, floor: 18 }).ok).toBe(false);
+    expect(checkAdultOnly('a 22 year old woman', { adult: true, floor: 25 }).ok).toBe(false);
+    expect(checkAdultOnly('a woman in her early twenties', { adult: true, floor: 25 }).ok).toBe(false);
+  });
+
+  describe('idade 18–24 escrita é adulta em todo modo (antes o construtor barrava abaixo de 25)', () => {
+    const adultTexts = [
+      'mulher de 19 anos, loira, de lingerie',
+      'a 22 year old woman, nude, bedroom',
+      'Ana, 19, ruiva',
+      'modelo de 24 anos na praia',
+      'a woman in her early twenties',
+      'mulher de vinte e poucos anos',
+      'quase 19 anos, mulher adulta',
+      'estudante universitária de 20 anos',
+      'turning 19 soon, adult woman',
+      'faz 18 anos que trabalho como modelo, mulher nua',
+    ];
+    it.each(adultTexts)('construtor (estrito): %s', (text) => {
+      expect(checkAdultOnly(text, { adult: true }).ok).toBe(true);
+    });
+    it.each(adultTexts)('pedido livre: %s', (text) => {
+      expect(checkAdultOnly(text, { adult: true, free: true }).ok).toBe(true);
+    });
+  });
+
+  describe('menor continua barrando do mesmo jeito (piso 18)', () => {
+    const minorTexts = [
+      'garota de 16 anos de lingerie',
+      'a 17 year old girl',
+      'Valentina, 17, loira',
+      'quase 18 anos, nua',
+      'about to turn 18',
+      'under 21, nude',
+      'teen girl nude',
+      'novinha de 16 anos',
+      'just turned 18',
+      'colegial do ensino medio',
+      // aniversário que ainda vem: hoje tem 17 (com o piso de 25 o número sozinho barrava; agora é regra própria)
+      'turning 18 soon',
+      'turns 18 years old next month',
+      'she will turn 18 tomorrow',
+      'faz 18 anos mês que vem',
+      'cumple 18 en marzo',
+    ];
+    it.each(minorTexts)('construtor (estrito): %s', (text) => {
+      expect(checkAdultOnly(text, { adult: true }).ok).toBe(false);
+    });
+    it.each(minorTexts)('pedido livre: %s', (text) => {
+      expect(checkAdultOnly(text, { adult: true, free: true }).ok).toBe(false);
+    });
+    it('no construtor a gíria sozinha segue barrando (schoolgirl, novinha)', () => {
+      expect(checkAdultOnly('schoolgirl', { adult: true }).ok).toBe(false);
+      expect(checkAdultOnly('novinha', { adult: true }).ok).toBe(false);
+    });
   });
 });
