@@ -451,6 +451,30 @@ describe('SeedreamProvider · motor do Unlocked (UNLOCKED_ENGINE)', () => {
     });
   });
 
+  it('ULTRA_REALISM_PROMPTS=on: Unlocked fotográfico ganha o bloco no fim, estilizado não, e o teto se mantém', async () => {
+    mockKie(() => 'success');
+    const provider = buildProvider({ ...KIE_ENV, ULTRA_REALISM_PROMPTS: 'on' });
+    await run(provider.generateImage({ ...eligible('r1', 'u1') }));
+    await run(
+      provider.generateImage({ ...eligible('r2', 'u1'), prompt: 'anime adult woman, 25, bedroom' }),
+    );
+    await run(
+      provider.generateImage({ ...eligible('r3', 'u1'), prompt: 'x '.repeat(4000) }),
+    );
+    const [photo, anime, longo] = created().map((b) => String(b.input.prompt));
+    expect(photo).toMatch(/Ultra-realistic photo, visible skin pores[^]*no plastic skin.$/);
+    expect(anime).not.toContain('Ultra-realistic photo');
+    expect(longo.length).toBeLessThanOrEqual(5000);
+    expect(longo).toContain('Ultra-realistic photo, visible skin pores');
+  });
+
+  it('sem ULTRA_REALISM_PROMPTS o prompt do Unlocked não ganha o bloco', async () => {
+    mockKie(() => 'success');
+    const provider = buildProvider(KIE_ENV);
+    await run(provider.generateImage(eligible('r4', 'u1')));
+    expect(String(created()[0].input.prompt)).not.toContain('Ultra-realistic photo');
+  });
+
   it('desvio de segurança: só o das imagens entra no canário', () => {
     expect(isUnlockedEngineSwapContext('processImage:nano-banana-2')).toBe(
       true,

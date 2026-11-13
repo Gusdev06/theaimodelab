@@ -9,6 +9,10 @@ import {
   isMinorSafetyBlock,
 } from '../errors/content-safety.error';
 import { isMinorRefusal } from '../errors/minor-refusal';
+import {
+  ultraRealismEnabled,
+  ultraRealismFor,
+} from '../../content-safety/ultra-realism';
 import { ProviderFailureError } from '../errors/failure-reason';
 import { adultSafePrompt } from '../../content-safety/adult-anchor';
 
@@ -193,6 +197,7 @@ export class SeedreamProvider {
   private readonly unlockedCanaryPct: number;
   private readonly unlockedScope: 'all' | 'i2i';
   private readonly unlockedTextEngine: 'default' | 's55';
+  private readonly ultraRealism: boolean;
 
   constructor(
     private readonly configService: ConfigService,
@@ -246,6 +251,9 @@ export class SeedreamProvider {
       .trim()
       .toLowerCase();
     this.unlockedTextEngine = textFlag === 's55' ? 's55' : 'default';
+    this.ultraRealism = ultraRealismEnabled(
+      this.configService.get<string>('ULTRA_REALISM_PROMPTS', ''),
+    );
     if (this.unlockedEngine === 'lite' || this.unlockedTextEngine === 's55') {
       this.logger.log(
         `[UNLOCKED_ENGINE] edição=${this.unlockedEngine === 'lite' ? 'lite' : 'pro'} só-texto=${this.unlockedTextEngine === 's55' ? 's55' : this.unlockedEngine === 'lite' && this.unlockedScope === 'all' ? 'lite' : 'pro'} canário=${this.unlockedCanaryPct}% escopo=${this.unlockedScope}${this.unlockedCanaryPct === 0 ? ' (UNLOCKED_ENGINE_CANARY_PCT vazio ou inválido: ninguém no Lite)' : ''}`,
@@ -338,8 +346,15 @@ export class SeedreamProvider {
     // Prompt: o modelo sem censura (skipSafetyWrapper: Unlocked, despir, desvio de segurança) recebe o pedido com a
     // âncora de adulto (toda pessoa gerada é adulta; gíria de juventude vira "mulher adulta"); o resto ganha o wrapper
     // que mantém o personagem vestido.
+    // Ultra-realismo (ULTRA_REALISM_PROMPTS, dono 13/11) só no motor sem censura e só em pedido não estilizado. O bloco
+    // vai no fim e o teto corta o texto da cliente, nunca o bloco nem a âncora de adulto.
+    const realism = input.skipSafetyWrapper
+      ? ultraRealismFor(this.ultraRealism, input.prompt)
+      : '';
     const finalPrompt = input.skipSafetyWrapper
-      ? adultSafePrompt(input.prompt, MAX_PROMPT_LENGTH)
+      ? realism
+        ? `${adultSafePrompt(input.prompt, MAX_PROMPT_LENGTH - realism.length - 2)}\n\n${realism}`
+        : adultSafePrompt(input.prompt, MAX_PROMPT_LENGTH)
       : applySafetyWrapper(input.prompt);
 
     // KIE exige aspect_ratio fixo (não tem `match_input_image`). Quando o request
