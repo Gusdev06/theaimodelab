@@ -15,6 +15,9 @@
  * Assuntos curtos, tom direto, sem urgência falsa nem dark pattern.
  * O CTA sempre aponta pra /creditos (upgrade / compra de pacote).
  *
+ * A Mia abre cada e-mail (foto + fala no idioma da conta, ver mia-email.ts): créditos acabando/zerados = MIA30,
+ * volta depois de cancelar = MIA25. `options.mia = false` (conta de outra marca) tira o bloco.
+ *
  * Custos de referência (aprox., ver CLAUDE.md — tabela credit_costs):
  *   - Imagem Full HD: ~90 créditos (arredondamos "imagem" pra ~60–90 conforme
  *     resolução; usamos 90 como base conservadora pra não prometer a mais).
@@ -24,6 +27,7 @@
  */
 
 import type { EmailLocale } from './onboarding-sequence-templates';
+import { miaEmailBlock, type EmailVisualOptions } from './mia-email';
 
 export type LifecycleSequenceName = 'lifecycle';
 
@@ -100,17 +104,19 @@ function creditsToGenerations(totalCredits: number, locale: EmailLocale): string
 export function buildLowBalanceEmail(
   data: LowBalanceData,
   locale: EmailLocale = 'pt-BR',
+  options: EmailVisualOptions = {},
 ): {
   subject: string;
   body: string;
 } {
+  const mia = miaEmailBlock('low_balance', locale, options);
   const gens = creditsToGenerations(data.totalCredits, locale);
   const credits = fmt(data.totalCredits, locale);
 
   if (locale === 'en') {
     return {
       subject: 'Your credits are running low, {{firstName}}',
-      body: `{{firstName}}, your credits for this month are almost gone.
+      body: `${mia}{{firstName}}, your credits for this month are almost gone.
 
 You have **${credits} credits** left — they ${gens}.
 
@@ -130,7 +136,7 @@ Your plan credits renew automatically next cycle — so if you'd rather wait, ju
   if (locale === 'es') {
     return {
       subject: 'Tus créditos se están acabando, {{firstName}}',
-      body: `{{firstName}}, tus créditos del mes están llegando al final.
+      body: `${mia}{{firstName}}, tus créditos del mes están llegando al final.
 
 Tienes **${credits} créditos** disponibles — ${gens}.
 
@@ -149,7 +155,7 @@ Tus créditos del plan se renuevan automáticamente en el próximo ciclo — si 
 
   return {
     subject: 'Seus créditos estão acabando, {{firstName}}',
-    body: `{{firstName}}, seus créditos do mês estão chegando ao fim.
+    body: `${mia}{{firstName}}, seus créditos do mês estão chegando ao fim.
 
 Você tem **${credits} créditos** disponíveis — eles ${gens}.
 
@@ -190,10 +196,12 @@ export interface CreditsDepletedData {
 export function buildCreditsDepletedEmail(
   data: CreditsDepletedData,
   locale: EmailLocale = 'pt-BR',
+  options: EmailVisualOptions = {},
 ): {
   subject: string;
   body: string;
 } {
+  const mia = miaEmailBlock('credits_depleted', locale, options);
   const monthly = fmt(data.monthlyCredits, locale);
 
   if (locale === 'en') {
@@ -216,7 +224,7 @@ export function buildCreditsDepletedEmail(
 
     return {
       subject: `You've used everything, and there are still ${data.daysUntilRenewal} days left`,
-      body: `{{firstName}}, ${usedLine} — and there are still **${data.daysUntilRenewal} days** until your plan renews.
+      body: `${mia}{{firstName}}, ${usedLine} — and there are still **${data.daysUntilRenewal} days** until your plan renews.
 
 That's usually a good sign: it means you're producing at pace. To avoid sitting idle until next cycle, you have two options:
 
@@ -250,7 +258,7 @@ Or just wait it out: your plan credits renew in ${data.daysUntilRenewal} days.
 
     return {
       subject: `Usaste todo, y todavía faltan ${data.daysUntilRenewal} días`,
-      body: `{{firstName}}, ${usedLine} — y todavía faltan **${data.daysUntilRenewal} días** para la renovación de tu plan.
+      body: `${mia}{{firstName}}, ${usedLine} — y todavía faltan **${data.daysUntilRenewal} días** para la renovación de tu plan.
 
 Normalmente es buena señal: significa que estás produciendo con ritmo. Para no quedarte parado hasta el próximo ciclo, tienes dos opciones:
 
@@ -283,7 +291,7 @@ Si prefieres, solo espera: tus créditos del plan se renuevan en ${data.daysUnti
 
   return {
     subject: `Você usou tudo, e ainda faltam ${data.daysUntilRenewal} dias`,
-    body: `{{firstName}}, ${usedLine} — e ainda faltam **${data.daysUntilRenewal} dias** até a renovação do seu plano.
+    body: `${mia}{{firstName}}, ${usedLine} — e ainda faltam **${data.daysUntilRenewal} dias** até a renovação do seu plano.
 
 Isso normalmente é um bom sinal: significa que você está produzindo em ritmo. Pra não ficar parado até o próximo ciclo, você tem duas opções:
 
@@ -310,10 +318,12 @@ export interface WinbackData {
 export function buildWinbackEmail(
   data: WinbackData,
   locale: EmailLocale = 'pt-BR',
+  options: EmailVisualOptions = {},
 ): {
   subject: string;
   body: string;
 } {
+  const mia = miaEmailBlock('winback', locale, options);
   const count = fmt(data.generationsCount, locale);
 
   if (locale === 'en') {
@@ -326,7 +336,7 @@ export function buildWinbackEmail(
 
     return {
       subject: 'Your account is still here, {{firstName}}',
-      body: `{{firstName}}, it's been a week since your plan expired.
+      body: `${mia}{{firstName}}, it's been a week since your plan expired.
 
 ${createdLine}
 
@@ -350,7 +360,7 @@ If it doesn't make sense right now, that's okay. The door stays open.
 
     return {
       subject: 'Tu cuenta sigue aquí, {{firstName}}',
-      body: `{{firstName}}, hace una semana que tu plan expiró.
+      body: `${mia}{{firstName}}, hace una semana que tu plan expiró.
 
 ${createdLine}
 
@@ -373,7 +383,7 @@ Si por ahora no tiene sentido, está bien. La puerta queda abierta.
 
   return {
     subject: 'Sua conta continua aqui, {{firstName}}',
-    body: `{{firstName}}, faz uma semana que seu plano expirou.
+    body: `${mia}{{firstName}}, faz uma semana que seu plano expirou.
 
 ${createdLine}
 
