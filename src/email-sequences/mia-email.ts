@@ -11,7 +11,12 @@
  *   ficam com saudade e créditos: lingerie opaca, sem nudez. Fora da Meta (anúncio e página de destino).
  * - A imagem fica no serviço `funis` (public/assets/mia), servido também pelo domínio da marca
  *   assets.theaimodelab.com (o mesmo dos banners de e-mail): domínio próprio entrega melhor que *.railway.app.
- * - A imagem não é link: o e-mail continua com um único CTA.
+ * - A imagem não é link: o e-mail continua com um único botão.
+ * - Conversa 1 a 1 (regra do dono, 14/11/2026: "puxar as clientes pra perto"): embaixo da fala entra uma linha
+ *   pequena de texto, "me chama no WhatsApp ou responda este e-mail". O link abre o WhatsApp do suporte com a
+ *   palavra MIA no texto (a Mia do atendimento responde por ela) e a resposta ao e-mail cai na caixa do suporte.
+ *   Em inglês a resposta ao e-mail vem primeiro: EUA, Canadá e Austrália usam pouco o WhatsApp.
+ *   `MIA_X1_EMAIL=off` tira a linha; `MIA_X1_WA_NUMBER` troca o número.
  */
 
 import { resolveBrand } from '../brand/brand';
@@ -96,6 +101,42 @@ export function miaLine(scene: MiaEmailScene, locale: EmailLocale): string {
   return MIA_SCENES[scene].line[locale];
 }
 
+/** WhatsApp do suporte da The AI Model Lab: o mesmo número das páginas de obrigado e dos e-mails do pack. */
+const DEFAULT_SUPPORT_WA_NUMBER = '5511922198321';
+
+/** Texto que já vai escrito na conversa. Neutro de propósito: fica no histórico do WhatsApp. */
+const MIA_TALK_TEXT: Record<EmailLocale, string> = {
+  'pt-BR': 'MIA · Quero criar a minha modelo com a sua ajuda.',
+  es: 'MIA · Quiero crear mi modelo con tu ayuda.',
+  en: 'MIA · I want to create my model with your help.',
+};
+
+/** Partes da linha de conversa: antes do link, o link e depois dele. */
+const MIA_TALK_COPY: Record<EmailLocale, { before: string; link: string; after: string }> = {
+  'pt-BR': { before: '💬 Quer fazer junto? ', link: 'Me chama no WhatsApp', after: ' ou responda este e-mail.' },
+  es: { before: '💬 ¿Lo hacemos juntos? ', link: 'Escríbeme por WhatsApp', after: ' o responde este correo.' },
+  en: { before: '💬 Want to do it together? Just reply to this e-mail, or ', link: 'message me on WhatsApp', after: '.' },
+};
+
+/** A linha de conversa sai por padrão; `MIA_X1_EMAIL=off` desliga sem deploy de código. */
+export function miaTalkEnabled(): boolean {
+  return (process.env.MIA_X1_EMAIL ?? 'on').trim().toLowerCase() !== 'off';
+}
+
+/** Link do WhatsApp do suporte com a palavra MIA no texto, no idioma da conta. */
+export function miaTalkUrl(locale: EmailLocale): string {
+  const configured = (process.env.MIA_X1_WA_NUMBER ?? '').replace(/\D/g, '');
+  const number = configured.length >= 10 ? configured : DEFAULT_SUPPORT_WA_NUMBER;
+  return `https://wa.me/${number}?text=${encodeURIComponent(MIA_TALK_TEXT[locale]).replace(/'/g, '%27')}`;
+}
+
+function miaTalkLine(locale: EmailLocale): string {
+  if (!miaTalkEnabled()) return '';
+  const copy = MIA_TALK_COPY[locale];
+  const link = `<a href="${miaTalkUrl(locale)}" style="color:#1a1a1a;font-weight:600;text-decoration:underline;">${escapeHtml(copy.link)}</a>`;
+  return `<p style="margin:12px 0 0;font-size:14px;color:#444;line-height:1.5;text-align:center;">${escapeHtml(copy.before)}${link}${escapeHtml(copy.after)}</p>`;
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -120,5 +161,5 @@ export function miaEmailBlock(
   const image = `<img src="${miaImageUrl(scene)}" alt="Mia" width="${MIA_IMAGE_WIDTH}" style="display:block;margin:0 auto;width:${MIA_IMAGE_WIDTH}px;max-width:100%;height:auto;border:0;border-radius:16px;">`;
   const speech = `<p style="margin:14px 0 0;font-size:16px;font-style:italic;color:#1a1a1a;line-height:1.5;text-align:center;">“${line}”</p>`;
   const signature = `<p style="margin:4px 0 0;font-size:13px;color:#999;text-align:center;">Mia</p>`;
-  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 28px;"><tr><td align="center" style="border:0;padding:0;">${image}${speech}${signature}</td></tr></table>\n\n`;
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 28px;"><tr><td align="center" style="border:0;padding:0;">${image}${speech}${signature}${miaTalkLine(locale)}</td></tr></table>\n\n`;
 }
