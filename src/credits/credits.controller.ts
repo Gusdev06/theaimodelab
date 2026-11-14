@@ -31,6 +31,7 @@ import { StripeService } from '../payments/stripe.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { MetaConversionsService } from '../meta/meta-conversions.service';
 import { CheckoutCodesService } from '../checkout-codes/checkout-codes.service';
+import { entryPackageNames, hasEntryPackage, withoutEntryPackages } from './entry-packages';
 
 @ApiTags('credits')
 @ApiBearerAuth()
@@ -105,7 +106,22 @@ export class CreditsController {
       });
       resolvedCurrency = user.currency;
     }
-    return this.buildPackagesForCurrency(resolvedCurrency!, true, req?.headers);
+    const packages = await this.buildPackagesForCurrency(resolvedCurrency!, true, req?.headers);
+    return this.hideEntryPackagesFromPayers(userId, packages);
+  }
+
+  /** Pacote de entrada (env ENTRY_PACKAGE_NAMES) só aparece para quem nunca pagou nada. */
+  private async hideEntryPackagesFromPayers<T extends { name: string }>(
+    userId: string,
+    packages: T[],
+  ): Promise<T[]> {
+    const entryNames = entryPackageNames();
+    if (!hasEntryPackage(packages, entryNames)) return packages;
+    const firstPaid = await this.prisma.payment.findFirst({
+      where: { userId, status: 'COMPLETED', amountCents: { gt: 0 } },
+      select: { id: true },
+    });
+    return firstPaid ? withoutEntryPackages(packages, entryNames) : packages;
   }
 
   @Public()
