@@ -12,6 +12,7 @@ import {
   MIA_ASSET_BASE_URL,
   miaEmailBlock,
   miaLine,
+  miaTalkUrl,
   showMiaFor,
 } from '../../email-sequences/mia-email';
 
@@ -68,10 +69,10 @@ describe('Mia nos e-mails de ciclo de vida', () => {
     }
   }
 
-  it('a foto da Mia não é link (o e-mail segue com um único CTA)', () => {
+  it('a foto da Mia não é link (o e-mail segue com um único botão)', () => {
     const block = miaEmailBlock('credits_depleted', 'pt-BR');
-    expect(block).not.toContain('<a ');
-    expect(block).not.toContain('href=');
+    expect(block).not.toMatch(/<a [^>]*>\s*<img/);
+    expect(block.match(/<a /g)).toHaveLength(1);
   });
 
   it('o bloco é uma linha só, seguida de linha em branco (o Markdown passa o HTML adiante)', () => {
@@ -83,7 +84,57 @@ describe('Mia nos e-mails de ciclo de vida', () => {
   it('a fala com apóstrofo e reticências não quebra o HTML', () => {
     const block = miaEmailBlock('winback', 'en');
     expect(block).toContain("I've been waiting");
-    expect(block).not.toMatch(/<(?!\/?(table|tr|td|img|p)\b)/);
+    expect(block).not.toMatch(/<(?!\/?(table|tr|td|img|p|a)\b)/);
+  });
+});
+
+describe('Linha de conversa 1 a 1 com a Mia', () => {
+  const original = { on: process.env.MIA_X1_EMAIL, number: process.env.MIA_X1_WA_NUMBER };
+  afterEach(() => {
+    if (original.on === undefined) delete process.env.MIA_X1_EMAIL;
+    else process.env.MIA_X1_EMAIL = original.on;
+    if (original.number === undefined) delete process.env.MIA_X1_WA_NUMBER;
+    else process.env.MIA_X1_WA_NUMBER = original.number;
+  });
+
+  for (const locale of EMAIL_LOCALES) {
+    it(`(${locale}) o link abre o WhatsApp do suporte com a palavra MIA e o texto do idioma`, () => {
+      const url = miaTalkUrl(locale);
+      expect(url.startsWith('https://wa.me/5511922198321?text=MIA%20')).toBe(true);
+      expect(url).not.toMatch(/['"<>& ]/);
+      expect(miaEmailBlock('welcome', locale)).toContain(`href="${url}"`);
+    });
+  }
+
+  it('o texto que vai para o WhatsApp é neutro (sem termo adulto)', () => {
+    for (const locale of EMAIL_LOCALES) {
+      expect(decodeURIComponent(miaTalkUrl(locale))).not.toMatch(/18\+|nsfw|uncensored|sem censura|sin censura|nude|porn/i);
+    }
+  });
+
+  it('em inglês a resposta ao e-mail vem antes do WhatsApp', () => {
+    const block = miaEmailBlock('low_balance', 'en');
+    expect(block.indexOf('reply to this e-mail')).toBeGreaterThan(-1);
+    expect(block.indexOf('reply to this e-mail')).toBeLessThan(block.indexOf('wa.me/'));
+  });
+
+  it('MIA_X1_EMAIL=off tira a linha e o bloco volta a não ter link', () => {
+    process.env.MIA_X1_EMAIL = 'off';
+    const block = miaEmailBlock('credits_depleted', 'es');
+    expect(block).not.toContain('<a ');
+    expect(block).not.toContain('wa.me');
+    expect(block).toContain(miaLine('credits_depleted', 'es'));
+  });
+
+  it('MIA_X1_WA_NUMBER troca o número; valor inválido cai no número padrão', () => {
+    process.env.MIA_X1_WA_NUMBER = '+55 (11) 90000-0000';
+    expect(miaTalkUrl('pt-BR').startsWith('https://wa.me/5511900000000?text=')).toBe(true);
+    process.env.MIA_X1_WA_NUMBER = 'abc';
+    expect(miaTalkUrl('pt-BR').startsWith('https://wa.me/5511922198321?text=')).toBe(true);
+  });
+
+  it('conta de outra marca (sem a Mia) não ganha a linha de conversa', () => {
+    expect(lowBalance('pt-BR', false).body).not.toContain('wa.me');
   });
 });
 
