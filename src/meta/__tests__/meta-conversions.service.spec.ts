@@ -64,6 +64,17 @@ describe('MetaConversionsService', () => {
     expect(event.custom_data).toMatchObject({ currency: 'USD', value: 29.9 });
   });
 
+  it('manda o mesmo evento (mesmo event_id) para cada pixel de META_PIXEL_ID', async () => {
+    const service = buildService({ ...baseEnv, META_PIXEL_ID: '1223791793200733, 1327084455720433,1223791793200733', META_CAPI_EVENTS: 'Subscribe' });
+    await service.trackPurchase(purchaseInput('subscription'));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls[0]).toContain('/1223791793200733/events');
+    expect(urls[1]).toContain('/1327084455720433/events');
+    const ids = fetchMock.mock.calls.map((call) => JSON.parse(call[1].body).data[0].event_id);
+    expect(ids).toEqual(['PPV123', 'PPV123']);
+  });
+
   it('normaliza telefone, país e monta fbc a partir do fbclid', () => {
     const service = buildService(baseEnv);
     const userData = service.buildUserData({
