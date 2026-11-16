@@ -33,7 +33,7 @@ describe('política do melhorador 18+', () => {
   });
 
   it('piso de idade 18 (regra do dono, 13/11): a casa escreve 20+ por padrão e mantém a idade adulta da cliente', () => {
-    expect(ADULT_ENHANCER_SYSTEM_PROMPT).toContain('20 or older by default');
+    expect(ADULT_ENHANCER_SYSTEM_PROMPT).toContain('18 or older ("adult woman');
     expect(ADULT_ENHANCER_SYSTEM_PROMPT).toContain('adult age (18 or older), keep it exactly');
     expect(ADULT_ENHANCER_SYSTEM_PROMPT).not.toMatch(/25 or older/);
     for (const age of ['19', '22']) {

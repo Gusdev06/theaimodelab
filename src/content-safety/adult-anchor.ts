@@ -14,12 +14,12 @@ import { flatten } from './minor-guard';
 export const ADULT_ANCHOR_VERSION = 'adulto-2026-11-06';
 
 /**
- * Idade APARENTE com folga sobre os 18: modelo de imagem puxa para mais novo quando o pedido fala de juventude, e a
+ * Idade APARENTE de 18 ou mais (a lei; dono 16/11: sem margem de 20, 21 ou 25). Modelo de imagem puxa para mais novo quando o pedido fala de juventude, e a
  * regra é a imagem parecer adulta, não a idade escrita. Vai entre colchetes e dito como regra visual: nos modelos de vídeo
  * com voz (MiniMax H3, Seedance) o que vem entre aspas é fala, e a âncora não pode virar fala da personagem.
  */
 export const ADULT_ANCHOR =
-  '[Visual rule, not dialogue: every person shown is clearly an adult (apparent age 20 or older), with adult facial features and adult body proportions.]';
+  '[Visual rule, not dialogue: every person shown is clearly an adult (apparent age 18 or older), with adult facial features and adult body proportions.]';
 
 /** Começo da âncora: prompt reaproveitado que já a traz não ganha outra. */
 const ANCHOR_MARK = 'every person shown is clearly an adult';
