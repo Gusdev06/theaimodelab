@@ -12,6 +12,10 @@ async function bootstrap() {
     bodyParser: false,
   });
 
+  // No SIGTERM do redeploy, roda os hooks de desligamento: o GracefulShutdownService
+  // espera as gerações em andamento terminarem antes de a API cair (TKT-306).
+  app.enableShutdownHooks();
+
   // Security headers (configured to not interfere with CORS)
   app.use(helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },

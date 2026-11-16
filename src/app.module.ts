@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { BullModule } from '@nestjs/bullmq';
 import {
@@ -58,6 +58,8 @@ import { MarketingLeadsModule } from './marketing-leads/marketing-leads.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { ContentSafetyModule } from './content-safety/content-safety.module';
 import { ReportsModule } from './reports/reports.module';
+import { InflightRunsModule } from './shutdown/inflight-runs.module';
+import { GracefulShutdownService } from './shutdown/graceful-shutdown.service';
 
 
 @Module({
@@ -147,10 +149,14 @@ import { ReportsModule } from './reports/reports.module';
     MetaModule,
     MarketingLeadsModule,
     AnalyticsModule,
+    DiscoveryModule,
+    InflightRunsModule,
   ],
   controllers: [AppController],
   providers: [
     AppService,
+    // No módulo raiz de propósito: o onModuleDestroy dele roda antes dos outros (TKT-306).
+    GracefulShutdownService,
     {
       provide: APP_GUARD,
       useClass: JwtAuthGuard,
