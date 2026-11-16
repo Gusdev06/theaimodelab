@@ -9,7 +9,8 @@ type MetaEventName =
   | 'ViewContent'
   | 'Lead'
   | 'InitiateCheckout'
-  | 'Purchase';
+  | 'Purchase'
+  | 'Subscribe';
 
 type MetaUser = {
   id?: string;
@@ -19,6 +20,8 @@ type MetaUser = {
   country?: string | null;
   fbp?: string | null;
   fbc?: string | null;
+  fbclid?: string | null;
+  createdAt?: Date | string | null;
 };
 
 export type MetaRequestContext = {
@@ -136,8 +139,11 @@ export class MetaConversionsService {
     provider: string;
     purchaseType: 'subscription' | 'credit_package';
   }): Promise<void> {
+    // Assinatura da plataforma vai como Subscribe: o Purchase do pixel é da UTMify (checkout), e
+    // mandar Purchase daqui contaria a mesma venda duas vezes. Pacote de créditos segue como Purchase,
+    // e só sai se 'Purchase' estiver em META_CAPI_EVENTS.
     await this.trackEvent({
-      eventName: 'Purchase',
+      eventName: input.purchaseType === 'subscription' ? 'Subscribe' : 'Purchase',
       eventId: input.eventId,
       eventSourceUrl: this.resolveFrontendUrl('/payment/success'),
       user: input.user,
@@ -154,14 +160,20 @@ export class MetaConversionsService {
     });
   }
 
-  // Meta CAPI desativado (2026-07-29): eventos de conversão são enviados
-  // exclusivamente pela UTMify (pixel no site + webhooks PerfectPay/Cakto
-  // configurados no painel dela). Os call sites (Lead no cadastro, Purchase
-  // na ativação) ficam dormentes — para reativar, mude para false.
-  private readonly metaCapiDisabled = true;
+  // Desde 2026-07-29 o Purchase do pixel vem só da UTMify (pixel no site + webhooks
+  // PerfectPay/Cakto no painel dela). Esta API só manda os eventos listados em
+  // META_CAPI_EVENTS (ex.: "Lead,Subscribe"). Vazia = nada sai daqui, igual a antes.
+  isEventEnabled(eventName: MetaEventName): boolean {
+    const raw = this.configService.get<string>('META_CAPI_EVENTS') || '';
+    return raw
+      .split(',')
+      .map((name) => name.trim().toLowerCase())
+      .filter(Boolean)
+      .includes(eventName.toLowerCase());
+  }
 
   private async trackEvent(input: TrackEventInput): Promise<void> {
-    if (this.metaCapiDisabled) return;
+    if (!this.isEventEnabled(input.eventName)) return;
 
     const pixelId = this.configService.get<string>('META_PIXEL_ID') ||
       this.configService.get<string>('NEXT_PUBLIC_META_PIXEL_ID') ||
@@ -226,20 +238,42 @@ export class MetaConversionsService {
     }
   }
 
-  private buildUserData(input: TrackEventInput): Record<string, unknown> {
+  buildUserData(input: TrackEventInput): Record<string, unknown> {
     const nameParts = this.splitName(input.user?.name);
+    const phone = this.normalizePhone(input.user?.phone);
+    const country = this.normalizeCountry(input.user?.country);
     return this.stripEmpty({
       em: input.user?.email ? [this.hash(input.user.email)] : undefined,
-      ph: input.user?.phone ? [this.hash(input.user.phone)] : undefined,
+      ph: phone ? [this.hash(phone)] : undefined,
       fn: nameParts.firstName ? [this.hash(nameParts.firstName)] : undefined,
       ln: nameParts.lastName ? [this.hash(nameParts.lastName)] : undefined,
-      country: input.user?.country ? [this.hash(input.user.country)] : undefined,
+      country: country ? [this.hash(country)] : undefined,
       external_id: input.user?.id ? [this.hash(input.user.id)] : undefined,
       client_ip_address: input.requestContext?.ipAddress,
       client_user_agent: input.requestContext?.userAgent,
       fbp: input.fbp || input.user?.fbp,
-      fbc: input.fbc || input.user?.fbc,
+      fbc: input.fbc || input.user?.fbc || this.fbcFromClickId(input.user?.fbclid, input.user?.createdAt),
     });
+  }
+
+  // Meta pede telefone só com dígitos e DDI (sem +, espaço ou traço). Menos de 8 dígitos = lixo.
+  private normalizePhone(phone?: string | null): string | undefined {
+    const digits = (phone || '').replace(/\D+/g, '').replace(/^00/, '');
+    return digits.length >= 8 ? digits : undefined;
+  }
+
+  // Meta pede país em ISO 3166-1 alfa-2. Qualquer outro formato sairia como hash inútil.
+  private normalizeCountry(country?: string | null): string | undefined {
+    const code = (country || '').trim().toLowerCase();
+    return /^[a-z]{2}$/.test(code) ? code : undefined;
+  }
+
+  // Sem o cookie _fbc, monta o fbc a partir do fbclid guardado no cadastro (formato fb.1.<ms>.<fbclid>).
+  private fbcFromClickId(fbclid?: string | null, createdAt?: Date | string | null): string | undefined {
+    const clickId = (fbclid || '').trim();
+    if (!clickId) return undefined;
+    const capturedAt = createdAt ? new Date(createdAt).getTime() : NaN;
+    return `fb.1.${Number.isFinite(capturedAt) ? capturedAt : Date.now()}.${clickId}`;
   }
 
   private splitName(name?: string | null): { firstName?: string; lastName?: string } {

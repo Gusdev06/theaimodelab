@@ -239,6 +239,8 @@ export class PaymentsService {
         country: true,
         fbp: true,
         fbc: true,
+        fbclid: true,
+        createdAt: true,
         signupBrand: true,
       },
     });
@@ -497,6 +499,8 @@ export class PaymentsService {
           country: true,
           fbp: true,
           fbc: true,
+          fbclid: true,
+          createdAt: true,
           signupBrand: true,
         },
       });
@@ -858,6 +862,8 @@ export class PaymentsService {
         country: true,
         fbp: true,
         fbc: true,
+        fbclid: true,
+        createdAt: true,
         signupBrand: true,
       },
     });
