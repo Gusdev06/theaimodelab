@@ -72,6 +72,8 @@ export class ContentSafetyError extends Error {
     // Veo e Gemini Omni na kie: "public error unsafe image upload" (imagem de
     // entrada recusada pelo filtro) caía como GENERATION_FAILED genérico.
     /unsafe image upload/i,
+    // Nano Banana na kie: "Google declined to generate an image for this request" (46 em 30 dias, auditoria 16/11)
+    /declined to generate/i,
     /public_error_/i,
   ];
 

@@ -7,6 +7,9 @@ import { ContentSafetyError } from '../errors/content-safety.error';
 // Códigos de fail retornados pela KIE que indicam moderação de conteúdo.
 const SEEDREAM_SAFETY_FAIL_CODES = new Set(['430']);
 
+/** Teto de prompt do Seedream 5 Lite na kie (o Pro aceita 5.000). */
+export const MAX_LITE_PROMPT_LENGTH = 3000;
+
 // Nosso RES_2K → "basic" no KIE / RES_3K → "high" no KIE.
 // (KIE doc fala em 4K para "high", mas o modelo Lite sai até 3K.)
 const QUALITY_MAP: Record<string, 'basic' | 'high'> = {
@@ -83,7 +86,8 @@ export class SeedreamLiteProvider {
     const body = {
       model: modelName,
       input: {
-        prompt: input.prompt,
+        // a kie recusa o Lite acima de ~3.000 caracteres ("text length cannot exceed"; 22 falhas com 3.069–7.784 em 30 dias)
+        prompt: input.prompt.trim().slice(0, MAX_LITE_PROMPT_LENGTH),
         aspect_ratio: input.aspectRatio ?? '1:1',
         quality,
         nsfw_checker: false,
