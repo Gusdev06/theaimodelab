@@ -175,12 +175,11 @@ export class MetaConversionsService {
   private async trackEvent(input: TrackEventInput): Promise<void> {
     if (!this.isEventEnabled(input.eventName)) return;
 
-    const pixelId = this.configService.get<string>('META_PIXEL_ID') ||
-      this.configService.get<string>('NEXT_PUBLIC_META_PIXEL_ID') ||
-      '1327084455720433';
+    // META_PIXEL_ID aceita vários pixels separados por vírgula: o mesmo evento (mesmo event_id) vai a cada um.
+    const pixelIds = this.resolvePixelIds();
     const accessToken = this.getMetaAccessToken();
 
-    if (!pixelId || !accessToken) {
+    if (pixelIds.length === 0 || !accessToken) {
       if (!this.warnedMissingConfig) {
         this.warnedMissingConfig = true;
         this.logger.warn('Meta CAPI disabled: configure META_PIXEL_ID and META_ACCESS_TOKEN');
@@ -189,7 +188,6 @@ export class MetaConversionsService {
     }
 
     const graphVersion = this.configService.get<string>('META_GRAPH_API_VERSION') || 'v23.0';
-    const endpoint = `https://graph.facebook.com/${graphVersion}/${pixelId}/events`;
     const eventId = input.eventId || `${input.eventName.toLowerCase()}-${Date.now()}`;
 
     const payload: Record<string, unknown> = {
@@ -209,6 +207,28 @@ export class MetaConversionsService {
     const testEventCode = this.configService.get<string>('META_TEST_EVENT_CODE');
     if (testEventCode) payload.test_event_code = testEventCode;
 
+    await Promise.all(
+      pixelIds.map((pixelId) =>
+        this.postEvent(`https://graph.facebook.com/${graphVersion}/${pixelId}/events`, pixelId, input.eventName, payload, accessToken),
+      ),
+    );
+  }
+
+  private resolvePixelIds(): string[] {
+    const raw =
+      this.configService.get<string>('META_PIXEL_ID') ||
+      this.configService.get<string>('NEXT_PUBLIC_META_PIXEL_ID') ||
+      '1327084455720433';
+    return [...new Set(raw.split(',').map((id) => id.trim()).filter((id) => /^\d+$/.test(id)))];
+  }
+
+  private async postEvent(
+    endpoint: string,
+    pixelId: string,
+    eventName: MetaEventName,
+    payload: Record<string, unknown>,
+    accessToken: string,
+  ): Promise<void> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3500);
 
@@ -223,15 +243,15 @@ export class MetaConversionsService {
 
       if (!response.ok) {
         this.logger.error(
-          `Meta CAPI ${input.eventName} failed (${response.status}): ${this.redactMetaResponse(responseBody, accessToken).slice(0, 500)}`,
+          `Meta CAPI ${eventName} → ${pixelId} failed (${response.status}): ${this.redactMetaResponse(responseBody, accessToken).slice(0, 500)}`,
         );
         return;
       }
 
-      this.logger.debug(`Meta CAPI ${input.eventName} accepted: ${responseBody.slice(0, 300)}`);
+      this.logger.debug(`Meta CAPI ${eventName} → ${pixelId} accepted: ${responseBody.slice(0, 300)}`);
     } catch (error) {
       this.logger.error(
-        `Meta CAPI ${input.eventName} error: ${error instanceof Error ? error.message : String(error)}`,
+        `Meta CAPI ${eventName} → ${pixelId} error: ${error instanceof Error ? error.message : String(error)}`,
       );
     } finally {
       clearTimeout(timeout);
