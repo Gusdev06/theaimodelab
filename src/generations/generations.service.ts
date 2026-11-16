@@ -179,6 +179,7 @@ import {
 } from './queue/generation-queue.constants';
 import { UnlimitedService } from '../unlimited/unlimited.service';
 import { UnlimitedEligibility } from '../unlimited/unlimited.types';
+import { InflightRunsService } from '../shutdown/inflight-runs.service';
 
 type GenerationWithRelations = {
   id: string;
@@ -226,15 +227,23 @@ export class GenerationsService {
     private readonly unlimitedService: UnlimitedService,
     private readonly contentSafety: ContentSafetyService,
     @Optional() private readonly promptJudge?: PromptJudgeService,
+    @Optional() private readonly inflightRuns?: InflightRunsService,
   ) {}
+
+  /** Registra a execução fora da fila para o deploy esperar ela terminar (TKT-306). */
+  private trackDirectRun<T>(label: string, run: Promise<T>): Promise<T> {
+    return this.inflightRuns ? this.inflightRuns.track(label, run) : run;
+  }
 
   private isSeedream(model: string | undefined | null): boolean {
     return model === 'sem-censura';
   }
 
   private runSeedreamDirectly(data: ImageJobData): void {
-    this.generationProcessor
-      .runImageJobDirectly(data)
+    this.trackDirectRun(
+      `image:${data.generationId}`,
+      this.generationProcessor.runImageJobDirectly(data),
+    )
       .catch((err) =>
         this.logger.error(
           `Seedream direct run failed for ${data.generationId}: ${(err as Error).message}`,
@@ -244,8 +253,10 @@ export class GenerationsService {
   }
 
   private runTalkingAvatarDirectly(data: TalkingAvatarJobData): void {
-    this.generationProcessor
-      .runTalkingAvatarDirectly(data)
+    this.trackDirectRun(
+      `talking-avatar:${data.generationId}`,
+      this.generationProcessor.runTalkingAvatarDirectly(data),
+    )
       .catch((err) =>
         this.logger.error(
           `Talking avatar direct run failed for ${data.generationId}: ${(err as Error).message}`,
@@ -255,8 +266,10 @@ export class GenerationsService {
   }
 
   private runMultipleAnglesDirectly(data: MultipleAnglesJobData): void {
-    this.generationProcessor
-      .runMultipleAnglesDirectly(data)
+    this.trackDirectRun(
+      `multiple-angles:${data.generationId}`,
+      this.generationProcessor.runMultipleAnglesDirectly(data),
+    )
       .catch((err) =>
         this.logger.error(
           `Multiple angles direct run failed for ${data.generationId}: ${(err as Error).message}`,
@@ -266,8 +279,10 @@ export class GenerationsService {
   }
 
   private runTextToSpeechDirectly(data: TextToSpeechJobData): void {
-    this.generationProcessor
-      .runTextToSpeechDirectly(data)
+    this.trackDirectRun(
+      `tts:${data.generationId}`,
+      this.generationProcessor.runTextToSpeechDirectly(data),
+    )
       .catch((err) =>
         this.logger.error(
           `TTS direct run failed for ${data.generationId}: ${(err as Error).message}`,
