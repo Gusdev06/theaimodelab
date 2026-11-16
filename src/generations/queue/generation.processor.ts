@@ -2879,7 +2879,7 @@ export class GenerationProcessor extends WorkerHost {
     // Skip if CRON already finalized this generation
     const preCheck = await this.prisma.generation.findUnique({
       where: { id: generationId },
-      select: { status: true, userId: true },
+      select: { status: true, userId: true, resolution: true },
     });
     if (
       preCheck?.status === GenerationStatus.FAILED ||
@@ -2910,7 +2910,8 @@ export class GenerationProcessor extends WorkerHost {
       result = await this.seedreamProvider.generateImage({
         id: generationId,
         prompt,
-        resolution: Resolution.RES_2K,
+        // a resolução pedida (1K → basic, US$ 0,035); antes era 2K fixo e o desvio de um pedido 1K custava o dobro (auditoria 16/11)
+        resolution: preCheck?.resolution === Resolution.RES_1K ? Resolution.RES_1K : Resolution.RES_2K,
         aspectRatio,
         imageUrls: imageUrls.length ? imageUrls : undefined,
         // Fallback também sem censura — não aplica o wrapper que força roupa.

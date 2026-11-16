@@ -114,7 +114,7 @@ export function rawFailureText(error: Error): string {
  * to be unsafe") e Kling ("sensitive information").
  */
 const CONTENT_BLOCK_PATTERN =
-  /public_error_|unsafe image upload|guardrails|may violate|appear to be unsafe|flagged (as|by|for)|sensitive information|content policy|prohibited use|violat.*(polic|guideline)|viola.*diretrizes|could not be processed|safety system|moderation|\bnsfw\b/i;
+  /public_error_|unsafe image upload|declined to generate|guardrails|may violate|appear to be unsafe|flagged (as|by|for)|sensitive information|content policy|prohibited use|violat.*(polic|guideline)|viola.*diretrizes|could not be processed|safety system|moderation|\bnsfw\b/i;
 
 /**
  * Padrões observados nas mensagens reais dos provedores (Veo/Vertex, Kling,
@@ -148,7 +148,7 @@ const PATTERNS: Array<[RegExp, GenerationFailureCodeValue]> = [
     GenerationFailureCode.FILE_TOO_LARGE,
   ],
   [
-    /prompt exceeds maximum length|prompt is too long/i,
+    /prompt exceeds maximum length|prompt is too long|text length cannot exceed/i,
     GenerationFailureCode.PROMPT_TOO_LONG,
   ],
   [
