@@ -262,13 +262,13 @@ export class PlansService {
   // Ancorado em VEO_MAX (~1408 cr/USD). "With video" = tem reference_video_urls.
   // v5: reprecificado para ~70% de margem no pior plano (créditos = custo_USD × 3333 ≈ ×2,367 sobre v4).
   private static readonly SEEDANCE_PRICING_NO_VIDEO: Record<string, number> = {
-    RES_480P:   310,
+    RES_480P:   320,
     RES_720P:   685,
     RES_1080P: 1705,
   };
   private static readonly SEEDANCE_PRICING_WITH_VIDEO: Record<string, number> = {
     RES_480P:   190,
-    RES_720P:   415,
+    RES_720P:   420,
     RES_1080P: 1040,
   };
 
