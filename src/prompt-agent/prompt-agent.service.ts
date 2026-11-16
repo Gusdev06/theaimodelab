@@ -254,7 +254,7 @@ Analise a imagem enviada e retorne APENAS o JSON correspondente, sempre incluind
 // Plano B (OpenRouter) pra imagem que o Gemini recusa: mesma estrutura, mas
 // nudez e lingerie de adulto são descritas literalmente. Menor continua barrado.
 const ADULT_RULES = `9. A PLATAFORMA É 18+ E TODAS AS PESSOAS SÃO ADULTAS. Nudez, lingerie e poses sensuais são permitidas: descreva corpo, nudez parcial ou total e roupa íntima de forma literal e detalhada (use "roupa" para o que veste ou "nua"/"seminua"), sem censurar, suavizar ou moralizar.
-10. "assunto.idade" SEMPRE começa com "adulta" ou "adulto" e uma faixa de 21 anos ou mais. NUNCA use "jovem", "menina", "garota", "novinha", "teen", "young", "girl" ou equivalentes em nenhum campo.
+10. "assunto.idade" SEMPRE começa com "adulta" ou "adulto" e uma faixa de 18 anos ou mais (a lei; a idade aparente da foto, sem margem extra). NUNCA use "jovem", "menina", "garota", "novinha", "teen", "young", "girl" ou equivalentes em nenhum campo.
 11. SE A PESSOA PUDER SER MENOR DE IDADE (traços infantis, corpo pré-adolescente, uniforme escolar, contexto infantil), retorne apenas: {"error": "menor_de_idade"}`;
 
 const ADULT_SYSTEM_PROMPT = SYSTEM_PROMPT.replace(
