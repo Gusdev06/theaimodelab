@@ -15,6 +15,25 @@ export const UNLIMITED_WINDOW_HOURS = 24;
 // Bloqueia novas gerações quando usuário atinge esse total de gerações ilimitadas em 24h.
 export const UNLIMITED_HARD_CAP = 40;
 
+/**
+ * Uso justo da IMAGEM ilimitada (16/11/2026, regra prejuízo zero do dono): orçamento diário por plano, em
+ * "imagens NB2 1K". Conta do pior caso por mês = mensalidade − Perfect Pay (10% + US$ 1,50) − imposto 6% − todos
+ * os créditos do plano gastos no modelo mais caro; o que sobra paga a imagem ilimitada (NB2 1K ~US$ 0,054,
+ * NBP 1K ~US$ 0,082): Advanced sobra ~US$ 12 → 7/dia; Studio ~US$ 13,6 → 8/dia; Agency ~US$ 36 → 22/dia.
+ * Plano fora da lista (só vídeo Veo) segue no teto antigo de 40/24 h. Anual e avulso de 30 dias usam o do mensal.
+ */
+export const UNLIMITED_DAILY_BUDGET: Record<string, number> = {
+  advanced: 7,
+  studio: 8,
+  agency: 22,
+};
+
+/** Peso de cada geração ilimitada no orçamento diário (NB2 1K = 1). Modelo não listado pesa 1. */
+export const UNLIMITED_MODEL_WEIGHT: Record<string, Partial<Record<string, number>>> = {
+  NB2: { RES_1K: 1, RES_2K: 1.5 },
+  NBP: { RES_1K: 1.5 },
+};
+
 export interface CooldownTier {
   maxCount: number;
   delayMs: number;

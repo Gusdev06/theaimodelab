@@ -4,10 +4,12 @@ import Redis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   UNLIMITED_COOLDOWN_TIERS,
+  UNLIMITED_DAILY_BUDGET,
   UNLIMITED_HARD_CAP,
   UNLIMITED_LOCK_KEY_PREFIX,
   UNLIMITED_LOCK_TTL_SECONDS,
   UNLIMITED_MANUAL_DELAY_KEY_PREFIX,
+  UNLIMITED_MODEL_WEIGHT,
   UNLIMITED_REDIS,
   UNLIMITED_WINDOW_HOURS,
 } from './unlimited.constants';
@@ -68,6 +70,27 @@ export class UnlimitedService {
     });
   }
 
+  /** Orçamento diário do plano (uso justo); null = só o teto antigo de 40/24 h. */
+  budgetFor(planSlug: string): number | null {
+    const base = planSlug.replace(/-(anual|30d)$/, '');
+    return UNLIMITED_DAILY_BUDGET[base] ?? null;
+  }
+
+  weightOf(modelVariant: string, resolution: Resolution | string): number {
+    return UNLIMITED_MODEL_WEIGHT[modelVariant]?.[resolution] ?? 1;
+  }
+
+  /** Uso ponderado nas últimas 24 h (NB2 1K = 1, NBP e 2K pesam mais). */
+  async weightedUsageWindow(userId: string): Promise<number> {
+    const since = new Date(Date.now() - UNLIMITED_WINDOW_HOURS * 60 * 60 * 1000);
+    const rows = await this.prisma.unlimitedUsage.groupBy({
+      by: ['modelVariant', 'resolution'],
+      where: { userId, createdAt: { gte: since } },
+      _count: { _all: true },
+    });
+    return rows.reduce((sum, row) => sum + row._count._all * this.weightOf(row.modelVariant, row.resolution), 0);
+  }
+
   computeDelayMs(usageCount: number): { delayMs: number; hardCapHit: boolean } {
     if (usageCount >= UNLIMITED_HARD_CAP) return { delayMs: 0, hardCapHit: true };
     for (const tier of UNLIMITED_COOLDOWN_TIERS) {
@@ -101,10 +124,15 @@ export class UnlimitedService {
     const usageCount = await this.countUsageWindow(userId);
     const { delayMs: curveDelay, hardCapHit } = this.computeDelayMs(usageCount);
 
-    if (hardCapHit) {
+    const budget = this.budgetFor(planContext.planSlug);
+    const overBudget =
+      budget !== null &&
+      (await this.weightedUsageWindow(userId)) + this.weightOf(modelVariant, resolution) > budget;
+
+    if (hardCapHit || overBudget) {
       return {
         allowed: false,
-        reason: 'hard_cap_reached',
+        reason: hardCapHit ? 'hard_cap_reached' : 'daily_budget_reached',
         planContext,
         delayMs: 0,
         usageCount,

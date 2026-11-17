@@ -369,6 +369,15 @@ export class GenerationsService {
           message:
             'Este modelo/resolução não está disponível no modo ilimitado do seu plano.',
         });
+      case 'daily_budget_reached':
+        throw new HttpException(
+          {
+            code: 'UNLIMITED_DAILY_BUDGET_REACHED',
+            message:
+              'Você usou a cota diária de imagens ilimitadas do seu plano. Ela volta em até 24 horas; enquanto isso, dá para gerar usando os créditos do plano.',
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
       case 'hard_cap_reached':
         throw new HttpException(
           {

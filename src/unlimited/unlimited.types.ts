@@ -17,6 +17,7 @@ export type UnlimitedDenyReason =
   | 'plan_not_unlimited'
   | 'model_not_allowed'
   | 'hard_cap_reached'
+  | 'daily_budget_reached'
   | 'lock_held';
 
 export interface UnlimitedEligibility {
