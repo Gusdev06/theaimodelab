@@ -19,6 +19,7 @@ import {
   ANNUAL_FIRST_MONTH_BONUS_KIND,
   computeAnnualFirstMonthBonusCredits,
 } from './annual-bonus';
+import { isPrepaidPlanSlug } from '../plans/prepaid-plan';
 
 const ULTRA_BASIC_WELCOME_FREE_GENERATIONS = 2;
 
@@ -319,6 +320,10 @@ export class PaymentsService {
     // creditBalance fica em 1 mês e o cron AnnualCreditsRefillService recarrega a
     // cada virada até o fim da assinatura.
     const periodMonths = plan.billingInterval === 'year' ? 12 : 1;
+    // Pré-pago (slug *-30d) não renova sozinho: já nasce "cancelado no fim do período".
+    // O cron de vencimento corta na hora do fim (sem a carência de 3 dias) e o site mostra
+    // "acesso até {data}". Vale também na recompra, que antes voltava o flag para false.
+    const cancelAtPeriodEnd = isPrepaidPlanSlug(plan.slug);
 
     let created = false;
     let skipped = false;
@@ -371,7 +376,7 @@ export class PaymentsService {
             status: 'ACTIVE',
             currentPeriodStart: now,
             currentPeriodEnd: periodEnd,
-            cancelAtPeriodEnd: false,
+            cancelAtPeriodEnd,
             paymentRetryCount: 0,
             // Preenche o código PPSUB se ainda não estava salvo (ex.: sub legada/admin).
             externalSubscriptionId:
@@ -395,6 +400,7 @@ export class PaymentsService {
             status: 'ACTIVE',
             currentPeriodStart: now,
             currentPeriodEnd: periodEnd,
+            cancelAtPeriodEnd,
             paymentProvider: provider,
             // Guarda o código ESTÁVEL da assinatura (PPSUB…) quando houver; senão o
             // código da venda como fallback.

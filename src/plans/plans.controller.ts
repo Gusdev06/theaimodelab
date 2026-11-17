@@ -1,9 +1,11 @@
-import { Controller, Get, Query, Req } from '@nestjs/common';
+import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { PlansService } from './plans.service';
 import { PlanResponseDto } from './dto/plan-response.dto';
 import { Public } from '../common/decorators/public.decorator';
 import { CheckoutCodesService } from '../checkout-codes/checkout-codes.service';
+import { OptionalJwtAuthGuard } from '../common/guards/optional-jwt-auth.guard';
+import { subscriptionCheckoutUrlFor } from './prepaid-plan';
 
 // Preço de assinatura em USD (centavos) por plano. Fonte da verdade é a tabela
 // plan_prices (USD); este mapa é só um fallback para nunca exibir preço em BRL
@@ -25,13 +27,15 @@ export class PlansController {
   ) {}
 
   @Public()
+  @UseGuards(OptionalJwtAuthGuard)
   @Get()
   @ApiOperation({ summary: 'Lista os planos mensais disponíveis' })
   @ApiQuery({ name: 'currency', required: false, example: 'USD' })
   @ApiResponse({ status: 200, type: [PlanResponseDto] })
   async findAll(
     @Query('currency') currencyQuery?: string,
-    @Req() req?: { headers?: Record<string, unknown> },
+    // `user` só vem preenchido com Bearer válido (OptionalJwtAuthGuard); sem token segue público.
+    @Req() req?: { headers?: Record<string, unknown>; user?: { sub?: string } | false | null },
   ): Promise<PlanResponseDto[]> {
     // Duas vitrines por moeda:
     //  - BRL (Brasil, /pt-br): assinatura via Cakto. Expõe os 7 tiers com PlanPrice
@@ -53,6 +57,14 @@ export class PlansController {
     }
 
     const plans = await this.plansService.findAllPlans();
+    // Assinante recorrente da Perfect Pay continua vendo o link de ASSINATURA (upgrade como
+    // antes de 17/11): o pré-pago criaria outra assinatura e a recorrência seguiria cobrando.
+    const userId = req?.user && typeof req.user.sub === 'string' ? req.user.sub : null;
+    const keepSubscriptionLinks = userId
+      ? await this.plansService.hasRecurringPerfectpaySubscription(userId)
+      : false;
+    const planCheckoutUrl = (url: string | null | undefined): string | null =>
+      (keepSubscriptionLinks ? subscriptionCheckoutUrlFor(url) : null) ?? url ?? null;
     return Promise.all(
       plans.map(async (p) => {
         // Sempre USD. Ordem: plan_prices(USD) → fallback fixo → (último caso) priceCents.
@@ -83,7 +95,7 @@ export class PlansController {
           sortOrder: p.sortOrder,
           billingInterval: p.billingInterval,
           basePlanSlug: p.basePlanSlug ?? null,
-          checkoutUrl: brandLinks.get(p.id) ?? p.checkoutUrl ?? null,
+          checkoutUrl: brandLinks.get(p.id) ?? planCheckoutUrl(p.checkoutUrl),
         };
       }),
     );

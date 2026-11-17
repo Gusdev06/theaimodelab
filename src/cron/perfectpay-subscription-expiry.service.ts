@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { SubscriptionStatus } from '@prisma/client';
 import { CronLoggerService } from './cron-logger.service';
+import { PREPAID_PLAN_SLUG_SUFFIX } from '../plans/prepaid-plan';
 
 const SCHEDULE = '0 * * * *';
 
@@ -34,18 +35,25 @@ export class PerfectpaySubscriptionExpiryService {
           const graceCutoff = new Date(now);
           graceCutoff.setDate(graceCutoff.getDate() - GRACE_DAYS);
 
+          // Cobre os dois gateways de checkout externo recorrente: Perfect Pay
+          // (USD) e Cakto (BRL/Brasil). Ambos gerem a recorrência por fora e
+          // dependem deste cron pra expirar quando o pagamento lapsa.
+          const externalProviders = { in: ['perfectpay', 'cakto'] };
           const expired = await this.prisma.subscription.findMany({
             where: {
-              // Cobre os dois gateways de checkout externo recorrente: Perfect Pay
-              // (USD) e Cakto (BRL/Brasil). Ambos gerem a recorrência por fora e
-              // dependem deste cron pra expirar quando o pagamento lapsa.
-              paymentProvider: { in: ['perfectpay', 'cakto'] },
               status: SubscriptionStatus.ACTIVE,
               OR: [
                 // Cancelamento agendado: expira exatamente no fim do período pago.
-                { cancelAtPeriodEnd: true, currentPeriodEnd: { lte: now } },
+                { paymentProvider: externalProviders, cancelAtPeriodEnd: true, currentPeriodEnd: { lte: now } },
                 // Sem renovação após o vencimento (+ carência): pagamento lapsou.
-                { cancelAtPeriodEnd: false, currentPeriodEnd: { lte: graceCutoff } },
+                { paymentProvider: externalProviders, cancelAtPeriodEnd: false, currentPeriodEnd: { lte: graceCutoff } },
+                // Pré-pago liberado pela garantia do cockpit (admin): vence no fim do
+                // período, como o comprado pelo webhook. Nenhuma outra assinatura admin.
+                {
+                  paymentProvider: 'admin',
+                  plan: { slug: { endsWith: PREPAID_PLAN_SLUG_SUFFIX } },
+                  currentPeriodEnd: { lte: now },
+                },
               ],
             },
             select: { id: true, userId: true },
