@@ -2344,6 +2344,7 @@ export class GenerationProcessor extends WorkerHost {
       resolution:
         GenerationProcessor.MINIMAX_H3_RES_MAP[data.resolution] ?? '480p',
       aspectRatio: data.aspectRatio as MinimaxH3AspectRatio | undefined,
+      providerLock: data.providerLock,
     });
     await this.completeGeneration(data.generationId, result, startTime);
   }
@@ -2366,6 +2367,7 @@ export class GenerationProcessor extends WorkerHost {
       durationSeconds: data.durationSeconds,
       resolution:
         GenerationProcessor.MINIMAX_H3_RES_MAP[data.resolution] ?? '480p',
+      providerLock: data.providerLock,
     });
     await this.completeGeneration(data.generationId, result, startTime);
   }

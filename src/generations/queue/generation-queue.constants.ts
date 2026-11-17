@@ -215,12 +215,19 @@ export interface WavespeedSeedanceImageToVideoJobData extends BaseJobData {
 
 // MiniMax H3 — resolução DB é RES_480P ou RES_720P (RES_720P mapeia p/ '768p'
 // no provider). Áudio nativo sempre on (generateAudio sempre true).
+/**
+ * `providerLock: 'kie'` = o H3 roda SÓ na kie, sem desvio para a WaveSpeed (que proíbe explícito, TKT-265). Vem do
+ * plano de desvio (generation-fallback.ts) quando o motivo é bloqueio de conteúdo ou o pedido leva mídia da cliente.
+ */
+export type MinimaxH3ProviderLock = 'kie';
+
 export interface MinimaxH3TextToVideoJobData extends BaseJobData {
   prompt: string;
   resolution: string;
   durationSeconds: number;
   aspectRatio?: string;
   generateAudio: boolean;
+  providerLock?: MinimaxH3ProviderLock;
 }
 
 export interface MinimaxH3ImageToVideoJobData extends BaseJobData {
@@ -230,6 +237,7 @@ export interface MinimaxH3ImageToVideoJobData extends BaseJobData {
   imageUrl: string;
   lastImageUrl?: string;
   generateAudio: boolean;
+  providerLock?: MinimaxH3ProviderLock;
 }
 
 export interface MinimaxH3ReferenceToVideoJobData extends BaseJobData {

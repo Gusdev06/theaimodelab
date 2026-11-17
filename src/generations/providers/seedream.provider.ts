@@ -34,7 +34,6 @@ const KIE_LITE_I2I = 'seedream/5-lite-image-to-image';
 // 13/11: 32/32 entregues, 0 recusa, 26 s de mediana. Só sem foto: na edição a kie cobra cada imagem de entrada à parte.
 const KIE_S55_T2I = 'seedream/5-5-text-to-image';
 export type UnlockedEngine = 'pro' | 'lite' | 's55';
-const LITE_POLL_ATTEMPTS = 45;
 
 /**
  * Desvio de segurança que pode rodar no motor alternativo do Unlocked: só o das imagens (processImage*,
@@ -48,16 +47,24 @@ export function isUnlockedEngineSwapContext(context: string): boolean {
   );
 }
 
-// Plano B do Unlocked (TKT-216): quando a KIE nem aceita a tarefa (saldo zerado, 5xx, rede), a mesma geração roda no
-// Seedream V5.0 Pro da WaveSpeed, que era o motor do Unlocked até agosto. Só com UNLOCKED_WAVESPEED_FALLBACK=true e
-// WAVESPEED_API_KEY. Só no 'sem-censura' (o Undress fica como está). Nas panes de 05 a 08/11/2026 foram 585 falhas
-// "Não foi possível iniciar a geração" em 86 contas, porque a imagem 18+ inteira dependia de um único saldo.
-const WS_MODEL_T2I = 'bytedance/seedream-v5.0-pro';
-const WS_MODEL_EDIT = 'bytedance/seedream-v5.0-pro/edit';
-const WS_RESOLUTION: Record<string, '1k' | '2k'> = {
-  RES_1K: '1k',
-  RES_2K: '2k',
-  RES_4K: '2k',
+// Reserva do Unlocked na PRÓPRIA kie (TKT-310, 16/11/2026). Falha técnica (início recusado, erro, tempo esgotado,
+// download) no motor principal refaz UMA vez em outro motor Seedream da kie: Pro → 5.5 no só-texto / Lite na edição;
+// Lite ou 5.5 → Pro. Recusa de conteúdo (menor inclusive) segue terminal. Substitui o plano B na WaveSpeed (TKT-216),
+// que levava edição explícita a um provedor que proíbe explícito (TKT-265); a env UNLOCKED_WAVESPEED_FALLBACK deixou
+// de ser lida. Em 7 dias até 16/11: 23 Unlocked morreram no cron (~28 min) sem alternativa e 12 por erro técnico.
+//
+// Prazo de relógio por tentativa: as duas cabem antes do cron de travadas (imagem = 20 min de processamento, varre a
+// cada 15). Pro concluído em 7 dias: p99 139 s, máximo 244 s; Lite p99 76 s; 5.5 p99 30 s.
+const PRIMARY_DEADLINE_MS: Record<UnlockedEngine, number> = {
+  pro: 5 * 60_000,
+  // o Lite e o 5.5 respondem em ~40 s: espera curta (~3 min) para o Pro ainda caber no prazo do cron
+  lite: 3 * 60_000,
+  s55: 3 * 60_000,
+};
+const RESERVE_DEADLINE_MS: Record<UnlockedEngine, number> = {
+  pro: 8 * 60_000,
+  lite: 4 * 60_000,
+  s55: 4 * 60_000,
 };
 
 // KIE Seedream Pro: `quality` basic → 1K, high → 2K (não há 4K).
@@ -93,6 +100,15 @@ const SAFETY_INSTRUCTION =
 
 // Limite defensivo de tamanho do prompt (KIE Seedream Pro aceita até 5000 chars).
 const MAX_PROMPT_LENGTH = 5000;
+
+/** Recusa de conteúdo (menor inclusive): terminal, nunca vai à reserva. */
+function isContentRefusal(error: unknown): boolean {
+  return (
+    error instanceof ContentSafetyError ||
+    isMinorSafetyBlock(error) ||
+    isMinorRefusal(error)
+  );
+}
 
 function applySafetyWrapper(prompt: string): string {
   const separator = '\n\n';
@@ -172,27 +188,11 @@ interface ResultJsonPayload {
   resultUrls?: string[];
 }
 
-interface WavespeedCreateResponse {
-  id?: string;
-  data?: { id?: string };
-}
-
-interface WavespeedResultResponse {
-  data?: {
-    status?: 'created' | 'processing' | 'completed' | 'failed';
-    outputs?: string[];
-    error?: string;
-  };
-}
-
 @Injectable()
 export class SeedreamProvider {
   private readonly logger = new Logger(SeedreamProvider.name);
   private readonly baseUrl: string;
   private readonly apiKey: string;
-  private readonly wavespeedBaseUrl: string;
-  private readonly wavespeedApiKey: string;
-  private readonly wavespeedFallbackEnabled: boolean;
   private readonly unlockedEngine: UnlockedEngine;
   private readonly unlockedCanaryPct: number;
   private readonly unlockedScope: 'all' | 'i2i';
@@ -210,21 +210,6 @@ export class SeedreamProvider {
     this.apiKey = (
       this.configService.get<string>('NANO_BANANA_API_KEY', '') ?? ''
     ).trim();
-    this.wavespeedBaseUrl = this.configService.get<string>(
-      'WAVESPEED_BASE_URL',
-      'https://api.wavespeed.ai',
-    );
-    this.wavespeedApiKey = (
-      this.configService.get<string>('WAVESPEED_API_KEY', '') ?? ''
-    ).trim();
-    const fallbackFlag = String(
-      this.configService.get<string>('UNLOCKED_WAVESPEED_FALLBACK', '') ?? '',
-    )
-      .trim()
-      .toLowerCase();
-    this.wavespeedFallbackEnabled =
-      (fallbackFlag === 'true' || fallbackFlag === '1') &&
-      !!this.wavespeedApiKey;
     const engineFlag = String(
       this.configService.get<string>('UNLOCKED_ENGINE', '') ?? '',
     )
@@ -275,26 +260,51 @@ export class SeedreamProvider {
     }
 
     const engine = this.pickEngine(input);
-    if (engine !== 'pro') {
-      try {
-        return await this.generateOnKie(input, engine);
-      } catch (error) {
-        // Recusa de CONTEÚDO do Lite é terminal, como a do Pro sempre foi: o Pro não vira "segunda opinião" (com o
-        // nsfw_checker desligado, o que sobra de moderação é o duro: menor, CSAM, pessoa real). Só a falha técnica
-        // (saldo, rede, 5xx, tempo, upload) refaz no Pro.
-        if (
-          error instanceof ContentSafetyError ||
-          isMinorSafetyBlock(error) ||
-          isMinorRefusal(error)
-        ) {
-          throw error;
-        }
-        this.logger.warn(
-          `[UNLOCKED_ENGINE] gen=${input.id} o motor ${engine} não entregou (${(error as Error).message}); refazendo no Pro`,
-        );
-      }
+    let primaryError: unknown;
+    try {
+      return await this.generateOnKie(
+        input,
+        engine,
+        PRIMARY_DEADLINE_MS[engine],
+      );
+    } catch (error) {
+      // Recusa de CONTEÚDO é terminal em qualquer motor: a reserva não vira "segunda opinião" (com o nsfw_checker
+      // desligado, o que sobra de moderação é o duro: menor, CSAM, pessoa real). Só a falha técnica (saldo, rede, 5xx,
+      // tempo, upload) refaz na reserva.
+      if (isContentRefusal(error)) throw error;
+      primaryError = error;
     }
-    return this.generateOnKie(input, 'pro');
+
+    const reserve = this.reserveEngine(engine, input);
+    this.logger.warn(
+      `[UNLOCKED_RESERVA] gen=${input.id} o motor ${engine} não entregou (${(primaryError as Error).message}); reserva na kie: ${reserve}`,
+    );
+    try {
+      return await this.generateOnKie(
+        input,
+        reserve,
+        RESERVE_DEADLINE_MS[reserve],
+      );
+    } catch (reserveError) {
+      // A recusa da reserva (menor inclusive) é o motivo que vale; a falha técnica dela não esconde a do principal.
+      if (isContentRefusal(reserveError)) throw reserveError;
+      this.logger.error(
+        `[UNLOCKED_RESERVA] gen=${input.id} a reserva ${reserve} também falhou: ${(reserveError as Error).message}`,
+      );
+      throw primaryError;
+    }
+  }
+
+  /**
+   * Motor da reserva: Lite ou 5.5 caem no Pro; o Pro cai no 5.5 no só-texto (o mais barato, 0 recusa na bancada de
+   * 13/11) e no Lite na edição com foto (o 5.5 cobra cada imagem de entrada à parte).
+   */
+  reserveEngine(
+    primary: UnlockedEngine,
+    input: Pick<SeedreamImageInput, 'imageUrls'>,
+  ): UnlockedEngine {
+    if (primary !== 'pro') return 'pro';
+    return input.imageUrls?.length ? 'lite' : 's55';
   }
 
   /**
@@ -325,7 +335,9 @@ export class SeedreamProvider {
   private async generateOnKie(
     input: SeedreamImageInput,
     engine: UnlockedEngine,
+    deadlineMs: number,
   ): Promise<SeedreamGenerationResult> {
+    const deadline = Date.now() + deadlineMs;
     const hasImages = !!input.imageUrls?.length;
     // Pro: basic = 1K, high = 2K. Lite: basic = 2K (high = 3K): o Lite sempre em 2K, a resolução do Unlocked.
     const quality =
@@ -380,36 +392,11 @@ export class SeedreamProvider {
       },
     };
 
-    let taskId: string;
-    try {
-      taskId = await this.submitTask(body, engine !== 'pro');
-    } catch (error) {
-      // recusa de conteúdo segue o caminho de sempre; só a falha técnica de início vai ao plano B
-      // o Lite não vai à WaveSpeed: quem cuida da falha dele é o Pro, que tem o próprio plano B
-      if (
-        engine !== 'pro' ||
-        error instanceof ContentSafetyError ||
-        !this.canUseWavespeedFallback(input)
-      ) {
-        throw error;
-      }
-      this.logger.warn(
-        `[SEEDREAM_PRO→WAVESPEED] gen=${input.id} a KIE não aceitou a tarefa (${(error as Error).message}); plano B na WaveSpeed`,
-      );
-      return this.generateViaWavespeed(
-        input,
-        finalPrompt,
-        aspectRatio,
-        error as Error,
-      );
-    }
-    this.logger.log(`[SEEDREAM_PRO] Task submitted: ${taskId}`);
+    // o texto do provedor vai junto no erro de início (ProviderFailureError) para a trava de menor ler antes da reserva
+    const taskId = await this.submitTask(body);
+    this.logger.log(`[SEEDREAM_PRO] engine=${engine} task submitted: ${taskId}`);
 
-    // o Lite responde em ~40 s: espera curta (~3 min) para o Pro ainda caber no prazo do cron de travadas (20 min)
-    const resultUrls = await this.pollTaskStatus(
-      taskId,
-      engine !== 'pro' ? LITE_POLL_ATTEMPTS : undefined,
-    );
+    const resultUrls = await this.pollTaskStatus(taskId, deadline);
     this.logger.log(
       `[SEEDREAM_PRO] Task ${taskId} completed — resultUrls=${resultUrls.length}`,
     );
@@ -495,10 +482,7 @@ export class SeedreamProvider {
     return w / h;
   }
 
-  private async submitTask(
-    body: Record<string, unknown>,
-    keepProviderDetail = false,
-  ): Promise<string> {
+  private async submitTask(body: Record<string, unknown>): Promise<string> {
     const url = `${this.baseUrl}/api/v1/jobs/createTask`;
 
     // Retry once em erros transientes (429/5xx).
@@ -529,10 +513,7 @@ export class SeedreamProvider {
         this.logger.error(
           `[SEEDREAM_PRO] createTask failed: ${data.msg} (code ${data.code})`,
         );
-        throw this.startError(
-          keepProviderDetail,
-          `${data.msg} (code ${data.code})`,
-        );
+        throw this.startError(`${data.msg} (code ${data.code})`);
       }
 
       lastStatus = response.status;
@@ -554,33 +535,30 @@ export class SeedreamProvider {
     this.logger.error(
       `[SEEDREAM_PRO] createTask failed status=${lastStatus} body=${lastErrorText}`,
     );
-    throw this.startError(
-      keepProviderDetail,
-      `status=${lastStatus} ${lastErrorText.slice(0, 500)}`,
-    );
+    throw this.startError(`status=${lastStatus} ${lastErrorText.slice(0, 500)}`);
   }
 
   /**
-   * Erro de início. No Pro segue o Error genérico de sempre. No Lite guarda o texto do provedor
-   * (ProviderFailureError.providerDetail) para a trava de menor ler antes de decidir refazer no Pro.
+   * Erro de início com o texto do provedor (ProviderFailureError.providerDetail): a trava de menor o lê antes de
+   * decidir ir à reserva. A mensagem para a cliente segue a genérica.
    */
-  private startError(keepProviderDetail: boolean, providerDetail: string) {
-    return keepProviderDetail
-      ? new ProviderFailureError(USER_ERRORS.startFailed, providerDetail)
-      : new Error(USER_ERRORS.startFailed);
+  private startError(providerDetail: string) {
+    return new ProviderFailureError(USER_ERRORS.startFailed, providerDetail);
   }
 
+  /** Espera a tarefa até o prazo de relógio (`deadline`, epoch ms): passou dele = tempo esgotado, vai à reserva. */
   private async pollTaskStatus(
     taskId: string,
-    maxAttempts = 120,
+    deadline: number,
     intervalMs = 4_000,
   ): Promise<string[]> {
     const maxNetworkRetries = 5;
     let networkFailures = 0;
 
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    for (let attempt = 0; Date.now() < deadline; attempt++) {
       if (attempt > 0) {
         await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        if (Date.now() >= deadline) break;
       }
 
       const url = `${this.baseUrl}/api/v1/jobs/recordInfo?taskId=${taskId}`;
@@ -622,7 +600,7 @@ export class SeedreamProvider {
 
       if (!data.data) {
         this.logger.debug(
-          `[SEEDREAM_PRO POLL] No data in response (attempt ${attempt + 1}/${maxAttempts})`,
+          `[SEEDREAM_PRO POLL] No data in response (attempt ${attempt + 1})`,
         );
         continue;
       }
@@ -635,7 +613,7 @@ export class SeedreamProvider {
         state === 'generating'
       ) {
         this.logger.debug(
-          `[SEEDREAM_PRO POLL] state=${state} (attempt ${attempt + 1}/${maxAttempts})`,
+          `[SEEDREAM_PRO POLL] state=${state} (attempt ${attempt + 1})`,
         );
         continue;
       }
@@ -747,167 +725,6 @@ export class SeedreamProvider {
     return {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${this.apiKey}`,
-    };
-  }
-
-  // ─── Plano B na WaveSpeed (TKT-216) ──────────────────────────
-
-  /** Só o Unlocked (`sem-censura`), com a flag ligada e a chave da WaveSpeed. */
-  private canUseWavespeedFallback(input: SeedreamImageInput): boolean {
-    const tag = input.modelUsedTag ?? 'sem-censura';
-    return this.wavespeedFallbackEnabled && tag === 'sem-censura';
-  }
-
-  /**
-   * Roda a geração no Seedream V5.0 Pro da WaveSpeed com o mesmo prompt final e a mesma proporção. Se o plano B também
-   * falhar por motivo técnico, sobe o erro ORIGINAL da KIE (é o que o processador e o usuário já conhecem). Recusa de
-   * conteúdo da WaveSpeed sobe como ContentSafetyError, para a trava de menor e a classificação seguirem iguais.
-   */
-  private async generateViaWavespeed(
-    input: SeedreamImageInput,
-    finalPrompt: string,
-    aspectRatio: string,
-    originalError: Error,
-  ): Promise<SeedreamGenerationResult> {
-    const hasImages = !!input.imageUrls?.length;
-    const model = hasImages ? WS_MODEL_EDIT : WS_MODEL_T2I;
-    const body: Record<string, unknown> = {
-      prompt: finalPrompt,
-      resolution: WS_RESOLUTION[input.resolution] ?? '2k',
-      aspect_ratio: aspectRatio,
-      output_format: 'jpeg',
-      enable_base64_output: false,
-      enable_sync_mode: false,
-      ...(hasImages ? { images: input.imageUrls } : {}),
-    };
-
-    try {
-      const predictionId = await this.createWavespeedPrediction(model, body);
-      this.logger.log(
-        `[WAVESPEED_SEEDREAM] gen=${input.id} prediction=${predictionId}`,
-      );
-      const resultUrls = await this.pollWavespeedPrediction(predictionId);
-      const outputUrls: string[] = [];
-      for (let i = 0; i < resultUrls.length; i++) {
-        outputUrls.push(
-          await this.downloadAndUpload(resultUrls[i], input.id, i),
-        );
-      }
-      if (!outputUrls.length) throw new Error(USER_ERRORS.noImages);
-      this.logger.log(
-        `[WAVESPEED_SEEDREAM] gen=${input.id} ${outputUrls.length} image(s) uploaded to S3`,
-      );
-      return { outputUrls, modelUsed: 'sem-censura', engine: 'pro' };
-    } catch (fallbackError) {
-      if (fallbackError instanceof ContentSafetyError) throw fallbackError;
-      this.logger.error(
-        `[WAVESPEED_SEEDREAM] gen=${input.id} plano B também falhou: ${(fallbackError as Error).message}`,
-      );
-      throw originalError;
-    }
-  }
-
-  private async createWavespeedPrediction(
-    model: string,
-    body: Record<string, unknown>,
-  ): Promise<string> {
-    const maxAttempts = 2;
-    const transientStatuses = new Set([408, 429, 500, 502, 503, 504]);
-    let lastStatus = 0;
-    let lastErrorText = '';
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const response = await this.fetchWithTimeout(
-        `${this.wavespeedBaseUrl}/api/v3/${model}`,
-        {
-          method: 'POST',
-          headers: this.wavespeedHeaders(),
-          body: JSON.stringify(body),
-        },
-        60_000,
-      );
-      if (response.ok) {
-        const data = (await response.json()) as WavespeedCreateResponse;
-        const predictionId = data.data?.id ?? data.id;
-        if (!predictionId) throw new Error(USER_ERRORS.startFailed);
-        return predictionId;
-      }
-      lastStatus = response.status;
-      lastErrorText = await response.text();
-      const safetyError = ContentSafetyError.fromErrorMessage(lastErrorText);
-      if (safetyError) throw safetyError;
-      if (attempt < maxAttempts && transientStatuses.has(response.status)) {
-        await new Promise((resolve) => setTimeout(resolve, 2_000));
-        continue;
-      }
-      break;
-    }
-
-    this.logger.error(
-      `[WAVESPEED_SEEDREAM] createPrediction failed status=${lastStatus} body=${lastErrorText.slice(0, 300)}`,
-    );
-    throw new Error(USER_ERRORS.startFailed);
-  }
-
-  private async pollWavespeedPrediction(
-    predictionId: string,
-    maxAttempts = 120,
-    intervalMs = 3_000,
-  ): Promise<string[]> {
-    const url = `${this.wavespeedBaseUrl}/api/v3/predictions/${predictionId}/result`;
-    const maxNetworkRetries = 5;
-    let networkFailures = 0;
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      if (attempt > 0)
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
-
-      let response: Response;
-      try {
-        response = await this.fetchWithTimeout(
-          url,
-          { headers: this.wavespeedHeaders() },
-          30_000,
-        );
-      } catch {
-        networkFailures++;
-        if (networkFailures >= maxNetworkRetries)
-          throw new Error(USER_ERRORS.statusCheckFailed);
-        continue;
-      }
-      if (!response.ok) {
-        networkFailures++;
-        const errorText = await response.text();
-        if (networkFailures >= maxNetworkRetries) {
-          const safetyError = ContentSafetyError.fromErrorMessage(errorText);
-          if (safetyError) throw safetyError;
-          throw new Error(USER_ERRORS.statusCheckFailed);
-        }
-        continue;
-      }
-
-      networkFailures = 0;
-      const data = ((await response.json()) as WavespeedResultResponse).data;
-      if (!data) throw new Error(USER_ERRORS.statusCheckFailed);
-      if (data.status === 'completed') {
-        if (!data.outputs?.length) throw new Error(USER_ERRORS.noOutput);
-        return data.outputs;
-      }
-      if (data.status === 'failed') {
-        const errorText = data.error ?? 'unknown error';
-        const safetyError = ContentSafetyError.fromErrorMessage(errorText);
-        if (safetyError) throw safetyError;
-        throw new ProviderFailureError(USER_ERRORS.generationFailed, errorText);
-      }
-    }
-
-    throw new Error(USER_ERRORS.timeout);
-  }
-
-  private wavespeedHeaders(): Record<string, string> {
-    return {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${this.wavespeedApiKey}`,
     };
   }
 }

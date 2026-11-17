@@ -169,6 +169,8 @@ export interface MinimaxH3TextToVideoInput {
   durationSeconds: number;
   resolution: MinimaxH3Resolution;
   aspectRatio?: MinimaxH3AspectRatio;
+  /** 'kie' = roda só na kie, nunca na WaveSpeed (desvio explícito ou com foto da cliente, TKT-265/310). */
+  providerLock?: 'kie';
 }
 
 export interface MinimaxH3ImageToVideoInput {
@@ -180,6 +182,8 @@ export interface MinimaxH3ImageToVideoInput {
   lastImageUrl?: string;
   durationSeconds: number;
   resolution: MinimaxH3Resolution;
+  /** 'kie' = roda só na kie, nunca na WaveSpeed (desvio explícito ou com foto da cliente, TKT-265/310). */
+  providerLock?: 'kie';
 }
 
 /** Wan 3.0 reference-to-video: "Image 1" = a foto (quem), "Video 1" = o vídeo (movimento e cena); gera a cena de novo. */
@@ -485,7 +489,7 @@ export class WavespeedVideoProvider {
         );
         return this.requireKieMinimaxH3().createTask(KIE_MINIMAX_H3_T2V_MODEL, kieInput);
       },
-    });
+    }, input.providerLock);
     const outputUrl = await this.downloadAndUpload(resultUrl, input.id, 0);
 
     return { outputUrls: [outputUrl], modelUsed: MINIMAX_H3_T2V_MODEL };
@@ -538,7 +542,7 @@ export class WavespeedVideoProvider {
         );
         return this.requireKieMinimaxH3().createTask(KIE_MINIMAX_H3_I2V_MODEL, kieInput);
       },
-    });
+    }, input.providerLock);
     const outputUrl = await this.downloadAndUpload(resultUrl, input.id, 0);
 
     return { outputUrls: [outputUrl], modelUsed: MINIMAX_H3_I2V_MODEL };
@@ -549,11 +553,21 @@ export class WavespeedVideoProvider {
    * provedor. Devolve a URL do vídeo no provedor (a re-hospedagem fica com quem chama). `start` de cada lado só cria
    * a tarefa: o que ele lança conta como falha de início; o que a espera lança conta como falha final. Início incerto
    * (MinimaxH3UncertainStartError: a tarefa pode existir) nunca desvia.
+   *
+   * `lock: 'kie'` (TKT-265/310): só a kie, sem desvio, qualquer que seja o primário da env. A WaveSpeed proíbe
+   * explícito; o desvio de bloqueio de conteúdo e o que leva a foto da cliente chegam com essa trava. Sem kie
+   * configurada, falha (a geração devolve os créditos) em vez de ir à WaveSpeed.
    */
   private async runMinimaxH3(
     generationId: string,
     start: Record<MinimaxH3Engine, () => Promise<string>>,
+    lock?: 'kie',
   ): Promise<string> {
+    if (lock === 'kie') {
+      this.logger.log(`[MINIMAX_H3] gen=${generationId} trava kie: só a kie, sem desvio para a WaveSpeed`);
+      const taskId = await start.kie();
+      return this.waitMinimaxH3('kie', taskId);
+    }
     const primary = this.minimaxH3Primary;
     const secondary = this.otherMinimaxH3Engine(primary);
     let stage: MinimaxH3FailureStage = 'start';
