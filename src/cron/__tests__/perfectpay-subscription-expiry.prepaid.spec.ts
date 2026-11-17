@@ -1,6 +1,6 @@
 import { PerfectpaySubscriptionExpiryService } from '../perfectpay-subscription-expiry.service';
 
-/** O cron de vencimento também corta o pré-pago liberado pela garantia do cockpit (admin). */
+/** Pré-pago vence no fim do período, sem carência (inclusive o liberado pelo admin). */
 describe('PerfectpaySubscriptionExpiryService · pré-pago admin', () => {
   function make(expired: Array<{ id: string; userId: string }>) {
     const tx = {
@@ -16,7 +16,7 @@ describe('PerfectpaySubscriptionExpiryService · pré-pago admin', () => {
     return { service, prisma, tx };
   }
 
-  it('a consulta inclui admin só em plano -30d, sem carência; perfectpay/cakto seguem como antes', async () => {
+  it('pré-pago (perfectpay/cakto/admin) sem carência, mesmo com o flag em false; recorrente segue como antes', async () => {
     const { service, prisma } = make([]);
 
     await service.handleExpiry();
@@ -31,7 +31,7 @@ describe('PerfectpaySubscriptionExpiryService · pré-pago admin', () => {
     // Carência de 3 dias só para a recorrência lapsada.
     expect(lapsed.currentPeriodEnd.lte.getTime()).toBeLessThan(scheduled.currentPeriodEnd.lte.getTime());
     expect(admin).toEqual({
-      paymentProvider: 'admin',
+      paymentProvider: { in: ['perfectpay', 'cakto', 'admin'] },
       plan: { slug: { endsWith: '-30d' } },
       currentPeriodEnd: { lte: scheduled.currentPeriodEnd.lte },
     });

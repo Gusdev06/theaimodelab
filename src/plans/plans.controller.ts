@@ -5,7 +5,7 @@ import { PlanResponseDto } from './dto/plan-response.dto';
 import { Public } from '../common/decorators/public.decorator';
 import { CheckoutCodesService } from '../checkout-codes/checkout-codes.service';
 import { OptionalJwtAuthGuard } from '../common/guards/optional-jwt-auth.guard';
-import { subscriptionCheckoutUrlFor } from './prepaid-plan';
+import { isInAppHomeReferer, subscriptionCheckoutUrlFor } from './prepaid-plan';
 
 // Preço de assinatura em USD (centavos) por plano. Fonte da verdade é a tabela
 // plan_prices (USD); este mapa é só um fallback para nunca exibir preço em BRL
@@ -59,10 +59,13 @@ export class PlansController {
     const plans = await this.plansService.findAllPlans();
     // Assinante recorrente da Perfect Pay continua vendo o link de ASSINATURA (upgrade como
     // antes de 17/11): o pré-pago criaria outra assinatura e a recorrência seguiria cobrando.
+    // Sem token, a Início (/home) só pede /plans para o cartão "upgrade pelo ritmo", que só
+    // aparece para assinante da Perfect Pay: ali vale o link de assinatura (best-effort pelo
+    // Referer, porque o site congelado não manda o token nessa chamada).
     const userId = req?.user && typeof req.user.sub === 'string' ? req.user.sub : null;
     const keepSubscriptionLinks = userId
       ? await this.plansService.hasRecurringPerfectpaySubscription(userId)
-      : false;
+      : isInAppHomeReferer(req?.headers?.referer);
     const planCheckoutUrl = (url: string | null | undefined): string | null =>
       (keepSubscriptionLinks ? subscriptionCheckoutUrlFor(url) : null) ?? url ?? null;
     return Promise.all(

@@ -27,7 +27,8 @@
     "CANNOT_PAUSE_FREE": "No es posible pausar el plan Free",
     "NO_SCHEDULED_DOWNGRADE": "No se encontró un downgrade programado",
     "NO_CANCEL_PENDING": "No se encontró una suscripción activa con cancelación pendiente",
-    "PLAN_NOT_FOUND": "Plan no encontrado"
+    "PLAN_NOT_FOUND": "Plan no encontrado",
+    "PREPAID_NO_RENEWAL": "Este es un acceso prepago de 30 días, sin renovación automática. Para continuar, compra 30 días más."
   },
   "generations": {
     "MAX_CONCURRENT_REACHED": "Límite de generaciones simultáneas alcanzado",

@@ -109,9 +109,14 @@ export class CreditsService {
       this.prisma.userFreeGeneration.findMany({ where: { userId } }),
     ]);
 
+    // Com a trava do pré-pago ligada, o saldo não mostra grátis que a geração recusaria.
+    const lockedFreeGens =
+      freeGens.some((fg) => fg.remaining > 0) && (await this.isLockedByExpiredPrepaid(userId));
     const freeGenerations = { ...EMPTY_FREE_GENERATIONS };
-    for (const fg of freeGens) {
-      freeGenerations[fg.type] = fg.remaining;
+    if (!lockedFreeGens) {
+      for (const fg of freeGens) {
+        freeGenerations[fg.type] = fg.remaining;
+      }
     }
 
     if (!balance) {
@@ -754,9 +759,10 @@ export class CreditsService {
   }
 
   /**
-   * Trava do pré-pago vencido (env PREPAID_LOCK_ON_EXPIRY, padrão ligado): quem deixou o
-   * acesso de 30 dias vencer não usa geração grátis e cai no INSUFFICIENT_CREDITS, que o
-   * site já trata abrindo os planos. Créditos de pacote/bônus comprados seguem valendo.
+   * Trava do pré-pago vencido (env PREPAID_LOCK_ON_EXPIRY=on, padrão DESLIGADO): quem
+   * deixou o acesso de 30 dias vencer não usa geração grátis e cai no INSUFFICIENT_CREDITS,
+   * que o site já trata abrindo os planos. Créditos de pacote/bônus seguem valendo. Ligada,
+   * ela também corta o bundle de grátis do Pack/isca (pago), que não tem origem gravada.
    */
   async isLockedByExpiredPrepaid(userId: string, now: Date = new Date()): Promise<boolean> {
     if (!isPrepaidLockOnExpiryEnabled()) return false;

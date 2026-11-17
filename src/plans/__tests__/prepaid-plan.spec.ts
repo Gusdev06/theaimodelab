@@ -3,6 +3,7 @@ import { PlansService } from '../plans.service';
 import {
   endedByExpiry,
   isExpiredPrepaidLock,
+  isInAppHomeReferer,
   isPrepaidLockOnExpiryEnabled,
   isPrepaidNoticesEnabled,
   isPrepaidPlanSlug,
@@ -41,13 +42,28 @@ describe('Pré-pago de 30 dias · helpers', () => {
     expect(subscriptionCheckoutUrlFor('')).toBeNull();
   });
 
-  it('chaves de desligar: ligadas por padrão, off desliga', () => {
-    expect(isPrepaidLockOnExpiryEnabled({})).toBe(true);
+  it('chaves: trava desligada por padrão (só on liga); avisos ligados por padrão (off desliga)', () => {
+    expect(isPrepaidLockOnExpiryEnabled({})).toBe(false);
+    expect(isPrepaidLockOnExpiryEnabled({ PREPAID_LOCK_ON_EXPIRY: '' })).toBe(false);
     expect(isPrepaidLockOnExpiryEnabled({ PREPAID_LOCK_ON_EXPIRY: 'off' })).toBe(false);
-    expect(isPrepaidLockOnExpiryEnabled({ PREPAID_LOCK_ON_EXPIRY: 'OFF ' })).toBe(false);
+    expect(isPrepaidLockOnExpiryEnabled({ PREPAID_LOCK_ON_EXPIRY: 'ON ' })).toBe(true);
+    expect(isPrepaidLockOnExpiryEnabled({ PREPAID_LOCK_ON_EXPIRY: 'true' })).toBe(true);
     expect(isPrepaidNoticesEnabled({})).toBe(true);
     expect(isPrepaidNoticesEnabled({ PREPAID_NOTICES: 'off' })).toBe(false);
     expect(isPrepaidNoticesEnabled({ PREPAID_NOTICES: 'on' })).toBe(true);
+  });
+
+  it('Referer da Início do app (/home, com ou sem língua); resto não', () => {
+    expect(isInAppHomeReferer('https://www.theaimodelab.com/home')).toBe(true);
+    expect(isInAppHomeReferer('https://www.theaimodelab.com/home/?x=1')).toBe(true);
+    expect(isInAppHomeReferer('https://www.theaimodelab.com/es/home')).toBe(true);
+    expect(isInAppHomeReferer(['https://www.theaimodelab.com/pt-br/home'])).toBe(true);
+    expect(isInAppHomeReferer('https://www.theaimodelab.com/')).toBe(false);
+    expect(isInAppHomeReferer('https://www.theaimodelab.com/pricing')).toBe(false);
+    expect(isInAppHomeReferer('https://www.theaimodelab.com/en/pricing')).toBe(false);
+    expect(isInAppHomeReferer('https://www.theaimodelab.com/homepage')).toBe(false);
+    expect(isInAppHomeReferer('not a url')).toBe(false);
+    expect(isInAppHomeReferer(undefined)).toBe(false);
   });
 
   describe('vencimento × estorno', () => {
@@ -122,6 +138,23 @@ describe('GET /plans · assinante recorrente não vê link de pré-pago (cobran�
       `${PAY}PPU38CQHQPQ`,
       `${PAY}PPU38CQG710`,
     ]);
+  });
+
+  it('anônimo vindo da Início (cartão do ritmo, só assinante PP): link de assinatura', async () => {
+    const { controller, plansService } = make({ recurring: false });
+    const result = await controller.findAll('USD', { headers: { referer: 'https://www.theaimodelab.com/home' } });
+    expect(plansService.hasRecurringPerfectpaySubscription).not.toHaveBeenCalled();
+    expect(result.map((p) => p.checkoutUrl)).toEqual([
+      `${PAY}PPU38CQDTOD?src=site`,
+      `${PAY}PPU38CQDTOH`,
+      `${PAY}PPU38CQG710`,
+    ]);
+  });
+
+  it('anônimo vindo da /pricing (visitante novo): segue no pré-pago', async () => {
+    const { controller } = make({ recurring: true });
+    const result = await controller.findAll('USD', { headers: { referer: 'https://www.theaimodelab.com/en/pricing' } });
+    expect(result[0].checkoutUrl).toBe(`${PAY}PPU38CQHN67?src=site`);
   });
 
   it('logado sem recorrente: continua no pré-pago', async () => {

@@ -23,9 +23,6 @@ import { MetaConversionsService, MetaRequestContext } from '../meta/meta-convers
 import { MetaEventContextDto } from '../meta/meta-event-context.dto';
 import { isPrepaidPlanSlug } from '../plans/prepaid-plan';
 
-export const PREPAID_REACTIVATE_MESSAGE =
-  'Este é um acesso pré-pago de 30 dias, sem renovação automática. Para continuar, compre mais 30 dias.';
-
 /**
  * Ordem de upgrade/downgrade = `plans.sort_order` (o admin edita em /admin/planos).
  * Antes era uma lista fixa de slugs aqui, que ignorava plano criado pelo admin.
@@ -515,7 +512,7 @@ export class SubscriptionsService {
     if (isPrepaidPlanSlug(current.plan?.slug)) {
       throw new BadRequestException({
         code: 'PREPAID_NO_RENEWAL',
-        message: PREPAID_REACTIVATE_MESSAGE,
+        message: t('errors.subscriptions.PREPAID_NO_RENEWAL'),
       });
     }
 

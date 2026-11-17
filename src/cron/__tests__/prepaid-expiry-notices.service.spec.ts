@@ -1,5 +1,6 @@
 import {
   PREPAID_EXPIRED_TYPE,
+  PREPAID_NOTICE_SEQUENCE,
   PREPAID_EXPIRING_TYPE,
   PrepaidExpiryNoticesService,
   expiringMilestone,
@@ -68,6 +69,7 @@ describe('PrepaidExpiryNoticesService', () => {
     ended?: unknown[];
     existingKeys?: string[];
     otherActive?: boolean;
+    notifyFails?: boolean;
   }) {
     const findMany = jest.fn(async (args: any) =>
       args.where.status === 'ACTIVE' ? opts.expiring ?? [] : opts.ended ?? [],
@@ -77,13 +79,23 @@ describe('PrepaidExpiryNoticesService', () => {
         findMany,
         findFirst: jest.fn(async () => (opts.otherActive ? { id: 'sub-2' } : null)),
       },
-      notification: {
-        findFirst: jest.fn(async (args: any) =>
-          (opts.existingKeys ?? []).includes(args.where.data.equals) ? { id: 'n-old' } : null,
-        ),
+      emailSequenceLog: {
+        // Chave já reservada = violação do único (P2002), como o Postgres faria.
+        create: jest.fn(async (args: any) => {
+          if ((opts.existingKeys ?? []).some((k) => args.data.emailKey === `${PREPAID_NOTICE_SEQUENCE}:${k}`)) {
+            throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
+          }
+          return { id: 'claim-1' };
+        }),
+        delete: jest.fn(async () => ({})),
       },
     };
-    const notifications = { create: jest.fn(async () => ({ id: 'n-new' })) };
+    const notifications = {
+      create: jest.fn(async () => {
+        if (opts.notifyFails) throw new Error('db down');
+        return { id: 'n-new' };
+      }),
+    };
     const cronLogger = { wrap: jest.fn(async (_opts: unknown, fn: () => Promise<unknown>) => fn()) };
     const service = new PrepaidExpiryNoticesService(prisma as any, notifications as any, cronLogger as any);
     return { service, prisma, notifications, findMany };
@@ -130,7 +142,7 @@ describe('PrepaidExpiryNoticesService', () => {
     expect(data.reason).toContain('vence em 1 dia.');
   });
 
-  it('não repete o mesmo marco (deduplica por data.key)', async () => {
+  it('não repete o mesmo marco (reserva em email_sequence_logs, que o Limpar do sino não apaga)', async () => {
     const end = new Date(now.getTime() + 60 * HOUR);
     const { service, notifications } = make({
       expiring: [sub({ currentPeriodEnd: end })],
@@ -139,6 +151,22 @@ describe('PrepaidExpiryNoticesService', () => {
     const result = await service.run(now);
     expect(result.created).toBe(0);
     expect(notifications.create).not.toHaveBeenCalled();
+  });
+
+  it('reserva por conta + chave; se a notificação falha, libera a reserva', async () => {
+    const end = new Date(now.getTime() + 60 * HOUR);
+    const ok = make({ expiring: [sub({ currentPeriodEnd: end })] });
+    await ok.service.run(now);
+    expect(ok.prisma.emailSequenceLog.create).toHaveBeenCalledWith({
+      data: { userId: 'user-1', sequence: 'prepaid_notice', emailKey: `prepaid_notice:sub-1:${end.toISOString()}:D-3` },
+      select: { id: true },
+    });
+    expect(ok.prisma.emailSequenceLog.delete).not.toHaveBeenCalled();
+
+    const failing = make({ expiring: [sub({ currentPeriodEnd: end })], notifyFails: true });
+    const result = await failing.service.run(now);
+    expect(result.created).toBe(0);
+    expect(failing.prisma.emailSequenceLog.delete).toHaveBeenCalledWith({ where: { id: 'claim-1' } });
   });
 
   it('D0: vencido pelo cron recebe prepaid-expired (inglês)', async () => {

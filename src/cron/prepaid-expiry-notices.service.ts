@@ -25,6 +25,8 @@ const D0_WINDOW_MS = 48 * HOUR_MS;
 export const PREPAID_EXPIRING_TYPE = 'prepaid-expiring';
 export const PREPAID_EXPIRED_TYPE = 'prepaid-expired';
 export const PREPAID_RENEW_BASE_URL = 'https://www.theaimodelab.com';
+/** `sequence` em email_sequence_logs que guarda os avisos do sino já dados (não é e-mail). */
+export const PREPAID_NOTICE_SEQUENCE = 'prepaid_notice';
 
 export type PrepaidMilestone = 'D-3' | 'D-1' | 'D0';
 
@@ -86,7 +88,9 @@ interface NoticeCandidate {
 /**
  * Aviso do pré-pago de 30 dias no sino da plataforma (TKT-290): D-3 e D-1 antes de
  * vencer ('prepaid-expiring') e D0 logo depois ('prepaid-expired'). Uma notificação por
- * marco, deduplicada por data.key. Env PREPAID_NOTICES=off desliga.
+ * marco. O "já avisei" fica em email_sequence_logs (único por conta + chave), não na
+ * notificação: o "Limpar" do sino apaga a notificação e o aviso voltaria a cada hora.
+ * Env PREPAID_NOTICES=off desliga.
  */
 @Injectable()
 export class PrepaidExpiryNoticesService {
@@ -177,12 +181,21 @@ export class PrepaidExpiryNoticesService {
     daysLeft: number | null,
   ): Promise<boolean> {
     const key = prepaidNoticeKey(sub.id, sub.currentPeriodEnd, milestone);
+    // Reserva antes de criar: outra instância que chegar junto bate no P2002 e sai.
+    let claimId: string;
     try {
-      const existing = await this.prisma.notification.findFirst({
-        where: { userId: sub.userId, type, data: { path: ['key'], equals: key } },
+      const claim = await this.prisma.emailSequenceLog.create({
+        data: { userId: sub.userId, sequence: PREPAID_NOTICE_SEQUENCE, emailKey: `${PREPAID_NOTICE_SEQUENCE}:${key}` },
         select: { id: true },
       });
-      if (existing) return false;
+      claimId = claim.id;
+    } catch (error: unknown) {
+      if ((error as { code?: string } | null)?.code === 'P2002') return false;
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Prepaid notice ${key}: claim failed: ${message}`);
+      return false;
+    }
+    try {
       const locale = mailLocaleFor(sub.user);
       await this.notifications.create(sub.userId, type, {
         key,
@@ -195,6 +208,8 @@ export class PrepaidExpiryNoticesService {
       });
       return true;
     } catch (error: unknown) {
+      // Não saiu: libera a reserva para a próxima rodada tentar de novo (dentro da janela).
+      await this.prisma.emailSequenceLog.delete({ where: { id: claimId } }).catch(() => undefined);
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Prepaid notice ${key} failed: ${message}`);
       return false;

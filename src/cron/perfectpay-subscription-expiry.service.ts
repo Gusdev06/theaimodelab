@@ -47,10 +47,11 @@ export class PerfectpaySubscriptionExpiryService {
                 { paymentProvider: externalProviders, cancelAtPeriodEnd: true, currentPeriodEnd: { lte: now } },
                 // Sem renovação após o vencimento (+ carência): pagamento lapsou.
                 { paymentProvider: externalProviders, cancelAtPeriodEnd: false, currentPeriodEnd: { lte: graceCutoff } },
-                // Pré-pago liberado pela garantia do cockpit (admin): vence no fim do
-                // período, como o comprado pelo webhook. Nenhuma outra assinatura admin.
+                // Pré-pago (slug *-30d) vence no fim do período, sem carência: não há
+                // renovação para esperar. Vale com o flag em false (vendido antes do fix) e
+                // para o liberado pela garantia do cockpit (admin); nenhuma outra assinatura admin.
                 {
-                  paymentProvider: 'admin',
+                  paymentProvider: { in: [...externalProviders.in, 'admin'] },
                   plan: { slug: { endsWith: PREPAID_PLAN_SLUG_SUFFIX } },
                   currentPeriodEnd: { lte: now },
                 },

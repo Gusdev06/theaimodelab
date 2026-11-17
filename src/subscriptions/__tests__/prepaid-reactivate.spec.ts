@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { PREPAID_REACTIVATE_MESSAGE, SubscriptionsService } from '../subscriptions.service';
+import { SubscriptionsService } from '../subscriptions.service';
 
 /** Pré-pago de 30 dias não tem renovação: "Reativar" não pode tirar o cancelAtPeriodEnd. */
 describe('SubscriptionsService.reactivate · pré-pago', () => {
@@ -44,7 +44,8 @@ describe('SubscriptionsService.reactivate · pré-pago', () => {
     const attempt = service.reactivate('user-1');
     await expect(attempt).rejects.toBeInstanceOf(BadRequestException);
     await expect(service.reactivate('user-1')).rejects.toMatchObject({
-      response: { code: 'PREPAID_NO_RENEWAL', message: PREPAID_REACTIVATE_MESSAGE },
+      // Fora de request o t() devolve a chave; na request vem o texto na língua da cliente.
+      response: { code: 'PREPAID_NO_RENEWAL', message: 'errors.subscriptions.PREPAID_NO_RENEWAL' },
     });
     expect(prisma.subscription.update).not.toHaveBeenCalled();
   });

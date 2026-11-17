@@ -387,6 +387,19 @@ export class PaymentsService {
         // Primeira compra ou TROCA DE PLANO (upgrade/downgrade): cancela ativas e
         // cria nova. A recorrência antiga na PerfectPay é auto-cancelada por lá
         // ("new_subscription_purchased"), cujo postback é ignorado no webhook.
+        if (cancelAtPeriodEnd && activeSub && provider === 'perfectpay') {
+          // Pré-pago é compra avulsa: não há garantia de que a Perfect Pay cancele a
+          // recorrência antiga. Marca no log para o suporte cancelar lá (cobrança em dobro).
+          const replaced = await tx.plan.findUnique({
+            where: { id: activeSub.planId },
+            select: { slug: true },
+          });
+          if (!isPrepaidPlanSlug(replaced?.slug)) {
+            this.logger.warn(
+              `[PREPAGO_SOBRE_RECORRENTE] user ${userId}: pré-pago ${plan.slug} (venda ${saleCode}) substituiu a assinatura recorrente ${activeSub.externalSubscriptionId ?? activeSub.id} (${replaced?.slug ?? activeSub.planId}); conferir/cancelar a recorrência na Perfect Pay`,
+            );
+          }
+        }
         await tx.subscription.updateMany({
           where: { userId, status: { in: ['ACTIVE', 'TRIALING', 'PAST_DUE'] } },
           data: { status: 'CANCELED', cancelAtPeriodEnd: false },

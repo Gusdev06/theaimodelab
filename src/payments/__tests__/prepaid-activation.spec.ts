@@ -22,6 +22,7 @@ describe('Ativação do pré-pago (Perfect Pay, pagamento único)', () => {
       creditTransaction: { findFirst: jest.fn(async () => null), create: jest.fn(async () => ({})) },
       affiliate: { findUnique: jest.fn(async () => null) },
       affiliateEarning: { findFirst: jest.fn(async () => null), create: jest.fn(async () => ({})) },
+      plan: { findUnique: jest.fn(async ({ where }: any) => (where.id === 'plan-pro' ? recurringPlan : prepaidPlan)) },
     };
     const prisma = {
       plan: { findUnique: jest.fn(async () => plan) },
@@ -29,7 +30,8 @@ describe('Ativação do pré-pago (Perfect Pay, pagamento único)', () => {
       $transaction: jest.fn(async (fn: any) => fn(tx)),
     };
     const service = new PaymentsService(prisma as any, {} as any, {} as any, {} as any, {} as any);
-    return { service, tx };
+    const warn = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+    return { service, tx, warn };
   }
 
   const sale = { userId: 'user-1', planId: 'plan-pro-30d', saleCode: 'PPCPMT1', amountCents: 3990, currency: 'usd' };
@@ -84,6 +86,37 @@ describe('Ativação do pré-pago (Perfect Pay, pagamento único)', () => {
     await service.activateOrRenewPerfectpaySubscription({ ...sale, planId: 'plan-pro', subscriptionCode: 'PPSUB1' });
 
     expect((tx.subscription.update.mock.calls as any[][])[0][0].data.cancelAtPeriodEnd).toBe(false);
+  });
+
+  it('pré-pago por cima de recorrente ativo na Perfect Pay: avisa no log para cancelar lá', async () => {
+    const { service, tx, warn } = setup(prepaidPlan, {
+      id: 'sub-rec',
+      planId: 'plan-pro',
+      externalSubscriptionId: 'PPSUB1',
+      currentPeriodEnd: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000),
+      cancelAtPeriodEnd: false,
+    });
+
+    await service.activateOrRenewPerfectpaySubscription(sale);
+
+    expect(tx.subscription.create).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('[PREPAGO_SOBRE_RECORRENTE]');
+    expect(String(warn.mock.calls[0][0])).toContain('PPSUB1');
+  });
+
+  it('pré-pago por cima de outro pré-pago: sem aviso', async () => {
+    const { service, warn } = setup(prepaidPlan, {
+      id: 'sub-pre',
+      planId: 'plan-adv-30d',
+      externalSubscriptionId: 'PPCPMT0',
+      currentPeriodEnd: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000),
+      cancelAtPeriodEnd: true,
+    });
+
+    await service.activateOrRenewPerfectpaySubscription(sale);
+
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('primeira compra de plano recorrente: cancelAtPeriodEnd=false', async () => {

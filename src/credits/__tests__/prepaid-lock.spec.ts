@@ -1,11 +1,15 @@
 import { CreditsService } from '../credits.service';
 
 /**
- * Trava do pré-pago vencido: sem geração grátis (cai no INSUFFICIENT_CREDITS que o site
- * já trata). Créditos de pacote/bônus não passam por aqui e seguem valendo.
+ * Trava do pré-pago vencido (PREPAID_LOCK_ON_EXPIRY=on, padrão desligado): sem geração
+ * grátis (cai no INSUFFICIENT_CREDITS que o site já trata). Créditos de pacote/bônus não
+ * passam por aqui e seguem valendo.
  */
 describe('CreditsService · trava do pré-pago vencido', () => {
   const ORIGINAL = process.env.PREPAID_LOCK_ON_EXPIRY;
+  beforeEach(() => {
+    process.env.PREPAID_LOCK_ON_EXPIRY = 'on';
+  });
   afterEach(() => {
     if (ORIGINAL === undefined) delete process.env.PREPAID_LOCK_ON_EXPIRY;
     else process.env.PREPAID_LOCK_ON_EXPIRY = ORIGINAL;
@@ -38,9 +42,22 @@ describe('CreditsService · trava do pré-pago vencido', () => {
   }
 
   it('pré-pago vencido sem assinatura ativa: não tem geração grátis', async () => {
-    delete process.env.PREPAID_LOCK_ON_EXPIRY;
     const { service } = make({ remaining: 3, latest: expiredPrepaid });
     await expect(service.hasFreeGeneration('u-1', 'NB2' as any)).resolves.toBe(false);
+  });
+
+  it('o saldo também não mostra as grátis travadas', async () => {
+    const { service } = make({ remaining: 3, latest: expiredPrepaid });
+    const balance = await service.getBalance('u-1');
+    expect(balance.freeGenerations.NB2).toBe(0);
+  });
+
+  it('sem a env (padrão): trava desligada, nem consulta assinatura', async () => {
+    delete process.env.PREPAID_LOCK_ON_EXPIRY;
+    const { service, findFirst } = make({ remaining: 3, latest: expiredPrepaid });
+    await expect(service.hasFreeGeneration('u-1', 'NB2' as any)).resolves.toBe(true);
+    expect((await service.getBalance('u-1')).freeGenerations.NB2).toBe(3);
+    expect(findFirst).not.toHaveBeenCalled();
   });
 
   it('a estimativa também não promete geração grátis', async () => {

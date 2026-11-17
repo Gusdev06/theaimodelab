@@ -37,6 +37,23 @@ export function subscriptionCheckoutUrlFor(url: string | null | undefined): stri
   return `${base.slice(0, lastSlash + 1)}${subscriptionCode}${suffix}`;
 }
 
+/**
+ * A chamada anônima ao /plans veio da Início do app (/home, com ou sem prefixo de língua)?
+ * O cartão "upgrade pelo ritmo" do site congelado (9f3c8ec) pede /plans SEM token e só
+ * aparece para assinante da Perfect Pay. O site chama a API same-origin (rewrite da
+ * Vercel), então o Referer traz o caminho. Chamada cross-origin só manda a origem e cai
+ * no false (link de pré-pago, como antes).
+ */
+export function isInAppHomeReferer(referer: unknown): boolean {
+  const raw = Array.isArray(referer) ? referer[0] : referer;
+  if (typeof raw !== 'string' || !raw) return false;
+  try {
+    return /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?home\/?$/i.test(new URL(raw).pathname);
+  } catch {
+    return false;
+  }
+}
+
 type EnvLike = Record<string, string | undefined>;
 
 /** Chave de desligar: 'off' (ou 'false'/'0') desliga; ausente ou qualquer outro valor = ligado. */
@@ -45,9 +62,15 @@ function flagOn(raw: string | undefined): boolean {
   return value !== 'off' && value !== 'false' && value !== '0';
 }
 
-/** PREPAID_LOCK_ON_EXPIRY: pré-pago vencido perde as gerações grátis (padrão ligado). */
+/**
+ * PREPAID_LOCK_ON_EXPIRY: pré-pago vencido perde as gerações grátis. Padrão DESLIGADO
+ * (só 'on'/'true'/'1' liga): o plano não dá geração grátis, então o que a trava corta é o
+ * bundle do Pack/isca (entregue também pelo admin, sem origem gravada), conteúdo pago.
+ * Ligar é decisão do dono.
+ */
 export function isPrepaidLockOnExpiryEnabled(env: EnvLike = process.env): boolean {
-  return flagOn(env.PREPAID_LOCK_ON_EXPIRY);
+  const value = (env.PREPAID_LOCK_ON_EXPIRY ?? '').trim().toLowerCase();
+  return value === 'on' || value === 'true' || value === '1';
 }
 
 /** PREPAID_NOTICES: avisos D-3/D-1/D0 do pré-pago no sino (padrão ligado). */
