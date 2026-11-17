@@ -451,6 +451,144 @@ describe('SeedreamProvider · motor do Unlocked (UNLOCKED_ENGINE)', () => {
     });
   });
 
+  describe('reserva na própria kie (TKT-310)', () => {
+    const PRO_T2I = 'seedream/5-pro-text-to-image';
+    const PRO_I2I = 'seedream/5-pro-image-to-image';
+    const isPro = (model: string) => model.includes('5-pro');
+    const withPhoto = (id: string) => ({
+      ...eligible(id, 'u'),
+      imageUrls: ['https://cdn.test/in.jpg'],
+    });
+
+    it('falha técnica do Pro no só-texto refaz no 5.5', async () => {
+      mockKie((model) => (isPro(model) ? 'fail-500' : 'success'));
+      const result = await run(
+        buildProvider(KIE_ENV).generateImage(eligible('k1', 'u')),
+      );
+      expect(result.engine).toBe('s55');
+      expect(result.modelUsed).toBe('sem-censura');
+      expect(createdModels()).toEqual([PRO_T2I, 'seedream/5-5-text-to-image']);
+    });
+
+    it('falha técnica do Pro na edição com foto refaz no Lite com as mesmas fotos', async () => {
+      mockKie((model) => (isPro(model) ? 'fail-500' : 'success'));
+      const result = await run(
+        buildProvider(KIE_ENV).generateImage(withPhoto('k2')),
+      );
+      expect(result.engine).toBe('lite');
+      const [, reserve] = created();
+      expect(createdModels()).toEqual([PRO_I2I, 'seedream/5-lite-image-to-image']);
+      expect(reserve.input).toMatchObject({
+        image_urls: ['https://cdn.test/in.jpg'],
+        nsfw_checker: false,
+      });
+    });
+
+    it('Pro que não termina em 5 min cede à reserva (antes ia até o cron, ~28 min)', async () => {
+      mockKie((model) => (isPro(model) ? 'generating' : 'success'));
+      const started = Date.now();
+      const result = await run(
+        buildProvider(KIE_ENV).generateImage(eligible('k3', 'u')),
+      );
+      expect(result.engine).toBe('s55');
+      const proPolls = calls.filter((call) =>
+        call.url.endsWith('taskId=task-1'),
+      ).length;
+      expect(proPolls).toBeLessThanOrEqual(76);
+      expect(Date.now() - started).toBeLessThan(10 * 60_000);
+    });
+
+    it('recusa de conteúdo do Pro é terminal: sem reserva', async () => {
+      mockKie((model) => (isPro(model) ? 'fail-430' : 'success'));
+      await expect(
+        run(buildProvider(KIE_ENV).generateImage(eligible('k4', 'u'))),
+      ).rejects.toBeInstanceOf(ContentSafetyError);
+      expect(createdModels()).toEqual([PRO_T2I]);
+    });
+
+    it('início do Pro recusado com texto de menor não vai à reserva', async () => {
+      mockFetch((url) => {
+        if (url.endsWith('/api/v1/jobs/createTask'))
+          return jsonResponse({
+            code: 400,
+            msg: 'request rejected: depicts a minor',
+            data: null,
+          });
+        throw new Error(`url inesperada ${url}`);
+      });
+      await expect(
+        run(buildProvider(KIE_ENV).generateImage(eligible('k5', 'u'))),
+      ).rejects.toThrow();
+      expect(createdModels()).toEqual([PRO_T2I]);
+    });
+
+    it('kie sem aceitar o Pro (5xx) vai à reserva da kie e NUNCA à WaveSpeed, mesmo com a env antiga ligada', async () => {
+      let proStarts = 0;
+      mockFetch((url, init) => {
+        if (url.endsWith('/api/v1/jobs/createTask')) {
+          const body = JSON.parse(init?.body as string) as { model: string };
+          if (isPro(body.model)) {
+            proStarts++;
+            return new Response('upstream down', { status: 503 });
+          }
+          return jsonResponse({ code: 200, msg: 'ok', data: { taskId: 'r1' } });
+        }
+        if (url.endsWith('recordInfo?taskId=r1'))
+          return jsonResponse({
+            code: 200,
+            msg: 'ok',
+            data: {
+              taskId: 'r1',
+              model: 'seedream/5-5-text-to-image',
+              state: 'success',
+              resultJson: JSON.stringify({ resultUrls: ['https://kie.test/task-r1.jpg'] }),
+            },
+          });
+        if (url.startsWith('https://kie.test/task-')) return imageResponse();
+        throw new Error(`url inesperada ${url}`);
+      });
+      const provider = buildProvider({
+        ...KIE_ENV,
+        UNLOCKED_WAVESPEED_FALLBACK: 'true',
+        WAVESPEED_API_KEY: 'ws-key',
+      });
+
+      const result = await run(provider.generateImage(eligible('k6', 'u')));
+
+      expect(result.engine).toBe('s55');
+      expect(proStarts).toBe(2); // createTask tenta 2× em 5xx
+      expect(calls.some((call) => call.url.includes('wavespeed'))).toBe(false);
+    });
+
+    it('se a reserva também falhar por motivo técnico, sobe o erro do principal', async () => {
+      mockKie((model) => (isPro(model) ? 'fail-500' : 'generating'));
+      await expect(
+        run(buildProvider(KIE_ENV).generateImage(eligible('k7', 'u'))),
+      ).rejects.toThrow('Não foi possível gerar a imagem. Tente novamente.');
+      expect(createdModels()).toEqual([PRO_T2I, 'seedream/5-5-text-to-image']);
+    });
+
+    it('recusa de conteúdo na reserva é o motivo que sobe', async () => {
+      mockKie((model) => (isPro(model) ? 'fail-500' : 'fail-minor'));
+      await expect(
+        run(buildProvider(KIE_ENV).generateImage(eligible('k8', 'u'))),
+      ).rejects.toBeInstanceOf(ContentSafetyError);
+    });
+
+    it('troca de rosto / Undress (fora do canário) também ganham a reserva, com a própria tag', async () => {
+      mockKie((model) => (isPro(model) ? 'fail-500' : 'success'));
+      const result = await run(
+        buildProvider(KIE_ENV).generateImage({
+          ...BASE_INPUT,
+          id: 'k9',
+          modelUsedTag: 'deepdeep',
+          imageUrls: ['https://cdn.test/in.jpg'],
+        }),
+      );
+      expect(result).toMatchObject({ modelUsed: 'deepdeep', engine: 'lite' });
+    });
+  });
+
   it('ULTRA_REALISM_PROMPTS=on: Unlocked fotográfico ganha o bloco no fim, estilizado não, e o teto se mantém', async () => {
     mockKie(() => 'success');
     const provider = buildProvider({ ...KIE_ENV, ULTRA_REALISM_PROMPTS: 'on' });

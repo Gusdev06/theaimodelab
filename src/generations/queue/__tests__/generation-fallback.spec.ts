@@ -6,7 +6,6 @@ import {
   fallbackKindOf,
   hasUserMedia,
   isUncensoredFallbackModel,
-  MOTION_CONTROL_FALLBACK_PROMPT,
   planFallback,
 } from '../generation-fallback';
 import {
@@ -20,7 +19,6 @@ import {
   ImageToVideoKieJobData,
   KlingImageToVideoJobData,
   MinimaxH3ImageToVideoJobData,
-  MinimaxH3ReferenceToVideoJobData,
   MinimaxH3TextToVideoJobData,
   MotionControlJobData,
   OmniVideoJobData,
@@ -121,7 +119,7 @@ describe('planFallback', () => {
   });
 
   // ── Omni / Seedance / Kling / Grok ─────────────────────────────────
-  it('Omni com vídeo de referência vira MiniMax referência com os clipes', () => {
+  it('Omni com vídeo de referência não tem alternativa: H3 por referência só existe na WaveSpeed (TKT-310)', () => {
     const data: OmniVideoJobData = {
       ...base,
       prompt: 'p',
@@ -132,16 +130,8 @@ describe('planFallback', () => {
       videoList: [{ url: 'https://cdn/clip.mp4', start: 0, ends: 4 }],
       hasVideoInput: true,
     };
-    const plan = planFallback(GenerationJobName.OMNI_VIDEO, data, ctx());
-    expect(plan!.jobName).toBe(GenerationJobName.MINIMAX_H3_REFERENCE_TO_VIDEO);
-    const job = plan!.data as MinimaxH3ReferenceToVideoJobData;
-    expect(job).toMatchObject({
-      referenceImageUrls: ['https://cdn/a.jpg'],
-      referenceVideoUrls: ['https://cdn/clip.mp4'],
-      resolution: 'RES_720P',
-      durationSeconds: 5, // MiniMax mínimo
-    });
-    expect(plan!.billing.hasVideoInput).toBe(false);
+    expect(planFallback(GenerationJobName.OMNI_VIDEO, data, ctx())).toBeNull();
+    expect(planFallback(GenerationJobName.OMNI_VIDEO, data, ctx({ kind: 'safety' }))).toBeNull();
   });
 
   it('Seedance 2.5 com first frame vira MiniMax imagem; duração 30 s cai para 15', () => {
@@ -189,33 +179,48 @@ describe('planFallback', () => {
   });
 
   // ── Motion Control ─────────────────────────────────────────────────
-  it('Motion Control usa a duração da geração e um prompt sintético', () => {
+  it('Motion Control não tem alternativa (H3 por referência só na WaveSpeed, TKT-310)', () => {
     const data: MotionControlJobData = {
       ...base,
       videoUrl: 'https://cdn/ref.mp4',
       imageUrl: 'https://cdn/ref.jpg',
       resolution: 'RES_720P',
     };
-    const plan = planFallback(GenerationJobName.MOTION_CONTROL, data, ctx({ durationSeconds: 7 }));
-    expect(plan!.jobName).toBe(GenerationJobName.MINIMAX_H3_REFERENCE_TO_VIDEO);
-    expect(plan!.data as MinimaxH3ReferenceToVideoJobData).toMatchObject({
-      prompt: MOTION_CONTROL_FALLBACK_PROMPT,
-      referenceVideoUrls: ['https://cdn/ref.mp4'],
-      referenceImageUrls: ['https://cdn/ref.jpg'],
-      durationSeconds: 7,
-      aspectRatio: '9:16',
-    });
+    for (const durationSeconds of [7, 22, null]) {
+      expect(planFallback(GenerationJobName.MOTION_CONTROL, data, ctx({ durationSeconds }))).toBeNull();
+    }
   });
 
-  it('Motion Control acima de 15 s não tem alternativa', () => {
-    const data: MotionControlJobData = {
+  // ── Trava de provedor do H3 (TKT-265/310) ─────────────────────────
+  it('desvio por bloqueio de conteúdo vai ao H3 SÓ na kie; falha técnica só-texto fica livre (outro provedor)', () => {
+    const data: TextToVideoKieJobData = {
       ...base,
-      videoUrl: 'v',
-      imageUrl: 'i',
+      prompt: 'p',
+      model: 'veo3_fast',
       resolution: 'RES_720P',
+      aspectRatio: '9:16',
+      generateAudio: true,
     };
-    expect(planFallback(GenerationJobName.MOTION_CONTROL, data, ctx({ durationSeconds: 22 }))).toBeNull();
-    expect(planFallback(GenerationJobName.MOTION_CONTROL, data, ctx({ durationSeconds: null }))).toBeNull();
+    const safety = planFallback(GenerationJobName.TEXT_TO_VIDEO_KIE, data, ctx({ kind: 'safety' }));
+    expect((safety!.data as MinimaxH3TextToVideoJobData).providerLock).toBe('kie');
+    const technical = planFallback(GenerationJobName.TEXT_TO_VIDEO_KIE, data, ctx());
+    expect((technical!.data as MinimaxH3TextToVideoJobData).providerLock).toBeUndefined();
+  });
+
+  it('desvio com a foto da cliente vai ao H3 SÓ na kie, qualquer que seja o motivo', () => {
+    const data: KlingImageToVideoJobData = {
+      ...base,
+      prompt: 'p',
+      resolution: 'RES_720P',
+      durationSeconds: 5,
+      imageUrls: ['https://cdn/k.jpg'],
+      aspectRatio: '9:16',
+      generateAudio: true,
+    };
+    for (const kind of ['provider', 'safety'] as FallbackKind[]) {
+      const plan = planFallback(GenerationJobName.KLING_IMAGE_TO_VIDEO, data, ctx({ kind }));
+      expect((plan!.data as MinimaxH3ImageToVideoJobData).providerLock).toBe('kie');
+    }
   });
 
   // ── WaveSpeed ↔ kie ────────────────────────────────────────────────
@@ -408,30 +413,9 @@ describe('evaluateFallback — guarda de mídia do usuário', () => {
   > = [
     ['Veo Fast com foto (first/last frame)', GenerationJobName.IMAGE_TO_VIDEO_KIE, veoImage, ['provider', 'safety'], {}],
     [
-      'Veo referência com imagens',
-      GenerationJobName.REFERENCE_TO_VIDEO_KIE,
-      { ...base, prompt: 'p', model: 'veo3_fast', resolution: 'RES_720P', generateAudio: true, imageUrls: ['https://cdn/a.jpg', 'https://cdn/b.jpg'] } as ReferenceToVideoKieJobData,
-      ['provider', 'safety'],
-      {},
-    ],
-    [
-      'Omni com vídeo de referência',
-      GenerationJobName.OMNI_VIDEO,
-      { ...base, prompt: 'p', resolution: 'RES_720P', durationSeconds: 5, videoList: [{ url: 'https://cdn/clip.mp4', start: 0, ends: 5 }], hasVideoInput: true } as OmniVideoJobData,
-      ['provider', 'safety'],
-      {},
-    ],
-    [
       'Seedance 2.5 com quadro inicial',
       GenerationJobName.SEEDANCE_VIDEO,
       { ...base, prompt: 'p', resolution: 'RES_720P', durationSeconds: 5, firstFrameUrl: 'https://cdn/f.jpg', generateAudio: true, hasVideoInput: false } as SeedanceVideoJobData,
-      ['provider', 'safety'],
-      {},
-    ],
-    [
-      'Seedance só com áudio de referência',
-      GenerationJobName.SEEDANCE_VIDEO,
-      { ...base, prompt: 'p', resolution: 'RES_720P', durationSeconds: 5, referenceAudioUrls: ['https://cdn/voz.mp3'], generateAudio: true, hasVideoInput: false } as SeedanceVideoJobData,
       ['provider', 'safety'],
       {},
     ],
@@ -457,13 +441,6 @@ describe('evaluateFallback — guarda de mídia do usuário', () => {
       {},
     ],
     [
-      'Motion Control (vídeo + foto)',
-      GenerationJobName.MOTION_CONTROL,
-      { ...base, videoUrl: 'https://cdn/ref.mp4', imageUrl: 'https://cdn/ref.jpg', resolution: 'RES_720P' } as MotionControlJobData,
-      ['provider', 'safety'],
-      { durationSeconds: 7 },
-    ],
-    [
       'LTX Spicy com foto (falha técnica)',
       GenerationJobName.WAVESPEED_IMAGE_TO_VIDEO,
       { ...base, prompt: 'p', resolution: 'RES_480P', durationSeconds: 5, imageUrl: 'https://cdn/x.jpg' } as WavespeedImageToVideoJobData,
@@ -478,6 +455,46 @@ describe('evaluateFallback — guarda de mídia do usuário', () => {
       {},
     ],
   ];
+
+  // Referência (várias fotos, vídeo, áudio) e Motion Control: o H3 por referência só existe na WaveSpeed, que não
+  // recebe mídia da cliente em modelo sem filtro (TKT-265/310). Sem plano em qualquer env, e sem "barrado" (nada a barrar).
+  const referenceOnly: Array<[string, GenerationJobName, GenerationJobData, Partial<FallbackContext>]> = [
+    [
+      'Veo referência com imagens',
+      GenerationJobName.REFERENCE_TO_VIDEO_KIE,
+      { ...base, prompt: 'p', model: 'veo3_fast', resolution: 'RES_720P', generateAudio: true, imageUrls: ['https://cdn/a.jpg', 'https://cdn/b.jpg'] } as ReferenceToVideoKieJobData,
+      {},
+    ],
+    [
+      'Omni com vídeo de referência',
+      GenerationJobName.OMNI_VIDEO,
+      { ...base, prompt: 'p', resolution: 'RES_720P', durationSeconds: 5, videoList: [{ url: 'https://cdn/clip.mp4', start: 0, ends: 5 }], hasVideoInput: true } as OmniVideoJobData,
+      {},
+    ],
+    [
+      'Seedance só com áudio de referência',
+      GenerationJobName.SEEDANCE_VIDEO,
+      { ...base, prompt: 'p', resolution: 'RES_720P', durationSeconds: 5, referenceAudioUrls: ['https://cdn/voz.mp3'], generateAudio: true, hasVideoInput: false } as SeedanceVideoJobData,
+      {},
+    ],
+    [
+      'Motion Control (vídeo + foto)',
+      GenerationJobName.MOTION_CONTROL,
+      { ...base, videoUrl: 'https://cdn/ref.mp4', imageUrl: 'https://cdn/ref.jpg', resolution: 'RES_720P' } as MotionControlJobData,
+      { durationSeconds: 7 },
+    ],
+  ];
+
+  describe.each(referenceOnly)('%s', (_label, jobName, data, extra) => {
+    it.each<[FallbackKind, boolean | undefined]>([
+      ['provider', undefined],
+      ['safety', undefined],
+      ['provider', true],
+      ['safety', true],
+    ])('motivo %s, env %s: sem alternativa', (kind, allow) => {
+      expect(evaluateFallback(jobName, data, guardCtx({ kind, allowUncensoredWithMedia: allow, ...extra }))).toEqual({ plan: null });
+    });
+  });
 
   describe.each(withMediaToUncensored)('%s', (_label, jobName, data, kinds, extra) => {
     it.each(kinds)('motivo %s: barrado por padrão, sem plano', (kind) => {

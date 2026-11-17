@@ -510,6 +510,47 @@ describe('WavespeedVideoProvider · MiniMax H3 na kie (primário e desvio)', () 
     });
   });
 
+  describe("trava 'kie' (desvio explícito ou com foto da cliente, TKT-265/310)", () => {
+    it('envs vazias (primário WaveSpeed): roda só na kie', async () => {
+      mockProviders({});
+      const result = await run(
+        buildProvider(BOTH_KEYS).generateMinimaxH3ImageToVideo({
+          ...I2V_INPUT,
+          providerLock: 'kie',
+        }),
+      );
+      expect(wavespeedCalls()).toHaveLength(0);
+      expect(bodyOf(KIE_CREATE)).toBeDefined();
+      expect(result.modelUsed).toBe('wavespeed-ai/minimax-h3/image-to-video');
+    });
+
+    it('falha na kie com o desvio da env ligado: NÃO vai à WaveSpeed', async () => {
+      mockProviders({ kie: 'start-402' });
+      await expect(
+        run(
+          buildProvider({
+            ...BOTH_KEYS,
+            MINIMAX_H3_KIE_FALLBACK: 'tecnico+recusa',
+          }).generateMinimaxH3TextToVideo({ ...T2V_INPUT, providerLock: 'kie' }),
+        ),
+      ).rejects.toThrow();
+      expect(wavespeedCalls()).toHaveLength(0);
+    });
+
+    it('sem a chave da kie: falha sem chamar a WaveSpeed', async () => {
+      mockProviders({});
+      await expect(
+        run(
+          buildProvider(WS_ENV).generateMinimaxH3ImageToVideo({
+            ...I2V_INPUT,
+            providerLock: 'kie',
+          }),
+        ),
+      ).rejects.toBeInstanceOf(ProviderFailureError);
+      expect(calls).toHaveLength(0);
+    });
+  });
+
   describe('moderação da kie no createTask (430 no corpo)', () => {
     const env = {
       ...BOTH_KEYS,

@@ -11,7 +11,6 @@ import {
   MinimaxH3ImageToVideoJobData,
   MinimaxH3ReferenceToVideoJobData,
   MinimaxH3TextToVideoJobData,
-  MotionControlJobData,
   OmniVideoJobData,
   ReferenceToVideoKieJobData,
   SeedanceVideoJobData,
@@ -198,10 +197,6 @@ const SEEDANCE_VARIANT = 'SEEDANCE_2';
 const SEEDANCE_KIE_ID = 'bytedance/seedance-2' as const;
 const SEEDANCE_ASPECTS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1', '21:9']);
 
-/** Prompt sintético para o Motion Control cair no MiniMax (o job não tem prompt). */
-export const MOTION_CONTROL_FALLBACK_PROMPT =
-  'Use the reference video for the body motion and camera movement, and the reference image for the character identity, outfit and body. Keep the same framing and pacing. Photorealistic, natural lighting.';
-
 const GEMINI_BY_NANO_BANANA: Record<string, string> = {
   'nano-banana-2': 'gemini-3.1-flash-image-preview',
   'nano-banana-pro': 'gemini-3-pro-image-preview',
@@ -258,6 +253,8 @@ function minimaxText(
     durationSeconds: duration,
     aspectRatio: pickAspect(aspectRatio, MINIMAX_ASPECTS),
     generateAudio: true,
+    // desvio por bloqueio de conteúdo é explícito por definição: só na kie (a WaveSpeed proíbe, TKT-265)
+    ...(kind === 'safety' ? { providerLock: 'kie' as const } : {}),
   };
   return {
     jobName: GenerationJobName.MINIMAX_H3_TEXT_TO_VIDEO,
@@ -294,6 +291,8 @@ function minimaxImage(
     imageUrl,
     lastImageUrl,
     generateAudio: true,
+    // leva a foto da cliente ao modelo sem filtro: só na kie, qualquer que seja o motivo (TKT-265/310)
+    providerLock: 'kie',
   };
   return {
     jobName: GenerationJobName.MINIMAX_H3_IMAGE_TO_VIDEO,
@@ -302,44 +301,6 @@ function minimaxImage(
     modelVariant: MINIMAX_VARIANT,
     billing: {
       type: GenerationType.IMAGE_TO_VIDEO,
-      resolution: res,
-      durationSeconds: duration,
-      hasAudio: true,
-      hasVideoInput: false,
-    },
-    kind,
-  };
-}
-
-function minimaxReference(
-  data: GenerationJobData,
-  prompt: string,
-  refs: { images?: string[]; videos?: string[]; audios?: string[] },
-  resolution: string,
-  durationSeconds: number | null | undefined,
-  aspectRatio: string | null | undefined,
-  kind: FallbackKind,
-): FallbackPlan {
-  const res = minimaxResolution(resolution);
-  const duration = clamp(durationSeconds, 5, 15, 5);
-  const job: MinimaxH3ReferenceToVideoJobData = {
-    ...base(data),
-    prompt,
-    resolution: res,
-    durationSeconds: duration,
-    aspectRatio: pickAspect(aspectRatio, MINIMAX_ASPECTS),
-    referenceImageUrls: refs.images?.length ? refs.images : undefined,
-    referenceVideoUrls: refs.videos?.length ? refs.videos : undefined,
-    referenceAudioUrls: refs.audios?.length ? refs.audios : undefined,
-    generateAudio: true,
-  };
-  return {
-    jobName: GenerationJobName.MINIMAX_H3_REFERENCE_TO_VIDEO,
-    data: job,
-    model: MINIMAX_MODEL,
-    modelVariant: MINIMAX_VARIANT,
-    billing: {
-      type: GenerationType.REFERENCE_VIDEO,
       resolution: res,
       durationSeconds: duration,
       hasAudio: true,
@@ -364,28 +325,15 @@ function minimaxAuto(
   durationSeconds: number | null | undefined,
   aspectRatio: string | null | undefined,
   kind: FallbackKind,
-): FallbackPlan {
+): FallbackPlan | null {
   const hasRefs =
     (inputs.videos?.length ?? 0) > 0 ||
     (inputs.audios?.length ?? 0) > 0 ||
     (inputs.images?.length ?? 0) > 1;
-  if (hasRefs) {
-    return minimaxReference(
-      data,
-      prompt,
-      {
-        images:
-          inputs.images ??
-          (inputs.firstImageUrl ? [inputs.firstImageUrl] : undefined),
-        videos: inputs.videos,
-        audios: inputs.audios,
-      },
-      resolution,
-      durationSeconds,
-      aspectRatio,
-      kind,
-    );
-  }
+  // Referências (várias fotos, vídeo, áudio) só existem no H3 da WaveSpeed: a kie não tem o modo. Sempre levam mídia
+  // da cliente, e mídia da cliente em modelo sem filtro só vai à kie (TKT-265/310): não há alternativa honesta. Antes
+  // do TKT-310 a guarda de mídia (GENERATION_FALLBACK_UNCENSORED_WITH_MEDIA=false) já barrava quase todos.
+  if (hasRefs) return null;
   const single = inputs.firstImageUrl ?? inputs.images?.[0];
   if (single) {
     return minimaxImage(
@@ -712,25 +660,11 @@ function planAlternative(
       );
     }
 
-    case GenerationJobName.MOTION_CONTROL: {
-      const d = data as MotionControlJobData;
-      // Wan 2.2 Animate (troca de pessoa): o MiniMax por referência não troca a pessoa do vídeo, então não há
-      // alternativa honesta; a falha estorna os créditos como qualquer outra
-      if (d.engine === 'wan-replace' || d.engine === 'wan-animate' || d.engine === 'wan3-reference') return null;
-      // MiniMax aceita até 15 s; vídeo de referência mais longo não tem alternativa.
-      if (!ctx.durationSeconds || ctx.durationSeconds > 15) return null;
-      return minimaxReference(
-        d,
-        MOTION_CONTROL_FALLBACK_PROMPT,
-        { images: [d.imageUrl], videos: [d.videoUrl] },
-        d.resolution,
-        ctx.durationSeconds,
-        // Sem proporção o MiniMax devolve 16:9; Motion Control é dança/Reels
-        // (testado em produção 14/10: vídeo vertical virava horizontal).
-        pickAspect(ctx.aspectRatio, MINIMAX_ASPECTS) ?? '9:16',
-        kind,
-      );
-    }
+    // Motion Control não tem alternativa honesta. Wan (troca de pessoa): o MiniMax por referência não troca a pessoa
+    // do vídeo. O resto cairia no H3 por referência, que só existe na WaveSpeed; com a foto e o vídeo da cliente indo a
+    // modelo sem filtro, só a kie serve (TKT-265/310) e ela não tem o modo. A falha estorna os créditos.
+    case GenerationJobName.MOTION_CONTROL:
+      return null;
 
     case GenerationJobName.IMAGE_TO_VIDEO_GROK: {
       const d = data as ImageToVideoGrokJobData;
