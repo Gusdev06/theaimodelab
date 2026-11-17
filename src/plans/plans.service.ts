@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { GenerationType, Resolution } from '@prisma/client';
 import { PlanResponseDto } from './dto/plan-response.dto';
+import { PREPAID_PLAN_SLUG_SUFFIX } from './prepaid-plan';
 import { WAN_ANIMATE_MODEL_VARIANT, wanAnimateCredits, wanAnimateOnKie, WAN3_REFERENCE_MODEL_VARIANT, wan3ReferenceCredits } from '../generations/motion-control-engine';
 
 /**
@@ -68,6 +69,24 @@ export class PlansService {
       orderBy: { sortOrder: 'asc' },
     });
     return plans.map((p) => this.overridePriceId(p, PLAN_PRICE_ENV));
+  }
+
+  /**
+   * Assinante RECORRENTE ativo na Perfect Pay (plano que não é pré-pago). Para ele a
+   * vitrine devolve o link de assinatura: o pré-pago criaria uma assinatura nova
+   * enquanto a recorrência na Perfect Pay segue cobrando (cobrança em dobro).
+   */
+  async hasRecurringPerfectpaySubscription(userId: string): Promise<boolean> {
+    const sub = await this.prisma.subscription.findFirst({
+      where: {
+        userId,
+        status: 'ACTIVE',
+        paymentProvider: 'perfectpay',
+        NOT: { plan: { slug: { endsWith: PREPAID_PLAN_SLUG_SUFFIX } } },
+      },
+      select: { id: true },
+    });
+    return sub !== null;
   }
 
   /**

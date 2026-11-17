@@ -21,6 +21,7 @@ import { SubscriptionResponseDto } from './dto/subscription-response.dto';
 import { t } from '../common/i18n/t';
 import { MetaConversionsService, MetaRequestContext } from '../meta/meta-conversions.service';
 import { MetaEventContextDto } from '../meta/meta-event-context.dto';
+import { isPrepaidPlanSlug } from '../plans/prepaid-plan';
 
 /**
  * Ordem de upgrade/downgrade = `plans.sort_order` (o admin edita em /admin/planos).
@@ -504,6 +505,15 @@ export class SubscriptionsService {
       throw new NotFoundException(
         'Nenhuma assinatura ativa com cancelamento pendente encontrada',
       );
+    }
+
+    // Pré-pago não tem recorrência para religar: tirar o flag só devolvia a carência de 3
+    // dias do cron de vencimento.
+    if (isPrepaidPlanSlug(current.plan?.slug)) {
+      throw new BadRequestException({
+        code: 'PREPAID_NO_RENEWAL',
+        message: t('errors.subscriptions.PREPAID_NO_RENEWAL'),
+      });
     }
 
     const isStripe = current.paymentProvider === 'stripe';

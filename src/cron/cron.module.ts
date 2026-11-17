@@ -12,15 +12,17 @@ import { FirstGenerationEmailsService } from './first-generation-emails.service'
 import { AnnualCreditsRefillService } from './annual-credits-refill.service';
 import { CronLoggerService } from './cron-logger.service';
 import { ReferralRewardsService } from './referral-rewards.service';
+import { PrepaidExpiryNoticesService } from './prepaid-expiry-notices.service';
 import { UploadsModule } from '../uploads/uploads.module';
 import { EmailModule } from '../email/email.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { SettingsModule } from '../settings/settings.module';
 import { ReferralsModule } from '../referrals/referrals.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [ScheduleModule.forRoot(), UploadsModule, EmailModule, PaymentsModule, PrismaModule, SettingsModule, ReferralsModule],
+  imports: [ScheduleModule.forRoot(), UploadsModule, EmailModule, PaymentsModule, PrismaModule, SettingsModule, ReferralsModule, NotificationsModule],
   providers: [
     CronLoggerService,
     SubscriptionRenewalService,
@@ -34,6 +36,7 @@ import { ReferralsModule } from '../referrals/referrals.module';
     FirstGenerationEmailsService,
     AnnualCreditsRefillService,
     ReferralRewardsService,
+    PrepaidExpiryNoticesService,
   ],
   exports: [CronLoggerService],
 })

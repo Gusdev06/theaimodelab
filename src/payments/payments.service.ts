@@ -19,6 +19,7 @@ import {
   ANNUAL_FIRST_MONTH_BONUS_KIND,
   computeAnnualFirstMonthBonusCredits,
 } from './annual-bonus';
+import { isPrepaidPlanSlug } from '../plans/prepaid-plan';
 
 const ULTRA_BASIC_WELCOME_FREE_GENERATIONS = 2;
 
@@ -319,6 +320,10 @@ export class PaymentsService {
     // creditBalance fica em 1 mês e o cron AnnualCreditsRefillService recarrega a
     // cada virada até o fim da assinatura.
     const periodMonths = plan.billingInterval === 'year' ? 12 : 1;
+    // Pré-pago (slug *-30d) não renova sozinho: já nasce "cancelado no fim do período".
+    // O cron de vencimento corta na hora do fim (sem a carência de 3 dias) e o site mostra
+    // "acesso até {data}". Vale também na recompra, que antes voltava o flag para false.
+    const cancelAtPeriodEnd = isPrepaidPlanSlug(plan.slug);
 
     let created = false;
     let skipped = false;
@@ -371,7 +376,7 @@ export class PaymentsService {
             status: 'ACTIVE',
             currentPeriodStart: now,
             currentPeriodEnd: periodEnd,
-            cancelAtPeriodEnd: false,
+            cancelAtPeriodEnd,
             paymentRetryCount: 0,
             // Preenche o código PPSUB se ainda não estava salvo (ex.: sub legada/admin).
             externalSubscriptionId:
@@ -382,6 +387,19 @@ export class PaymentsService {
         // Primeira compra ou TROCA DE PLANO (upgrade/downgrade): cancela ativas e
         // cria nova. A recorrência antiga na PerfectPay é auto-cancelada por lá
         // ("new_subscription_purchased"), cujo postback é ignorado no webhook.
+        if (cancelAtPeriodEnd && activeSub && provider === 'perfectpay') {
+          // Pré-pago é compra avulsa: não há garantia de que a Perfect Pay cancele a
+          // recorrência antiga. Marca no log para o suporte cancelar lá (cobrança em dobro).
+          const replaced = await tx.plan.findUnique({
+            where: { id: activeSub.planId },
+            select: { slug: true },
+          });
+          if (!isPrepaidPlanSlug(replaced?.slug)) {
+            this.logger.warn(
+              `[PREPAGO_SOBRE_RECORRENTE] user ${userId}: pré-pago ${plan.slug} (venda ${saleCode}) substituiu a assinatura recorrente ${activeSub.externalSubscriptionId ?? activeSub.id} (${replaced?.slug ?? activeSub.planId}); conferir/cancelar a recorrência na Perfect Pay`,
+            );
+          }
+        }
         await tx.subscription.updateMany({
           where: { userId, status: { in: ['ACTIVE', 'TRIALING', 'PAST_DUE'] } },
           data: { status: 'CANCELED', cancelAtPeriodEnd: false },
@@ -395,6 +413,7 @@ export class PaymentsService {
             status: 'ACTIVE',
             currentPeriodStart: now,
             currentPeriodEnd: periodEnd,
+            cancelAtPeriodEnd,
             paymentProvider: provider,
             // Guarda o código ESTÁVEL da assinatura (PPSUB…) quando houver; senão o
             // código da venda como fallback.

@@ -27,7 +27,8 @@
     "CANNOT_PAUSE_FREE": "Cannot pause the Free plan",
     "NO_SCHEDULED_DOWNGRADE": "No scheduled downgrade found",
     "NO_CANCEL_PENDING": "No active subscription with pending cancellation",
-    "PLAN_NOT_FOUND": "Plan not found"
+    "PLAN_NOT_FOUND": "Plan not found",
+    "PREPAID_NO_RENEWAL": "This is a 30-day prepaid access with no automatic renewal. To keep going, buy another 30 days."
   },
   "generations": {
     "MAX_CONCURRENT_REACHED": "Concurrent generations limit reached",
