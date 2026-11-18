@@ -31,11 +31,11 @@ describe('Avisos do pré-pago · funções puras', () => {
 
   it('texto na língua da cliente, com o caminho de renovação', () => {
     expect(prepaidNoticeText('pt', 'Pro', 3)).toBe(
-      'Seu plano Pro (acesso de 30 dias) vence em 3 dias. Renove em theaimodelab.com/pricing e continue criando sem pausa.',
+      'Seu plano Pro (acesso pré-pago) vence em 3 dias. Renove em theaimodelab.com/pricing e continue criando sem pausa.',
     );
     expect(prepaidNoticeText('pt', 'Pro', 1)).toContain('vence em 1 dia.');
-    expect(prepaidNoticeText('es', 'Advanced', 2)).toContain('Tu plan Advanced (acceso de 30 días) vence en 2 días.');
-    expect(prepaidNoticeText('en', 'Studio', 1)).toContain('Your Studio plan (30-day access) expires in 1 day.');
+    expect(prepaidNoticeText('es', 'Advanced', 2)).toContain('Tu plan Advanced (acceso prepago) vence en 2 días.');
+    expect(prepaidNoticeText('en', 'Studio', 1)).toContain('Your Studio plan (prepaid access) expires in 1 day.');
     expect(prepaidNoticeText('pt', 'Pro', null)).toContain('venceu. Renove em theaimodelab.com/pricing');
     expect(prepaidNoticeText('es', 'Pro', null)).toContain('venció. Renueva en theaimodelab.com/pricing');
     expect(prepaidNoticeText('en', 'Pro', null)).toContain('has expired. Renew at theaimodelab.com/pricing');
@@ -105,7 +105,7 @@ describe('PrepaidExpiryNoticesService', () => {
     const { service, findMany } = make({});
     await service.run(now);
     const [[expiringArgs], [endedArgs]] = findMany.mock.calls as any[][];
-    expect(expiringArgs.where).toMatchObject({ status: 'ACTIVE', plan: { slug: { endsWith: '-30d' } } });
+    expect(expiringArgs.where).toMatchObject({ status: 'ACTIVE', plan: { OR: [{ slug: { endsWith: '-30d' } }, { slug: { endsWith: '-90d' } }] } });
     expect(expiringArgs.where.currentPeriodEnd.gt).toEqual(now);
     expect(expiringArgs.where.currentPeriodEnd.lte).toEqual(new Date(now.getTime() + 72 * HOUR));
     expect(endedArgs.where.status).toEqual({ in: ['ACTIVE', 'CANCELED'] });
@@ -121,7 +121,7 @@ describe('PrepaidExpiryNoticesService', () => {
     const end = new Date(now.getTime() + 60 * HOUR);
     expect(notifications.create).toHaveBeenCalledWith('user-1', PREPAID_EXPIRING_TYPE, {
       key: `sub-1:${end.toISOString()}:D-3`,
-      reason: 'Tu plan Pro (acceso de 30 días) vence en 3 días. Renueva en theaimodelab.com/pricing y sigue creando sin pausa.',
+      reason: 'Tu plan Pro (acceso prepago) vence en 3 días. Renueva en theaimodelab.com/pricing y sigue creando sin pausa.',
       milestone: 'D-3',
       subscriptionId: 'sub-1',
       planSlug: 'pro-30d',
@@ -179,7 +179,7 @@ describe('PrepaidExpiryNoticesService', () => {
     expect(userId).toBe('user-1');
     expect(type).toBe(PREPAID_EXPIRED_TYPE);
     expect(data.key).toBe(`sub-1:${end.toISOString()}:D0`);
-    expect(data.reason).toBe('Your Pro plan (30-day access) has expired. Renew at theaimodelab.com/pricing: your models are waiting for you.');
+    expect(data.reason).toBe('Your Pro plan (prepaid access) has expired. Renew at theaimodelab.com/pricing: your models are waiting for you.');
   });
 
   it('D0 não vai para estorno nem para quem já tem outra assinatura ativa', async () => {

@@ -3,7 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { SubscriptionStatus } from '@prisma/client';
 import { CronLoggerService } from './cron-logger.service';
-import { PREPAID_PLAN_SLUG_SUFFIX } from '../plans/prepaid-plan';
+import { prepaidPlanWhere } from '../plans/prepaid-plan';
 
 const SCHEDULE = '0 * * * *';
 
@@ -52,7 +52,7 @@ export class PerfectpaySubscriptionExpiryService {
                 // para o liberado pela garantia do cockpit (admin); nenhuma outra assinatura admin.
                 {
                   paymentProvider: { in: [...externalProviders.in, 'admin'] },
-                  plan: { slug: { endsWith: PREPAID_PLAN_SLUG_SUFFIX } },
+                  plan: prepaidPlanWhere(),
                   currentPeriodEnd: { lte: now },
                 },
               ],

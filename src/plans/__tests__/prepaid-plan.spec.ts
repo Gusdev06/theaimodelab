@@ -190,11 +190,24 @@ describe('GET /plans · assinante recorrente não vê link de pré-pago (cobran�
         userId: 'u-1',
         status: 'ACTIVE',
         paymentProvider: 'perfectpay',
-        NOT: { plan: { slug: { endsWith: '-30d' } } },
+        NOT: { plan: { OR: [{ slug: { endsWith: '-30d' } }, { slug: { endsWith: '-90d' } }] } },
       },
       select: { id: true },
     });
     findFirst.mockResolvedValueOnce(null as any);
     await expect(service.hasRecurringPerfectpaySubscription('u-1')).resolves.toBe(false);
+  });
+});
+
+describe('pré-pago de 90 dias (17/11)', () => {
+  it('reconhece -90d como pré-pago e dá 3 meses; -30d e mensal dão 1', () => {
+    const { isPrepaidPlanSlug, prepaidPeriodMonths, prepaidPlanWhere } = jest.requireActual('../prepaid-plan');
+    expect(isPrepaidPlanSlug('pro-90d')).toBe(true);
+    expect(isPrepaidPlanSlug('pro-30d')).toBe(true);
+    expect(isPrepaidPlanSlug('pro')).toBe(false);
+    expect(prepaidPeriodMonths('studio-90d')).toBe(3);
+    expect(prepaidPeriodMonths('studio-30d')).toBe(1);
+    expect(prepaidPeriodMonths('studio')).toBe(1);
+    expect(prepaidPlanWhere()).toEqual({ OR: [{ slug: { endsWith: '-30d' } }, { slug: { endsWith: '-90d' } }] });
   });
 });

@@ -19,7 +19,7 @@ import {
   ANNUAL_FIRST_MONTH_BONUS_KIND,
   computeAnnualFirstMonthBonusCredits,
 } from './annual-bonus';
-import { isPrepaidPlanSlug } from '../plans/prepaid-plan';
+import { isPrepaidPlanSlug, prepaidPeriodMonths } from '../plans/prepaid-plan';
 
 const ULTRA_BASIC_WELCOME_FREE_GENERATIONS = 2;
 
@@ -319,7 +319,9 @@ export class PaymentsService {
     // Anual: a cobrança cobre 12 meses, mas os créditos são mensais — o ciclo do
     // creditBalance fica em 1 mês e o cron AnnualCreditsRefillService recarrega a
     // cada virada até o fim da assinatura.
-    const periodMonths = plan.billingInterval === 'year' ? 12 : 1;
+    // Pré-pago de 90 dias (*-90d): 3 meses de acesso e os créditos dos 3 meses de uma vez (o plano oculto já
+    // guarda 3× o mensal em creditsPerMonth; não há recarga mensal para ele).
+    const periodMonths = plan.billingInterval === 'year' ? 12 : prepaidPeriodMonths(plan.slug);
     // Pré-pago (slug *-30d) não renova sozinho: já nasce "cancelado no fim do período".
     // O cron de vencimento corta na hora do fim (sem a carência de 3 dias) e o site mostra
     // "acesso até {data}". Vale também na recompra, que antes voltava o flag para false.
@@ -426,7 +428,7 @@ export class PaymentsService {
       // Reset dos créditos do plano (não acumulam). bonusCreditsRemaining é preservado no update.
       // No anual o ciclo de crédito é de 1 mês (não o período de 12 da assinatura).
       const creditPeriodEnd =
-        periodMonths === 1 ? subscription.currentPeriodEnd : (() => { const d = new Date(now); d.setMonth(d.getMonth() + 1); return d; })();
+        periodMonths === 1 || isPrepaidPlanSlug(plan.slug) ? subscription.currentPeriodEnd : (() => { const d = new Date(now); d.setMonth(d.getMonth() + 1); return d; })();
       await tx.creditBalance.upsert({
         where: { userId },
         create: {

@@ -6,7 +6,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { CronLoggerService } from './cron-logger.service';
 import { MailLocale, mailLocaleFor, sitePathFor } from '../email/brand-email';
 import {
-  PREPAID_PLAN_SLUG_SUFFIX,
+  prepaidPlanWhere,
   endedByExpiry,
   isPrepaidNoticesEnabled,
 } from '../plans/prepaid-plan';
@@ -39,7 +39,7 @@ export function expiringMilestone(currentPeriodEnd: Date, now: Date): PrepaidMil
 
 /** Nome do plano sem o "30 dias" que o nome do pré-pago pode trazer (o texto já diz). */
 export function prepaidPlanDisplayName(name: string): string {
-  const cleaned = name.replace(/\s*[(\-–·]?\s*30\s*(d|dias|días|days)\s*\)?\s*$/i, '').trim();
+  const cleaned = name.replace(/\s*[(\-–·]?\s*(30|90)\s*(d|dias|días|days)\b.*$/i, '').trim();
   return cleaned || name;
 }
 
@@ -52,23 +52,23 @@ export function prepaidNoticeText(
   const plan = prepaidPlanDisplayName(planName);
   if (locale === 'pt') {
     if (daysLeft === null) {
-      return `Seu plano ${plan} (acesso de 30 dias) venceu. Renove em theaimodelab.com/pricing: suas modelos estão esperando por você.`;
+      return `Seu plano ${plan} (acesso pré-pago) venceu. Renove em theaimodelab.com/pricing: suas modelos estão esperando por você.`;
     }
     const when = daysLeft === 1 ? '1 dia' : `${daysLeft} dias`;
-    return `Seu plano ${plan} (acesso de 30 dias) vence em ${when}. Renove em theaimodelab.com/pricing e continue criando sem pausa.`;
+    return `Seu plano ${plan} (acesso pré-pago) vence em ${when}. Renove em theaimodelab.com/pricing e continue criando sem pausa.`;
   }
   if (locale === 'es') {
     if (daysLeft === null) {
-      return `Tu plan ${plan} (acceso de 30 días) venció. Renueva en theaimodelab.com/pricing: tus modelos te están esperando.`;
+      return `Tu plan ${plan} (acceso prepago) venció. Renueva en theaimodelab.com/pricing: tus modelos te están esperando.`;
     }
     const when = daysLeft === 1 ? '1 día' : `${daysLeft} días`;
-    return `Tu plan ${plan} (acceso de 30 días) vence en ${when}. Renueva en theaimodelab.com/pricing y sigue creando sin pausa.`;
+    return `Tu plan ${plan} (acceso prepago) vence en ${when}. Renueva en theaimodelab.com/pricing y sigue creando sin pausa.`;
   }
   if (daysLeft === null) {
-    return `Your ${plan} plan (30-day access) has expired. Renew at theaimodelab.com/pricing: your models are waiting for you.`;
+    return `Your ${plan} plan (prepaid access) has expired. Renew at theaimodelab.com/pricing: your models are waiting for you.`;
   }
   const when = daysLeft === 1 ? '1 day' : `${daysLeft} days`;
-  return `Your ${plan} plan (30-day access) expires in ${when}. Renew at theaimodelab.com/pricing and keep creating without a pause.`;
+  return `Your ${plan} plan (prepaid access) expires in ${when}. Renew at theaimodelab.com/pricing and keep creating without a pause.`;
 }
 
 export function prepaidNoticeKey(subscriptionId: string, currentPeriodEnd: Date, milestone: PrepaidMilestone): string {
@@ -127,7 +127,7 @@ export class PrepaidExpiryNoticesService {
       plan: { select: { slug: true, name: true } },
       user: { select: { locale: true, country: true } },
     } as const;
-    const prepaidPlan = { slug: { endsWith: PREPAID_PLAN_SLUG_SUFFIX } };
+    const prepaidPlan = prepaidPlanWhere();
 
     const [expiring, ended] = await Promise.all([
       this.prisma.subscription.findMany({

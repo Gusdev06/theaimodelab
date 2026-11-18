@@ -4,9 +4,22 @@
  * creator-30d). Vence no fim do período e só continua com uma nova compra.
  */
 export const PREPAID_PLAN_SLUG_SUFFIX = '-30d';
+/** Pré-pago de 90 dias (17/11, molde YouTube Premium Índia/Spotify: 1 e 3 meses pré-pagos): 3 meses, créditos de uma vez. */
+export const PREPAID_90D_SLUG_SUFFIX = '-90d';
+export const PREPAID_PLAN_SLUG_SUFFIXES: readonly string[] = [PREPAID_PLAN_SLUG_SUFFIX, PREPAID_90D_SLUG_SUFFIX];
 
 export function isPrepaidPlanSlug(slug: string | null | undefined): boolean {
-  return typeof slug === 'string' && slug.endsWith(PREPAID_PLAN_SLUG_SUFFIX);
+  return typeof slug === 'string' && PREPAID_PLAN_SLUG_SUFFIXES.some((suffix) => slug.endsWith(suffix));
+}
+
+/** Meses de acesso de um plano pré-pago (90 dias = 3 meses de calendário; o resto = 1). */
+export function prepaidPeriodMonths(slug: string | null | undefined): number {
+  return typeof slug === 'string' && slug.endsWith(PREPAID_90D_SLUG_SUFFIX) ? 3 : 1;
+}
+
+/** Filtro Prisma do plano pré-pago (qualquer duração), para `plan: prepaidPlanWhere()`. */
+export function prepaidPlanWhere(): { OR: { slug: { endsWith: string } }[] } {
+  return { OR: PREPAID_PLAN_SLUG_SUFFIXES.map((suffix) => ({ slug: { endsWith: suffix } })) };
 }
 
 /**
