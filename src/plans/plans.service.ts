@@ -77,11 +77,23 @@ export class PlansService {
    * enquanto a recorrência na Perfect Pay segue cobrando (cobrança em dobro).
    */
   async hasRecurringPerfectpaySubscription(userId: string): Promise<boolean> {
+    return this.hasRecurringSubscription(userId, 'perfectpay');
+  }
+
+  /**
+   * Assinante RECORRENTE ativo na Cakto (BRL). Desde 18/11 a vitrine BRL também é pré-pago
+   * (30 dias, pagamento único): para quem já assina na Cakto ela devolve o link da assinatura.
+   */
+  async hasRecurringCaktoSubscription(userId: string): Promise<boolean> {
+    return this.hasRecurringSubscription(userId, 'cakto');
+  }
+
+  private async hasRecurringSubscription(userId: string, paymentProvider: 'perfectpay' | 'cakto'): Promise<boolean> {
     const sub = await this.prisma.subscription.findFirst({
       where: {
         userId,
         status: 'ACTIVE',
-        paymentProvider: 'perfectpay',
+        paymentProvider,
         NOT: { plan: prepaidPlanWhere() },
       },
       select: { id: true },

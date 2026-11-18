@@ -114,16 +114,20 @@ describe('GET /plans · assinante recorrente não vê link de pré-pago (cobran�
     checkoutUrl,
   });
 
-  function make(opts: { recurring: boolean; links?: Map<string, string> }) {
+  function make(opts: { recurring: boolean; recurringCakto?: boolean; links?: Map<string, string> }) {
     const plansService = {
       findAllPlans: jest.fn(async () => [
         plan('p-pro', 'pro', `${PAY}PPU38CQHN67?src=site`),
         plan('p-adv', 'advanced', `${PAY}PPU38CQHQPQ`),
         plan('p-agency', 'agency', `${PAY}PPU38CQG710`),
       ]),
-      findBrlPublicPlans: jest.fn(async () => []),
+      findBrlPublicPlans: jest.fn(async () => [
+        { ...plan('p-pro', 'pro', 'https://pay.cakto.com.br/332rdfs'), currency: 'BRL' },
+        { ...plan('p-ub', 'ultra-basic', 'https://pay.cakto.com.br/s3wovpk?utm_source=site'), currency: 'BRL' },
+      ]),
       resolvePlanPrice: jest.fn(async () => ({ priceCents: 3990, currency: 'USD', stripePriceId: 'x' })),
       hasRecurringPerfectpaySubscription: jest.fn(async () => opts.recurring),
+      hasRecurringCaktoSubscription: jest.fn(async () => Boolean(opts.recurringCakto)),
     };
     const checkoutCodes = { storefrontLinks: jest.fn(async () => opts.links ?? new Map()) };
     return { controller: new PlansController(plansService as any, checkoutCodes as any), plansService };
@@ -179,6 +183,27 @@ describe('GET /plans · assinante recorrente não vê link de pré-pago (cobran�
     const result = await controller.findAll(undefined, { headers: {}, user: { sub: 'u-1' } });
     expect(result[0].checkoutUrl).toBe('https://funv/pro');
     expect(result[1].checkoutUrl).toBe(`${PAY}PPU38CQDTOH`);
+  });
+
+  it('BRL (18/11): visitante e quem não assina na Cakto veem o pré-pago de 30 dias', async () => {
+    const { controller, plansService } = make({ recurring: true, recurringCakto: false });
+    expect((await controller.findAll('BRL', { headers: {} })).map((p) => p.checkoutUrl)).toEqual([
+      'https://pay.cakto.com.br/332rdfs',
+      'https://pay.cakto.com.br/s3wovpk?utm_source=site',
+    ]);
+    expect(plansService.hasRecurringCaktoSubscription).not.toHaveBeenCalled();
+    const logged = await controller.findAll('BRL', { headers: {}, user: { sub: 'u-1' } });
+    expect(plansService.hasRecurringCaktoSubscription).toHaveBeenCalledWith('u-1');
+    expect(logged[0].checkoutUrl).toBe('https://pay.cakto.com.br/332rdfs');
+  });
+
+  it('BRL (18/11): assinante recorrente da Cakto vê a oferta da assinatura (query preservada)', async () => {
+    const { controller } = make({ recurring: false, recurringCakto: true });
+    const result = await controller.findAll('BRL', { headers: {}, user: { sub: 'u-1' } });
+    expect(result.map((p) => p.checkoutUrl)).toEqual([
+      'https://pay.cakto.com.br/ntpi7x3',
+      'https://pay.cakto.com.br/55ixivm?utm_source=site',
+    ]);
   });
 
   it('PlansService: recorrente = ACTIVE perfectpay com plano que não é -30d', async () => {
