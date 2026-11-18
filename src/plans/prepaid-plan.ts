@@ -24,13 +24,21 @@ export function prepaidPlanWhere(): { OR: { slug: { endsWith: string } }[] } {
 
 /**
  * Código do link de checkout do pré-pago → código do link da ASSINATURA recorrente do
- * mesmo plano (o link que a vitrine tinha antes de 17/11).
+ * mesmo plano (o link que a vitrine tinha antes de 17/11 no USD e de 18/11 no BRL/Cakto).
  */
 export const PREPAID_TO_SUBSCRIPTION_CHECKOUT_CODE: Readonly<Record<string, string>> = {
   PPU38CQHN67: 'PPU38CQDTOD', // pro
   PPU38CQHQPQ: 'PPU38CQDTOH', // advanced
   PPU38CQHQPR: 'PPU38CQDTOA', // studio
   PPU38CQHQPS: 'PPU38CQDTOF', // creator
+  // Cakto (BRL, 18/11): oferta de 30 dias pagamento único no produto "Créditos" → oferta da assinatura mensal
+  s3wovpk: '55ixivm', // ultra-basic
+  '33ssvb7': '3598zqf', // starter
+  pr32sp4: 'rfq84g9', // basic
+  '3em2ax4': 'virbxeg', // creator
+  '332rdfs': 'ntpi7x3', // pro
+  nwdvjhf: 'rzwi9e7', // advanced
+  onyuw2e: '37so5iq', // studio
 };
 
 /**

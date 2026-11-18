@@ -51,9 +51,18 @@ export class PlansController {
     // Sem link próprio, ou na marca de origem, vale o link do plano.
     const brandLinks = await this.checkoutCodes.storefrontLinks(req?.headers, requestedCurrency, 'plan');
 
+    const userId = req?.user && typeof req.user.sub === 'string' ? req.user.sub : null;
+
     if (requestedCurrency === 'BRL') {
       const brlPlans = await this.plansService.findBrlPublicPlans();
-      return brlPlans.map((p) => ({ ...p, checkoutUrl: brandLinks.get(p.id) ?? p.checkoutUrl }));
+      // Desde 18/11 o BRL também vende 30 dias pagamento único (Cakto: Pix avulso não tem a recusa
+      // do Pix Automático). Assinante recorrente da Cakto segue vendo o link da assinatura: o
+      // pré-pago criaria outra cobrança enquanto a recorrência continua.
+      const keepCaktoSubscription = userId ? await this.plansService.hasRecurringCaktoSubscription(userId) : false;
+      return brlPlans.map((p) => ({
+        ...p,
+        checkoutUrl: brandLinks.get(p.id) ?? ((keepCaktoSubscription ? subscriptionCheckoutUrlFor(p.checkoutUrl) : null) ?? p.checkoutUrl),
+      }));
     }
 
     const plans = await this.plansService.findAllPlans();
@@ -62,7 +71,6 @@ export class PlansController {
     // Sem token, a Início (/home) só pede /plans para o cartão "upgrade pelo ritmo", que só
     // aparece para assinante da Perfect Pay: ali vale o link de assinatura (best-effort pelo
     // Referer, porque o site congelado não manda o token nessa chamada).
-    const userId = req?.user && typeof req.user.sub === 'string' ? req.user.sub : null;
     const keepSubscriptionLinks = userId
       ? await this.plansService.hasRecurringPerfectpaySubscription(userId)
       : isInAppHomeReferer(req?.headers?.referer);
