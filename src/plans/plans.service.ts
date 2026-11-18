@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { GenerationType, Resolution } from '@prisma/client';
 import { PlanResponseDto } from './dto/plan-response.dto';
-import { PREPAID_PLAN_SLUG_SUFFIX } from './prepaid-plan';
+import { prepaidPlanWhere } from './prepaid-plan';
 import { WAN_ANIMATE_MODEL_VARIANT, wanAnimateCredits, wanAnimateOnKie, WAN3_REFERENCE_MODEL_VARIANT, wan3ReferenceCredits } from '../generations/motion-control-engine';
 
 /**
@@ -82,7 +82,7 @@ export class PlansService {
         userId,
         status: 'ACTIVE',
         paymentProvider: 'perfectpay',
-        NOT: { plan: { slug: { endsWith: PREPAID_PLAN_SLUG_SUFFIX } } },
+        NOT: { plan: prepaidPlanWhere() },
       },
       select: { id: true },
     });

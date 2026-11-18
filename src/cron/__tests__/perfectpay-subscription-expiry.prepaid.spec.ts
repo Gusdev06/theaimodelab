@@ -32,7 +32,7 @@ describe('PerfectpaySubscriptionExpiryService · pré-pago admin', () => {
     expect(lapsed.currentPeriodEnd.lte.getTime()).toBeLessThan(scheduled.currentPeriodEnd.lte.getTime());
     expect(admin).toEqual({
       paymentProvider: { in: ['perfectpay', 'cakto', 'admin'] },
-      plan: { slug: { endsWith: '-30d' } },
+      plan: { OR: [{ slug: { endsWith: '-30d' } }, { slug: { endsWith: '-90d' } }] },
       currentPeriodEnd: { lte: scheduled.currentPeriodEnd.lte },
     });
   });

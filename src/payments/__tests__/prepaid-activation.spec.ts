@@ -36,6 +36,22 @@ describe('Ativação do pré-pago (Perfect Pay, pagamento único)', () => {
 
   const sale = { userId: 'user-1', planId: 'plan-pro-30d', saleCode: 'PPCPMT1', amountCents: 3990, currency: 'usd' };
 
+  it('pré-pago de 90 dias: 3 meses de acesso e os créditos (3× já no plano) valem o período todo', async () => {
+    const plan90 = { id: 'plan-pro-90d', slug: 'pro-90d', name: 'Pro', creditsPerMonth: 90000, billingInterval: 'month' };
+    const { service, tx } = setup(plan90 as typeof prepaidPlan);
+    const before = new Date();
+
+    await service.activateOrRenewPerfectpaySubscription({ ...sale, planId: 'plan-pro-90d', saleCode: 'PPCPMT90', amountCents: 9990 });
+
+    const data = (tx.subscription.create.mock.calls as any[][])[0][0].data;
+    expect(data.cancelAtPeriodEnd).toBe(true);
+    const months = (data.currentPeriodEnd.getFullYear() - before.getFullYear()) * 12 + data.currentPeriodEnd.getMonth() - before.getMonth();
+    expect(months).toBe(3);
+    const credit = (tx.creditBalance.upsert.mock.calls as any[][])[0][0];
+    expect(credit.create.planCreditsRemaining).toBe(90000);
+    expect(credit.create.periodEnd.getTime()).toBe(data.currentPeriodEnd.getTime());
+  });
+
   it('primeira compra do pré-pago: cria a assinatura já com cancelAtPeriodEnd=true', async () => {
     const { service, tx } = setup(prepaidPlan);
 
