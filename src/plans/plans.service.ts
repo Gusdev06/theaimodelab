@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { liftImageResolution } from '../generations/image-min-resolution';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { GenerationType, Resolution } from '@prisma/client';
@@ -231,7 +232,8 @@ export class PlansService {
       return wan3ReferenceCredits(resolution, durationSeconds ?? 0);
     }
 
-    const cost = await this.getCreditCost(generationType, resolution, hasAudio, modelVariant);
+    // dono 19/11 (TKT-291): imagem em 1K é gerada e cobrada como 2K; a estimativa usa a mesma regra
+    const cost = await this.getCreditCost(generationType, liftImageResolution(generationType, resolution), hasAudio, modelVariant);
 
     let total = cost.creditsPerUnit;
     if (cost.isPerSecond && durationSeconds) {

@@ -8,6 +8,7 @@ import {
   HttpStatus,
   Optional,
 } from '@nestjs/common';
+import { liftFaceSwapResolution, liftImageResolution } from './image-min-resolution';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import * as sharp from 'sharp';
@@ -468,6 +469,8 @@ export class GenerationsService {
     userId: string,
     dto: GenerateImageDto,
   ): Promise<CreateGenerationResponseDto> {
+    // dono 19/11 (TKT-291): imagem em 1K vira 2K (o desvio do Unlocked em 1K deformava)
+    dto.resolution = liftImageResolution(GenerationType.TEXT_TO_IMAGE, dto.resolution, { model: dto.model, aspectRatio: dto.aspect_ratio });
     if (
       dto.model === 'sem-censura' &&
       dto.resolution !== Resolution.RES_2K &&
@@ -686,6 +689,7 @@ export class GenerationsService {
     dto: GenerateImageDto,
     freeGenerationTypeOverride?: FreeGenerationType,
   ): Promise<CreateGenerationResponseDto> {
+    dto.resolution = liftImageResolution(GenerationType.TEXT_TO_IMAGE, dto.resolution, { model: dto.model, aspectRatio: dto.aspect_ratio });
     if (dto.model === 'deepdeep') {
       if (!dto.images?.length) {
         throw new BadRequestException(
@@ -841,6 +845,7 @@ export class GenerationsService {
     userId: string,
     dto: GenerateImageNanoBananaDto,
   ): Promise<CreateGenerationResponseDto> {
+    dto.resolution = liftImageResolution(GenerationType.TEXT_TO_IMAGE, dto.resolution);
     const type = dto.images?.length
       ? GenerationType.IMAGE_TO_IMAGE
       : GenerationType.TEXT_TO_IMAGE;
@@ -1662,7 +1667,7 @@ export class GenerationsService {
   ): Promise<CreateGenerationResponseDto> {
     const type = GenerationType.VIRTUAL_TRY_ON;
     const model = dto.model ?? 'gemini-3.1-flash-image-preview';
-    const resolution = dto.resolution ?? Resolution.RES_2K;
+    const resolution = liftImageResolution(type, dto.resolution ?? Resolution.RES_2K);
 
     const modelVariant = resolveModelVariant(model, dto.model_variant);
 
@@ -1804,6 +1809,7 @@ CRITICAL REQUIREMENTS:
     dto: GenerateFaceSwapDto,
   ): Promise<CreateGenerationResponseDto> {
     const type = GenerationType.FACE_SWAP;
+    dto.resolution = liftFaceSwapResolution(dto.resolution);
     const resolutionMap: Record<string, Resolution> = {
       '1K': Resolution.RES_1K,
       '2K': Resolution.RES_2K,
