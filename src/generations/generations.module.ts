@@ -29,6 +29,7 @@ import { GptImageProvider } from './providers/gpt-image.provider';
 import { DeepDeepProvider } from './providers/deepdeep.provider';
 import { WavespeedAudioProvider } from './providers/wavespeed-audio.provider';
 import { WavespeedVideoProvider } from './providers/wavespeed-video.provider';
+import { RunpodLightwanProvider } from './providers/runpod-lightwan.provider';
 import { PromptEnhancerModule } from '../prompt-enhancer/prompt-enhancer.module';
 import { ModelsModule } from '../models/models.module';
 import { VoicesModule } from '../voices/voices.module';
@@ -83,6 +84,7 @@ import { VoicesModule } from '../voices/voices.module';
     DeepDeepProvider,
     WavespeedAudioProvider,
     WavespeedVideoProvider,
+    RunpodLightwanProvider,
   ],
   exports: [GenerationsService],
 })

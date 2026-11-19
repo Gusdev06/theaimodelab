@@ -17,6 +17,7 @@ import { BytedanceSeedanceProvider } from '../../providers/bytedance-seedance.pr
 import { KlingProvider } from '../../providers/kling.provider';
 import { ComfyDeployProvider } from '../../providers/comfydeploy.provider';
 import { WavespeedVideoProvider } from '../../providers/wavespeed-video.provider';
+import { RunpodLightwanProvider } from '../../providers/runpod-lightwan.provider';
 import { SeedreamLiteProvider } from '../../providers/seedream-lite.provider';
 import { SeedreamProvider } from '../../providers/seedream.provider';
 import { GptImageProvider } from '../../providers/gpt-image.provider';
@@ -158,6 +159,7 @@ describe('GenerationProcessor · bloqueio de segurança sem nova tentativa', () 
         { provide: KlingProvider, useValue: {} },
         { provide: ComfyDeployProvider, useValue: {} },
         { provide: WavespeedVideoProvider, useValue: {} },
+        { provide: RunpodLightwanProvider, useValue: { route: async () => 'wavespeed' } },
         { provide: SeedreamLiteProvider, useValue: {} },
         { provide: SeedreamProvider, useValue: seedream },
         { provide: GptImageProvider, useValue: gptImage },

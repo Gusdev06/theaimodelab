@@ -27,6 +27,7 @@ import {
   type MinimaxH3Resolution,
   type MinimaxH3AspectRatio,
 } from '../providers/wavespeed-video.provider';
+import { RunpodLightwanProvider } from '../providers/runpod-lightwan.provider';
 import { SeedreamLiteProvider } from '../providers/seedream-lite.provider';
 import {
   SeedreamProvider,
@@ -244,6 +245,8 @@ export class GenerationProcessor extends WorkerHost {
     private readonly plansService: PlansService,
     private readonly configService: ConfigService,
     private readonly contentSafety: ContentSafetyService,
+    // no FIM: os testes que montam o processor por posição continuam valendo
+    private readonly runpodLightwanProvider: RunpodLightwanProvider,
   ) {
     super();
   }
@@ -2273,12 +2276,37 @@ export class GenerationProcessor extends WorkerHost {
       RES_1080P: '1080p',
     };
 
+    const resolution = resMap[data.resolution] ?? '480p';
+
+    // Worker próprio no RunPod (LightWan2.2 I2V, SPICY_I2V_ENGINE=runpod): só 5 s em 480p e só com o worker quente (ou
+    // SPICY_I2V_RUNPOD_COLD=wait). Qualquer falha lá cai aqui mesmo na WaveSpeed: a cliente nunca fica sem o vídeo.
+    const route = await this.runpodLightwanProvider.route({
+      canaryKey: data.userId,
+      resolution,
+      durationSeconds: data.durationSeconds,
+    });
+    if (route === 'runpod') {
+      try {
+        const runpodResult = await this.runpodLightwanProvider.generateImageToVideo({
+          id: data.generationId,
+          prompt: data.prompt,
+          imageUrl: data.imageUrl,
+        });
+        await this.completeGeneration(data.generationId, runpodResult, startTime);
+        return;
+      } catch (error) {
+        this.logger.warn(
+          `[RUNPOD_LIGHTWAN] ${data.generationId} não entregou, segue na WaveSpeed: ${(error as Error).message.slice(0, 200)}`,
+        );
+      }
+    }
+
     const result = await this.wavespeedVideoProvider.generateImageToVideo({
       id: data.generationId,
       prompt: data.prompt,
       imageUrl: data.imageUrl,
       durationSeconds: data.durationSeconds,
-      resolution: resMap[data.resolution] ?? '480p',
+      resolution,
       preset: data.preset,
     });
     await this.completeGeneration(data.generationId, result, startTime);
