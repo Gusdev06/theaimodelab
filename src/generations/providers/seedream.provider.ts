@@ -33,6 +33,12 @@ const KIE_LITE_I2I = 'seedream/5-lite-image-to-image';
 // Seedream 5.5 no Unlocked SÓ TEXTO (UNLOCKED_ENGINE_T2I=s55): US$ 0,0315 em 2K contra US$ 0,07 do Pro; bancada de
 // 13/11: 32/32 entregues, 0 recusa, 26 s de mediana. Só sem foto: na edição a kie cobra cada imagem de entrada à parte.
 const KIE_S55_T2I = 'seedream/5-5-text-to-image';
+// Seedream 5.5 na EDIÇÃO COM FOTO (UNLOCKED_ENGINE_I2I_S55_PCT, 19/11/2026). Custo real por tarefa na kie
+// (creditsConsumed): 5.5 = 6,3 créditos + ~1,44 por foto de entrada (1 foto 7,74; 4 fotos 12,06); Pro = 14 fixo.
+// Até 5 fotos o 5.5 sai mais barato; com 6 ou mais fica no Pro (prejuízo zero). Bancada de 19/11: 33/33, 0 recusa,
+// mediana 21 s contra ~40 s do Pro. Artificial Analysis (edição): 5.5 Elo 1160 × Pro 1132.
+const KIE_S55_I2I = 'seedream/5-5-image-to-image';
+export const S55_EDIT_MAX_IMAGES = 5;
 export type UnlockedEngine = 'pro' | 'lite' | 's55';
 
 /**
@@ -197,6 +203,7 @@ export class SeedreamProvider {
   private readonly unlockedCanaryPct: number;
   private readonly unlockedScope: 'all' | 'i2i';
   private readonly unlockedTextEngine: 'default' | 's55';
+  private readonly unlockedEditS55Pct: number;
   private readonly ultraRealism: boolean;
 
   constructor(
@@ -236,9 +243,21 @@ export class SeedreamProvider {
       .trim()
       .toLowerCase();
     this.unlockedTextEngine = textFlag === 's55' ? 's55' : 'default';
+    // Canário próprio da edição no 5.5: vazio ou inválido = 0% (precisa ser dito por extenso, como o do Lite).
+    const editS55Raw = String(
+      this.configService.get<string>('UNLOCKED_ENGINE_I2I_S55_PCT', '') ?? '',
+    ).trim();
+    this.unlockedEditS55Pct = /^\d{1,3}$/.test(editS55Raw)
+      ? Math.min(100, Number(editS55Raw))
+      : 0;
     this.ultraRealism = ultraRealismEnabled(
       this.configService.get<string>('ULTRA_REALISM_PROMPTS', ''),
     );
+    if (this.unlockedEditS55Pct > 0) {
+      this.logger.log(
+        `[UNLOCKED_ENGINE] edição com foto no 5.5: ${this.unlockedEditS55Pct}% (até ${S55_EDIT_MAX_IMAGES} fotos; acima disso, Pro)`,
+      );
+    }
     if (this.unlockedEngine === 'lite' || this.unlockedTextEngine === 's55') {
       this.logger.log(
         `[UNLOCKED_ENGINE] edição=${this.unlockedEngine === 'lite' ? 'lite' : 'pro'} só-texto=${this.unlockedTextEngine === 's55' ? 's55' : this.unlockedEngine === 'lite' && this.unlockedScope === 'all' ? 'lite' : 'pro'} canário=${this.unlockedCanaryPct}% escopo=${this.unlockedScope}${this.unlockedCanaryPct === 0 ? ' (UNLOCKED_ENGINE_CANARY_PCT vazio ou inválido: ninguém no Lite)' : ''}`,
@@ -314,6 +333,13 @@ export class SeedreamProvider {
   pickEngine(input: SeedreamImageInput): UnlockedEngine {
     if (!input.engineSwapEligible) return 'pro';
     const hasImages = !!input.imageUrls?.length;
+    if (
+      hasImages &&
+      this.unlockedEditS55Pct > 0 &&
+      (input.imageUrls?.length ?? 0) <= S55_EDIT_MAX_IMAGES &&
+      this.inCanary(input, 'unlocked-edit-s55', this.unlockedEditS55Pct)
+    )
+      return 's55';
     let candidate: UnlockedEngine = 'pro';
     if (!hasImages && this.unlockedTextEngine === 's55') candidate = 's55';
     else if (
@@ -324,12 +350,23 @@ export class SeedreamProvider {
     if (candidate === 'pro') return 'pro';
     if (this.unlockedCanaryPct >= 100) return candidate;
     if (this.unlockedCanaryPct <= 0) return 'pro';
-    const digest = createHash('sha256')
-      .update(`unlocked-engine:${input.canaryKey || input.id}`)
-      .digest();
-    return digest.readUInt32BE(0) % 100 < this.unlockedCanaryPct
+    return this.inCanary(input, 'unlocked-engine', this.unlockedCanaryPct)
       ? candidate
       : 'pro';
+  }
+
+  /** Sorteio estável por pessoa (canaryKey): o mesmo usuário cai sempre do mesmo lado. */
+  private inCanary(
+    input: SeedreamImageInput,
+    salt: string,
+    pct: number,
+  ): boolean {
+    if (pct >= 100) return true;
+    if (pct <= 0) return false;
+    const digest = createHash('sha256')
+      .update(`${salt}:${input.canaryKey || input.id}`)
+      .digest();
+    return digest.readUInt32BE(0) % 100 < pct;
   }
 
   private async generateOnKie(
@@ -344,7 +381,9 @@ export class SeedreamProvider {
       engine === 'lite' ? 'basic' : (QUALITY_MAP[input.resolution] ?? 'high');
     const model =
       engine === 's55'
-        ? KIE_S55_T2I
+        ? hasImages
+          ? KIE_S55_I2I
+          : KIE_S55_T2I
         : engine === 'lite'
           ? hasImages
             ? KIE_LITE_I2I
@@ -394,7 +433,9 @@ export class SeedreamProvider {
 
     // o texto do provedor vai junto no erro de início (ProviderFailureError) para a trava de menor ler antes da reserva
     const taskId = await this.submitTask(body);
-    this.logger.log(`[SEEDREAM_PRO] engine=${engine} task submitted: ${taskId}`);
+    this.logger.log(
+      `[SEEDREAM_PRO] engine=${engine} task submitted: ${taskId}`,
+    );
 
     const resultUrls = await this.pollTaskStatus(taskId, deadline);
     this.logger.log(
@@ -535,7 +576,9 @@ export class SeedreamProvider {
     this.logger.error(
       `[SEEDREAM_PRO] createTask failed status=${lastStatus} body=${lastErrorText}`,
     );
-    throw this.startError(`status=${lastStatus} ${lastErrorText.slice(0, 500)}`);
+    throw this.startError(
+      `status=${lastStatus} ${lastErrorText.slice(0, 500)}`,
+    );
   }
 
   /**

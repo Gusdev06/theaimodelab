@@ -451,6 +451,98 @@ describe('SeedreamProvider · motor do Unlocked (UNLOCKED_ENGINE)', () => {
     });
   });
 
+  describe('Seedream 5.5 na edição com foto (UNLOCKED_ENGINE_I2I_S55_PCT)', () => {
+    const EDIT_S55 = { ...KIE_ENV, UNLOCKED_ENGINE_I2I_S55_PCT: '100' };
+    const withPhotos = (id: string, user: string, n = 1) => ({
+      ...eligible(id, user),
+      imageUrls: Array.from(
+        { length: n },
+        (_, i) => `https://cdn.test/in${i}.jpg`,
+      ),
+    });
+
+    it('edição com foto vai ao 5.5 image-to-image com size 2K; só texto segue no Pro', async () => {
+      mockKie(() => 'success');
+      const provider = buildProvider(EDIT_S55);
+
+      const edit = await run(provider.generateImage(withPhotos('e1', 'u1')));
+      const text = await run(provider.generateImage(eligible('e2', 'u1')));
+
+      expect(edit.engine).toBe('s55');
+      expect(text.engine).toBe('pro');
+      const [sentEdit, sentText] = created();
+      expect(sentEdit.model).toBe('seedream/5-5-image-to-image');
+      expect(sentEdit.input).toMatchObject({
+        size: '2K',
+        output_format: 'jpeg',
+        nsfw_checker: false,
+        image_urls: ['https://cdn.test/in0.jpg'],
+      });
+      expect(sentEdit.input).not.toHaveProperty('quality');
+      expect(sentText.model).toBe('seedream/5-pro-text-to-image');
+    });
+
+    it('com mais de 5 fotos fica no Pro (o 5.5 cobra por foto e passaria do Pro)', () => {
+      const provider = buildProvider(EDIT_S55);
+      expect(provider.pickEngine(withPhotos('g', 'u', 5))).toBe('s55');
+      expect(provider.pickEngine(withPhotos('g', 'u', 6))).toBe('pro');
+    });
+
+    it('vazio, inválido ou 0 = ninguém; respeita o engineSwapEligible', () => {
+      for (const pct of ['', '0', 'abc', '-5']) {
+        const provider = buildProvider({
+          ...KIE_ENV,
+          UNLOCKED_ENGINE_I2I_S55_PCT: pct,
+        });
+        expect(provider.pickEngine(withPhotos('g', 'u'))).toBe('pro');
+      }
+      const on = buildProvider(EDIT_S55);
+      expect(
+        on.pickEngine({
+          ...BASE_INPUT,
+          id: 'g',
+          imageUrls: ['https://cdn.test/a.jpg'],
+        }),
+      ).toBe('pro');
+    });
+
+    it('canário parcial é estável por pessoa e não depende do canário do Lite', () => {
+      const provider = buildProvider({
+        ...KIE_ENV,
+        UNLOCKED_ENGINE_I2I_S55_PCT: '50',
+        UNLOCKED_ENGINE_CANARY_PCT: '0',
+      });
+      const users = Array.from({ length: 200 }, (_, i) => `user-${i}`);
+      const picks = users.map((u) => provider.pickEngine(withPhotos('g', u)));
+      const s55 = picks.filter((p) => p === 's55').length;
+      expect(s55).toBeGreaterThan(60);
+      expect(s55).toBeLessThan(140);
+      users.forEach((u, i) =>
+        expect(provider.pickEngine(withPhotos('outra', u))).toBe(picks[i]),
+      );
+    });
+
+    it('falha técnica no 5.5 refaz no Pro image-to-image; recusa é terminal', async () => {
+      mockKie((model) => (model.includes('5-5') ? 'fail-500' : 'success'));
+      const tech = await run(
+        buildProvider(EDIT_S55).generateImage(withPhotos('e3', 'u3')),
+      );
+      expect(tech.engine).toBe('pro');
+      expect(createdModels()).toEqual([
+        'seedream/5-5-image-to-image',
+        'seedream/5-pro-image-to-image',
+      ]);
+
+      fetchMock.mockRestore();
+      calls = [];
+      mockKie((model) => (model.includes('5-5') ? 'fail-430' : 'success'));
+      await expect(
+        run(buildProvider(EDIT_S55).generateImage(withPhotos('e4', 'u4'))),
+      ).rejects.toBeInstanceOf(ContentSafetyError);
+      expect(createdModels()).toEqual(['seedream/5-5-image-to-image']);
+    });
+  });
+
   describe('reserva na própria kie (TKT-310)', () => {
     const PRO_T2I = 'seedream/5-pro-text-to-image';
     const PRO_I2I = 'seedream/5-pro-image-to-image';
@@ -477,7 +569,10 @@ describe('SeedreamProvider · motor do Unlocked (UNLOCKED_ENGINE)', () => {
       );
       expect(result.engine).toBe('lite');
       const [, reserve] = created();
-      expect(createdModels()).toEqual([PRO_I2I, 'seedream/5-lite-image-to-image']);
+      expect(createdModels()).toEqual([
+        PRO_I2I,
+        'seedream/5-lite-image-to-image',
+      ]);
       expect(reserve.input).toMatchObject({
         image_urls: ['https://cdn.test/in.jpg'],
         nsfw_checker: false,
@@ -541,7 +636,9 @@ describe('SeedreamProvider · motor do Unlocked (UNLOCKED_ENGINE)', () => {
               taskId: 'r1',
               model: 'seedream/5-5-text-to-image',
               state: 'success',
-              resultJson: JSON.stringify({ resultUrls: ['https://kie.test/task-r1.jpg'] }),
+              resultJson: JSON.stringify({
+                resultUrls: ['https://kie.test/task-r1.jpg'],
+              }),
             },
           });
         if (url.startsWith('https://kie.test/task-')) return imageResponse();
@@ -594,13 +691,21 @@ describe('SeedreamProvider · motor do Unlocked (UNLOCKED_ENGINE)', () => {
     const provider = buildProvider({ ...KIE_ENV, ULTRA_REALISM_PROMPTS: 'on' });
     await run(provider.generateImage({ ...eligible('r1', 'u1') }));
     await run(
-      provider.generateImage({ ...eligible('r2', 'u1'), prompt: 'anime adult woman, 25, bedroom' }),
+      provider.generateImage({
+        ...eligible('r2', 'u1'),
+        prompt: 'anime adult woman, 25, bedroom',
+      }),
     );
     await run(
-      provider.generateImage({ ...eligible('r3', 'u1'), prompt: 'x '.repeat(4000) }),
+      provider.generateImage({
+        ...eligible('r3', 'u1'),
+        prompt: 'x '.repeat(4000),
+      }),
     );
     const [photo, anime, longo] = created().map((b) => String(b.input.prompt));
-    expect(photo).toMatch(/Ultra-realistic photo, visible skin pores[^]*no plastic skin.$/);
+    expect(photo).toMatch(
+      /Ultra-realistic photo, visible skin pores[^]*no plastic skin.$/,
+    );
     expect(anime).not.toContain('Ultra-realistic photo');
     expect(longo.length).toBeLessThanOrEqual(5000);
     expect(longo).toContain('Ultra-realistic photo, visible skin pores');
@@ -610,7 +715,9 @@ describe('SeedreamProvider · motor do Unlocked (UNLOCKED_ENGINE)', () => {
     mockKie(() => 'success');
     const provider = buildProvider(KIE_ENV);
     await run(provider.generateImage(eligible('r4', 'u1')));
-    expect(String(created()[0].input.prompt)).not.toContain('Ultra-realistic photo');
+    expect(String(created()[0].input.prompt)).not.toContain(
+      'Ultra-realistic photo',
+    );
   });
 
   it('desvio de segurança: só o das imagens entra no canário', () => {
