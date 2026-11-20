@@ -627,6 +627,9 @@ export class GenerationProcessor extends WorkerHost {
       aspectRatio: generation.aspectRatio,
       inputImageUrls,
       allowUncensoredWithMedia: this.uncensoredWithMediaAllowed(),
+      wanAnimateKiePrimary: wanAnimateOnKie(
+        this.configService.get<string>('WAN_ANIMATE_PROVIDER'),
+      ),
     };
     let decision = evaluateFallback(jobName, data, fallbackContext);
     // fotos do pedido (null = há vídeo/áudio ou formato que não dá para conferir)
@@ -885,6 +888,8 @@ export class GenerationProcessor extends WorkerHost {
       );
       return;
     }
+    // piso do plano: o pior caso conta a tarefa original cobrada pelo provedor (prejuízo zero)
+    fallbackCredits = Math.max(fallbackCredits, plan.minChargeCredits ?? 0);
 
     const delta = generation.creditsConsumed - fallbackCredits;
     const current = await this.getExistingParameters(generation.id);
@@ -1676,6 +1681,23 @@ export class GenerationProcessor extends WorkerHost {
     this.logger.log(
       `[MOTION_CONTROL] ${data.generationId} engine=${data.engine ?? 'kling'} resolution=${data.resolution} videoUrl=${data.videoUrl} imageUrl=${data.imageUrl}`,
     );
+
+    // Reserva do desvio (motionControlReserve): troca de pessoa SÓ na kie, sem cair na WaveSpeed (proíbe explícito)
+    if (data.providerLock === 'kie') {
+      if (data.engine !== 'wan-replace') {
+        throw new Error(
+          `[MOTION_CONTROL] ${data.generationId}: trava kie só vale para a troca de pessoa (engine=${data.engine ?? 'kling'})`,
+        );
+      }
+      const reserveResult = await this.wanProvider.generateWanAnimateReplace({
+        id: data.generationId,
+        videoUrl: data.videoUrl,
+        imageUrl: data.imageUrl,
+        resolution: data.resolution === '480p' ? '480p' : '720p',
+      });
+      await this.completeGeneration(data.generationId, reserveResult, startTime);
+      return;
+    }
 
     // Wan 3.0 por referência (WaveSpeed): a cena do vídeo gerada de novo com a pessoa da foto, em 9:16 (celular)
     if (data.engine === 'wan3-reference') {

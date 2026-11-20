@@ -1472,20 +1472,51 @@ export class AdminService {
         ORDER BY count DESC
       `,
 
-      // Error rate by model
+      // Falha PERCEBIDA por modelo PEDIDO (20/11): o desvio que entregou conta no modelo que a cliente escolheu
+      // (fallbackFrom; resgate do Unlocked pelo contexto `processX:modelo`), o rótulo da falha do Nano Banana
+      // (gemini-*) junta com o do sucesso (nano-banana-*), e a recusa por menor (o provedor barrando o que a lei
+      // barra) sai de `failed` e vai a `minor_refusals`. Antes, gpt-image-2-5 aparecia com 50% de falha em 7 dias
+      // porque os 368 resgates entravam como sem-censura-fallback; a falha real era 2,6%.
       this.prisma.$queryRaw<
-        { model_used: string; total: number; failed: number; error_rate: number }[]
+        {
+          model_used: string;
+          total: number;
+          failed: number;
+          minor_refusals: number;
+          error_rate: number;
+        }[]
       >`
-        SELECT model_used,
+        WITH requested AS (
+          SELECT status, error_code,
+                 CASE
+                   WHEN parameters ? 'fallbackFrom' THEN parameters->>'fallbackFrom'
+                   WHEN model_used = 'sem-censura-fallback'
+                        AND position(':' IN COALESCE(parameters->>'seedreamFallbackFrom', '')) > 0
+                     THEN split_part(parameters->>'seedreamFallbackFrom', ':', 2)
+                   ELSE model_used
+                 END AS model
+          FROM generations
+          WHERE created_at >= ${since}
+        ), normalized AS (
+          SELECT status, error_code,
+                 CASE model
+                   WHEN 'gemini-3.1-flash-image-preview' THEN 'nano-banana-2'
+                   WHEN 'gemini-3-pro-image-preview' THEN 'nano-banana-pro'
+                   WHEN 'nano-banana' THEN 'nano-banana-2'
+                   ELSE model
+                 END AS model
+          FROM requested
+        )
+        SELECT model AS model_used,
                COUNT(*)::int AS total,
-               COUNT(*) FILTER (WHERE status = 'FAILED')::int AS failed,
+               COUNT(*) FILTER (WHERE status = 'FAILED' AND COALESCE(error_code, '') <> 'CONTENT_POLICY_MINOR')::int AS failed,
+               COUNT(*) FILTER (WHERE status = 'FAILED' AND error_code = 'CONTENT_POLICY_MINOR')::int AS minor_refusals,
                CASE WHEN COUNT(*) > 0
-                 THEN ROUND(COUNT(*) FILTER (WHERE status = 'FAILED')::numeric / COUNT(*)::numeric * 100, 2)::float
+                 THEN ROUND(COUNT(*) FILTER (WHERE status = 'FAILED' AND COALESCE(error_code, '') <> 'CONTENT_POLICY_MINOR')::numeric / COUNT(*)::numeric * 100, 2)::float
                  ELSE 0
                END AS error_rate
-        FROM generations
-        WHERE created_at >= ${since}
-        GROUP BY model_used
+        FROM normalized
+        GROUP BY model
         ORDER BY total DESC
       `,
 
@@ -1536,6 +1567,7 @@ export class AdminService {
         modelUsed: r.model_used,
         total: r.total,
         failed: r.failed,
+        minorRefusals: r.minor_refusals,
         errorRate: r.error_rate,
       })),
       peakHours: peakHours.map((r) => ({

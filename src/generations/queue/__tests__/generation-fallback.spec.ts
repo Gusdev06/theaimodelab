@@ -179,7 +179,7 @@ describe('planFallback', () => {
   });
 
   // ── Motion Control ─────────────────────────────────────────────────
-  it('Motion Control não tem alternativa (H3 por referência só na WaveSpeed, TKT-310)', () => {
+  it('Motion Control sem tamanho dos arquivos (job antigo) não tem alternativa: a kie só aceita até 10 MB', () => {
     const data: MotionControlJobData = {
       ...base,
       videoUrl: 'https://cdn/ref.mp4',
@@ -189,6 +189,67 @@ describe('planFallback', () => {
     for (const durationSeconds of [7, 22, null]) {
       expect(planFallback(GenerationJobName.MOTION_CONTROL, data, ctx({ durationSeconds }))).toBeNull();
     }
+  });
+
+  describe('Motion Control → Wan replace na kie', () => {
+    const mc = (overrides: Partial<MotionControlJobData> = {}): MotionControlJobData => ({
+      ...base,
+      creditsConsumed: 210 * 8,
+      videoUrl: 'https://cdn/ref.mp4',
+      imageUrl: 'https://cdn/ref.jpg',
+      resolution: '720p',
+      videoBytes: 4 * 1024 * 1024,
+      imageBytes: 300 * 1024,
+      ...overrides,
+    });
+    const mcCtx = (overrides: Partial<FallbackContext> = {}) =>
+      ctx({ originalModel: 'kling-2.6/motion-control', generationType: GenerationType.MOTION_CONTROL, durationSeconds: 8, ...overrides });
+
+    it.each<FallbackKind>(['provider', 'safety'])('Kling 720p (%s) cai na troca de pessoa SÓ na kie, piso = tabela da WaveSpeed', (kind) => {
+      const plan = planFallback(GenerationJobName.MOTION_CONTROL, mc(), mcCtx({ kind }));
+      expect(plan).toMatchObject({
+        jobName: GenerationJobName.MOTION_CONTROL,
+        model: 'wan/2-2-animate-replace',
+        modelVariant: 'WAN_ANIMATE',
+        kind,
+        minChargeCredits: 270 * 8,
+        billing: { type: GenerationType.MOTION_CONTROL, resolution: 'RES_720P', durationSeconds: 8, hasVideoInput: true },
+      });
+      expect(plan!.data).toMatchObject({ engine: 'wan-replace', providerLock: 'kie', resolution: '720p', videoUrl: 'https://cdn/ref.mp4', imageUrl: 'https://cdn/ref.jpg' });
+    });
+
+    it('Kling 1080p sai em 720p (o Wan não tem 1080p)', () => {
+      const plan = planFallback(GenerationJobName.MOTION_CONTROL, mc({ resolution: '1080p', creditsConsumed: 340 * 8 }), mcCtx());
+      expect((plan!.data as MotionControlJobData).resolution).toBe('720p');
+      expect(plan!.billing.resolution).toBe('RES_720P');
+    });
+
+    it('troca de pessoa na WaveSpeed (480p) cai na mesma troca na kie', () => {
+      const plan = planFallback(GenerationJobName.MOTION_CONTROL, mc({ engine: 'wan-replace', resolution: '480p', creditsConsumed: 135 * 8 }), mcCtx({ originalModel: 'wavespeed-ai/wan-2.2/animate' }));
+      expect(plan!.data).toMatchObject({ engine: 'wan-replace', providerLock: 'kie', resolution: '480p' });
+      expect(plan!.minChargeCredits).toBe(135 * 8);
+    });
+
+    it.each<[string, Partial<MotionControlJobData>, Partial<FallbackContext>]>([
+      ['Wan animate (a kie não tem o modo)', { engine: 'wan-animate' }, {}],
+      ['Wan 3.0 por referência', { engine: 'wan3-reference' }, {}],
+      ['já é a reserva (sem reserva de reserva)', { engine: 'wan-replace', providerLock: 'kie' }, {}],
+      ['troca de pessoa que já rodou na kie primeiro', { engine: 'wan-replace' }, { wanAnimateKiePrimary: true }],
+      ['vídeo acima de 10 MB', { videoBytes: 11 * 1024 * 1024 }, {}],
+      ['geração grátis (sem receita)', { usedFreeGeneration: true }, {}],
+      ['sem créditos cobrados', { creditsConsumed: 0 }, {}],
+      ['sem duração gravada', {}, { durationSeconds: null }],
+    ])('sem reserva: %s', (_label, data, extra) => {
+      expect(planFallback(GenerationJobName.MOTION_CONTROL, mc(data), mcCtx(extra))).toBeNull();
+    });
+
+    it('é alvo sem filtro: a guarda de mídia barra sem o env', () => {
+      expect(isUncensoredFallbackModel('wan/2-2-animate-replace')).toBe(true);
+      expect(evaluateFallback(GenerationJobName.MOTION_CONTROL, mc(), mcCtx({ allowUncensoredWithMedia: false }))).toEqual({
+        plan: null,
+        blocked: { reason: 'UNCENSORED_WITH_USER_MEDIA', model: 'wan/2-2-animate-replace' },
+      });
+    });
   });
 
   // ── Trava de provedor do H3 (TKT-265/310) ─────────────────────────

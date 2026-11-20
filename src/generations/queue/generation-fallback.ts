@@ -1,4 +1,10 @@
-import { GenerationType } from '@prisma/client';
+import { GenerationType, Resolution } from '@prisma/client';
+import {
+  fitsWanAnimateKie,
+  WAN_ANIMATE_KIE_MODEL,
+  WAN_ANIMATE_MODEL_VARIANT,
+  wanAnimateCredits,
+} from '../motion-control-engine';
 import {
   ComfyDeployImageToVideoJobData,
   GenerationJobData,
@@ -8,6 +14,7 @@ import {
   ImageToVideoGrokJobData,
   ImageToVideoKieJobData,
   KlingImageToVideoJobData,
+  MotionControlJobData,
   MinimaxH3ImageToVideoJobData,
   MinimaxH3ReferenceToVideoJobData,
   MinimaxH3TextToVideoJobData,
@@ -69,6 +76,11 @@ export interface FallbackPlan {
   modelVariant: string;
   /** Parâmetros para recalcular o preço do que rodou de fato. */
   billing: FallbackBilling;
+  /**
+   * Piso do preço reconciliado: o estorno nunca leva a cobrança abaixo disto. Usado quando o pior caso inclui a
+   * tarefa original cobrada pelo provedor (prejuízo zero).
+   */
+  minChargeCredits?: number;
   kind: FallbackKind;
 }
 
@@ -88,6 +100,11 @@ export interface FallbackContext {
    * (env `GENERATION_FALLBACK_UNCENSORED_WITH_MEDIA`). Omitido = bloqueado.
    */
   allowUncensoredWithMedia?: boolean;
+  /**
+   * `WAN_ANIMATE_PROVIDER=kie`: a troca de pessoa já roda na kie primeiro e cai na WaveSpeed dentro do processador,
+   * então a falha que chega aqui já passou pelas duas.
+   */
+  wanAnimateKiePrimary?: boolean;
 }
 
 /**
@@ -119,6 +136,8 @@ const UNCENSORED_MODELS: ReadonlySet<string> = new Set([
   'comfydeploy-wan',
   // MiniMax H3 (WaveSpeed): sem filtro na prática, alvo universal dos vídeos.
   'wavespeed-minimax-h3',
+  // Wan 2.2 Animate replace na kie (`nsfw_checker: false`): reserva do Motion Control.
+  WAN_ANIMATE_KIE_MODEL,
 ]);
 /** Slug que se apresenta como sem filtro entra na regra antes de entrar na lista. */
 const UNCENSORED_SLUG = /sem-censura|unlocked|uncensored|spicy|nsfw/;
@@ -483,6 +502,59 @@ function seedance2(
 }
 
 /**
+ * Motion Control: reserva no Wan 2.2 Animate `replace` da kie (TKT-245, sem filtro).
+ *  - Kling 2.6 (kie, com filtro) falhou ou recusou: o Kling roda com `character_orientation: video` (a pessoa da foto
+ *    faz o movimento na cena do vídeo), que é o mesmo resultado da troca de pessoa. Saída em 720p.
+ *  - Wan `replace` na WaveSpeed falhou ou recusou: a mesma troca na kie (a WaveSpeed proíbe explícito, TKT-265).
+ * Fora: Wan `animate` (a kie não tem o modo), Wan 3.0, arquivo acima de 10 MB ou sem tamanho (a kie recusa), geração
+ * grátis (sem receita: prejuízo zero), Wan que já rodou na kie primeiro e reserva de reserva.
+ * Preço: nunca abaixo da tabela da WaveSpeed (`minChargeCredits`). Pior caso no crédito anual (US$ 0,0006), contando
+ * a tarefa original cobrada: Kling 720p 210/s = US$ 0,126 × 0,055 + 0,0625; Kling 1080p estorna até 270/s = US$ 0,162
+ * × 0,09 + 0,0625; Wan WaveSpeed 270/s (720p) e 135/s (480p) × 0,08 + 0,0625 e 0,04 + 0,03. Todos positivos.
+ */
+function motionControlReserve(
+  d: MotionControlJobData,
+  ctx: FallbackContext,
+): FallbackPlan | null {
+  const engine = d.engine ?? 'kling';
+  if (d.providerLock === 'kie') return null;
+  if (engine !== 'kling' && engine !== 'wan-replace') return null;
+  if (engine === 'wan-replace' && ctx.wanAnimateKiePrimary) return null;
+  if (!(d.creditsConsumed > 0) || d.usedFreeGeneration) return null;
+  if (!fitsWanAnimateKie(d.videoBytes, d.imageBytes)) return null;
+  const seconds = ctx.durationSeconds;
+  if (!seconds || !Number.isFinite(seconds) || seconds <= 0) return null;
+
+  const low = d.resolution === '480p' || d.resolution === 'RES_480P';
+  const billingResolution = low ? Resolution.RES_480P : Resolution.RES_720P;
+  const job: MotionControlJobData = {
+    ...base(d),
+    videoUrl: d.videoUrl,
+    imageUrl: d.imageUrl,
+    resolution: low ? '480p' : '720p',
+    engine: 'wan-replace',
+    providerLock: 'kie',
+    videoBytes: d.videoBytes,
+    imageBytes: d.imageBytes,
+  };
+  return {
+    jobName: GenerationJobName.MOTION_CONTROL,
+    data: job,
+    model: WAN_ANIMATE_KIE_MODEL,
+    modelVariant: WAN_ANIMATE_MODEL_VARIANT,
+    billing: {
+      type: GenerationType.MOTION_CONTROL,
+      resolution: billingResolution,
+      durationSeconds: seconds,
+      hasAudio: false,
+      hasVideoInput: true,
+    },
+    minChargeCredits: wanAnimateCredits(billingResolution, seconds),
+    kind: ctx.kind,
+  };
+}
+
+/**
  * Decide o desvio: monta a alternativa e aplica a guarda de mídia. Desvio
  * para modelo sem censura com mídia do usuário não roda, qualquer que seja o
  * motivo (`provider` ou `safety`), salvo `allowUncensoredWithMedia`.
@@ -660,11 +732,10 @@ function planAlternative(
       );
     }
 
-    // Motion Control não tem alternativa honesta. Wan (troca de pessoa): o MiniMax por referência não troca a pessoa
-    // do vídeo. O resto cairia no H3 por referência, que só existe na WaveSpeed; com a foto e o vídeo da cliente indo a
-    // modelo sem filtro, só a kie serve (TKT-265/310) e ela não tem o modo. A falha estorna os créditos.
+    // Motion Control: Kling e troca de pessoa caem no Wan replace da kie (ver motionControlReserve). O H3 por
+    // referência não serve: só existe na WaveSpeed e não troca a pessoa do vídeo (TKT-265/310).
     case GenerationJobName.MOTION_CONTROL:
-      return null;
+      return motionControlReserve(data as MotionControlJobData, ctx);
 
     case GenerationJobName.IMAGE_TO_VIDEO_GROK: {
       const d = data as ImageToVideoGrokJobData;
