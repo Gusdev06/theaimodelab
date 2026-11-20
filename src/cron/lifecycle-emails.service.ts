@@ -15,6 +15,7 @@ import {
   buildWinbackEmail,
 } from '../email-sequences/lifecycle-templates';
 import { showMiaFor } from '../email-sequences/mia-email';
+import { x1LocaleFrom } from '../email/x1-footer';
 import { resolveEmailLocale } from '../email-sequences/onboarding-sequence-templates';
 
 // 1x/dia às 14h UTC = 11h BRT — 1h depois do onboarding (13h UTC) pra não
@@ -45,6 +46,8 @@ interface LifecycleRecipient {
   plan: string | null;
   /** users.signup_brand: site em que a conta nasceu (null = The AI Model Lab) — marca e links do e-mail */
   signupBrand?: string | null;
+  /** users.locale cru: idioma do rodapé WhatsApp + Telegram */
+  locale?: string | null;
 }
 
 @Injectable()
@@ -184,6 +187,7 @@ export class LifecycleEmailsService {
         {
           userId: sub.user.id,
           signupBrand: sub.user.signupBrand,
+          locale: sub.user.locale,
           email: sub.user.email,
           name: sub.user.name,
           plan: sub.plan.name,
@@ -300,6 +304,7 @@ export class LifecycleEmailsService {
         {
           userId: sub.user.id,
           signupBrand: sub.user.signupBrand,
+          locale: sub.user.locale,
           email: sub.user.email,
           name: sub.user.name,
           plan: sub.plan.name,
@@ -401,6 +406,7 @@ export class LifecycleEmailsService {
         {
           userId: sub.user.id,
           signupBrand: sub.user.signupBrand,
+          locale: sub.user.locale,
           email: sub.user.email,
           name: sub.user.name,
           plan: null,
@@ -443,6 +449,7 @@ export class LifecycleEmailsService {
         html,
         // conta que nasceu noutra marca (Funvmake): nome, links e remetente dela
         brand: resolveBrand(recipient.signupBrand),
+        x1Locale: x1LocaleFrom(recipient.locale),
       });
       if (!id) {
         this.logger.warn(
