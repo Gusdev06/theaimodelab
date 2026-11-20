@@ -3517,14 +3517,19 @@ CRITICAL REQUIREMENTS:
 
   /**
    * Tabela de créditos para áudio. Threshold de 400 chars define se o texto
-   * é "curto" (até 399) ou "longo" (400+). Voice clone (criar nova ou usar
+   * é "curto" (até 399) ou "longo" (400 a 900, teto do DTO). Voice clone (criar nova ou usar
    * voz salva) sempre usa a tabela CLONE, mais cara que TTS.
+   *
+   * Preço = custo × 3.333 (regra da casa, 70% no piso de US$ 0,001/cr), como os demais modelos.
+   * TTS das vozes prontas roda no Inworld 1.5 Max (US$ 0,07 por 1k caracteres): curto (< 400) custa até
+   * US$ 0,028 → 95 cr; longo (até 900) até US$ 0,063 → 210 cr. Clone (OmniVoice, US$ 0,05/1k): 90 / 170 cr.
+   * Antes (35/45 e 65/80) o longo saía abaixo do custo no crédito anual (US$ 0,0006/cr): prejuízo zero, dono 20/11/2026.
    */
   private static readonly AUDIO_TIER_THRESHOLD = 400;
-  private static readonly TTS_CREDIT_COST_SHORT = 35;
-  private static readonly TTS_CREDIT_COST_LONG = 45;
-  private static readonly CLONE_CREDIT_COST_SHORT = 65;
-  private static readonly CLONE_CREDIT_COST_LONG = 80;
+  private static readonly TTS_CREDIT_COST_SHORT = 95;
+  private static readonly TTS_CREDIT_COST_LONG = 210;
+  private static readonly CLONE_CREDIT_COST_SHORT = 90;
+  private static readonly CLONE_CREDIT_COST_LONG = 170;
 
   private ttsCreditCost(textLength: number): number {
     return textLength >= GenerationsService.AUDIO_TIER_THRESHOLD
