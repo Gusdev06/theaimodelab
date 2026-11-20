@@ -4,6 +4,7 @@ import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
+import { x1LocaleFrom } from '../email/x1-footer';
 import { SettingsService, SETTING_KEYS } from '../settings/settings.service';
 import { CronLoggerService } from './cron-logger.service';
 import { renderMarkdownToEmailHtml } from '../admin-emails/helpers/markdown.helper';
@@ -234,6 +235,7 @@ export class OnboardingSequenceService {
         subject,
         html,
         brand,
+        x1Locale: x1LocaleFrom(recipient.locale),
       });
       if (!id) {
         this.logger.warn(`Email ${template.key} não enviado para ${recipient.email} (service não configurado)`);

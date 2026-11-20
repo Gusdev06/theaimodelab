@@ -13,6 +13,7 @@ import {
 import type { BuyerLocale } from '../pending-grants/buyer-locale';
 import { formatAffiliatePayoutAmount } from '../affiliates/affiliate-currency';
 import { describePayoutDestination } from '../affiliates/affiliate-payout';
+import { withX1Footer, X1FooterOptions, X1Locale } from './x1-footer';
 
 /** Textos do e-mail de acesso da isca, por idioma do comprador (TKT-004). */
 interface PendingGrantsCopy {
@@ -335,6 +336,16 @@ export class EmailService implements OnModuleInit {
   }
 
   /**
+   * Rodapé WhatsApp + Telegram (x1-footer.ts) só nos e-mails de venda e relacionamento, e só na marca de origem:
+   * a Mia e o bot são da The AI Model Lab, conta Funvmake não recebe. `EMAIL_X1_LINKS=off` desliga.
+   */
+  private withX1(html: string, locale: X1Locale, brand?: Brand, options: X1FooterOptions = {}): string {
+    if (this.configService.get<string>('EMAIL_X1_LINKS')?.trim().toLowerCase() === 'off') return html;
+    if (brand && brand.key !== 'taml') return html;
+    return withX1Footer(html, locale, options);
+  }
+
+  /**
    * Aviso de denúncia de conteúdo para a equipe. Devolve true se o Resend aceitou: quem chama registra a falha
    * (a denúncia já está gravada no banco e aparece no admin de qualquer jeito).
    */
@@ -487,7 +498,7 @@ export class EmailService implements OnModuleInit {
 
     try {
       const { error } = await this.client.emails.send({
-        ...this.branded({ subject: paid ? copy.subjectPaid : copy.subjectPlain, html: this.getWelcomeTemplate(name, locale, credits, to, brand) }, brand),
+        ...this.branded({ subject: paid ? copy.subjectPaid : copy.subjectPlain, html: this.withX1(this.getWelcomeTemplate(name, locale, credits, to, brand), locale, brand) }, brand),
         to: [to],
       });
 
@@ -516,7 +527,7 @@ export class EmailService implements OnModuleInit {
 
     try {
       const { error } = await this.client.emails.send({
-        ...this.branded({ subject: `Your ${planName} subscription is active — The AI Model Lab`, html: this.getSubscriptionTemplate(name, planName, credits) }, brand),
+        ...this.branded({ subject: `Your ${planName} subscription is active — The AI Model Lab`, html: this.withX1(this.getSubscriptionTemplate(name, planName, credits), 'en', brand) }, brand),
         to: [to],
       });
 
@@ -554,7 +565,7 @@ export class EmailService implements OnModuleInit {
         from: this.fromEmail,
         to: [to],
         subject: copy.subject,
-        html: this.getPendingGrantsTemplate(copy, name ?? null, to, locale, variant),
+        html: this.withX1(this.getPendingGrantsTemplate(copy, name ?? null, to, locale, variant), locale),
       });
 
       if (error) {
@@ -598,7 +609,7 @@ export class EmailService implements OnModuleInit {
       utm_source: 'email',
       utm_medium: 'compra-sem-conta',
     });
-    const html = renderBrandEmail({
+    const html = this.withX1(renderBrandEmail({
       locale: params.locale,
       preheader: copy.preheader,
       bannerUrl: this.bannerFor(params.locale, to, params.brand),
@@ -607,7 +618,7 @@ export class EmailService implements OnModuleInit {
       cta: { label: copy.button, url: signupUrl },
       note: copy.note,
       footer: copy.footer,
-    });
+    }), params.locale, params.brand);
 
     try {
       // Produto de outra marca (Funvmake): remetente, nome e link da marca da venda.
@@ -638,7 +649,7 @@ export class EmailService implements OnModuleInit {
 
     try {
       const { error } = await this.client.emails.send({
-        ...this.branded({ subject: 'Credits added to your account — The AI Model Lab', html: this.getCreditPurchaseTemplate(name, credits, packageName) }, brand),
+        ...this.branded({ subject: 'Credits added to your account — The AI Model Lab', html: this.withX1(this.getCreditPurchaseTemplate(name, credits, packageName), 'en', brand) }, brand),
         to: [to],
       });
 
@@ -673,7 +684,7 @@ export class EmailService implements OnModuleInit {
 
     try {
       const { error } = await this.client.emails.send({
-        ...this.branded({ subject: subject, html: this.getPaymentFailedTemplate(name, planName, attemptNumber, maxAttempts, canceled) }, brand),
+        ...this.branded({ subject: subject, html: canceled ? this.getPaymentFailedTemplate(name, planName, attemptNumber, maxAttempts, canceled) : this.withX1(this.getPaymentFailedTemplate(name, planName, attemptNumber, maxAttempts, canceled), 'pt', brand) }, brand),
         to: [to],
       });
 
@@ -750,13 +761,16 @@ export class EmailService implements OnModuleInit {
     html: string;
     /** marca do destinatário (src/brand/brand.ts); sem ela, sai como sempre saiu */
     brand?: Brand;
+    /** idioma do rodapé WhatsApp + Telegram; sem ele o e-mail sai sem o rodapé (senha, segurança, parceiro...) */
+    x1Locale?: X1Locale;
+    x1Options?: X1FooterOptions;
   }): Promise<{ id: string | null }> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping raw email');
       return { id: null };
     }
     const { data, error } = await this.client.emails.send({
-      ...this.branded({ subject: params.subject, html: params.html }, params.brand),
+      ...this.branded({ subject: params.subject, html: params.x1Locale ? this.withX1(params.html, params.x1Locale, params.brand, params.x1Options) : params.html }, params.brand),
       to: [params.to],
     });
     if (error) {
@@ -771,6 +785,7 @@ export class EmailService implements OnModuleInit {
    */
   async sendBatchEmails(
     items: Array<{ to: string; subject: string; html: string }>,
+    options: { x1Locale?: X1Locale } = {},
   ): Promise<Array<{ id: string | null; error: string | null }>> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping batch');
@@ -782,7 +797,7 @@ export class EmailService implements OnModuleInit {
       from: this.fromEmail,
       to: [it.to],
       subject: it.subject,
-      html: it.html,
+      html: options.x1Locale ? this.withX1(it.html, options.x1Locale) : it.html,
     }));
 
     try {

@@ -96,7 +96,7 @@ export class EmailBroadcastProcessor extends WorkerHost {
           };
         });
 
-        const results = await this.emailService.sendBatchEmails(payload);
+        const results = await this.emailService.sendBatchEmails(payload, { x1Locale: 'en' });
 
         // Atualiza cada recipient + contadores em paralelo dentro de uma transação
         const updates = batch.map((recipient, i) => {

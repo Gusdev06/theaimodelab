@@ -208,7 +208,7 @@ export class FirstGenerationEmailsService {
     });
 
     try {
-      const { id } = await this.emailService.sendRawEmail({ to: gen.user.email, subject, html, brand });
+      const { id } = await this.emailService.sendRawEmail({ to: gen.user.email, subject, html, brand, x1Locale: locale });
       if (!id) throw new Error('serviço de e-mail não configurado');
       await this.prisma.emailSequenceLog.update({ where: { id: logId }, data: { resendEmailId: id } });
       return true;

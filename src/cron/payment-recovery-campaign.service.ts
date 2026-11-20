@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
+import { recoveryPlanFromName } from '../email/x1-footer';
 import { StripeService } from '../payments/stripe.service';
 import { CronLoggerService } from './cron-logger.service';
 import {
@@ -249,6 +250,8 @@ export class PaymentRecoveryCampaignService {
         subject: built.subject,
         html: built.html,
         brand: resolveBrand(signupBrand),
+        x1Locale: 'pt',
+        x1Options: { recoveryPlan: recoveryPlanFromName(lead.planName) },
       });
       if (!id) {
         this.logger.warn(`Email ${n} não enviado para ${toEmail} (service não configurado)`);
