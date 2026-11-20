@@ -87,6 +87,11 @@ export interface MotionControlJobData extends BaseJobData {
   imageBytes?: number;
   /** só no Wan 3.0: fotos das outras pessoas da cena ("Image 2", "Image 3"), URLs públicas na ordem */
   extraImageUrls?: string[];
+  /**
+   * Reserva do desvio (generation-fallback): a troca de pessoa roda SÓ na kie, sem cair na WaveSpeed (que proíbe
+   * explícito, TKT-265). Só vale com `engine: 'wan-replace'`.
+   */
+  providerLock?: 'kie';
 }
 
 export interface VirtualTryOnJobData extends BaseJobData {
