@@ -1,4 +1,4 @@
-import { GenerationStatus, GenerationType } from '@prisma/client';
+import { GenerationStatus, GenerationType, Resolution } from '@prisma/client';
 import {
   FREE_FIX_UNLOCKED_IMAGE_REQUEST,
   FreeFixService,
@@ -26,6 +26,7 @@ describe('FreeFixService · 1ª correção grátis do Unlocked', () => {
     createdAt: Date;
     creditsConsumed: number;
     usedFreeGeneration: boolean;
+    resolution: Resolution;
   };
 
   const paidOrigin = (overrides: Partial<Origin> = {}): Origin => ({
@@ -35,6 +36,7 @@ describe('FreeFixService · 1ª correção grátis do Unlocked', () => {
     createdAt: new Date(NOW.getTime() - 2 * DAY),
     creditsConsumed: 40,
     usedFreeGeneration: false,
+    resolution: Resolution.RES_2K,
     ...overrides,
   });
 
@@ -193,6 +195,32 @@ describe('FreeFixService · 1ª correção grátis do Unlocked', () => {
       expect((await check(freeGen.service)).reason).toBe('origin_not_paid');
       const zeroCredits = make({ origin: paidOrigin({ creditsConsumed: 0 }) });
       expect((await check(zeroCredits.service)).reason).toBe('origin_not_paid');
+    });
+
+    it('correção em resolução maior que a origem paga (4K sobre 2K): não elegível, cobra normal', async () => {
+      const { service, findFirst } = make();
+      const above = await check(service, {
+        ...FREE_FIX_UNLOCKED_IMAGE_REQUEST,
+        resolution: Resolution.RES_4K,
+      });
+      expect(above).toEqual({
+        eligible: false,
+        reason: 'resolution_above_origin',
+      });
+      expect(findFirst.mock.calls[0][0].select).toMatchObject({
+        resolution: true,
+      });
+      const same = await check(service, {
+        ...FREE_FIX_UNLOCKED_IMAGE_REQUEST,
+        resolution: Resolution.RES_2K,
+      });
+      expect(same.eligible).toBe(true);
+      const fourK = make({ origin: paidOrigin({ resolution: Resolution.RES_4K }) });
+      const below = await check(fourK.service, {
+        ...FREE_FIX_UNLOCKED_IMAGE_REQUEST,
+        resolution: Resolution.RES_2K,
+      });
+      expect(below.eligible).toBe(true);
     });
   });
 

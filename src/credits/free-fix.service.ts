@@ -3,6 +3,7 @@ import {
   GenerationStatus,
   GenerationType,
   Prisma,
+  Resolution,
   SubscriptionStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -41,6 +42,20 @@ export const FREE_FIX_CAP_WINDOW_MS = 30 * DAY_MS;
 /** 1 correção grátis a cada 10 fotos Unlocked pagas nos últimos 30 dias. */
 export const FREE_FIX_PAID_PER_FREE = 10;
 
+/**
+ * Tamanho de cada resolução (lado maior, em px) só para comparar. A correção grátis não pode sair maior que a
+ * origem paga: 4K grátis sobre uma origem 2K custa 1,5x o que a cliente pagou e estoura a conta do teto.
+ */
+const RESOLUTION_SIZE: Record<Resolution, number> = {
+  [Resolution.RES_480P]: 480,
+  [Resolution.RES_720P]: 720,
+  [Resolution.RES_1K]: 1024,
+  [Resolution.RES_1080P]: 1080,
+  [Resolution.RES_2K]: 2048,
+  [Resolution.RES_3K]: 3072,
+  [Resolution.RES_4K]: 4096,
+};
+
 export type FreeFixReason =
   | 'disabled'
   | 'missing_origin'
@@ -51,6 +66,7 @@ export type FreeFixReason =
   | 'origin_not_image'
   | 'origin_too_old'
   | 'origin_not_paid'
+  | 'resolution_above_origin'
   | 'origin_already_fixed'
   | 'daily_limit'
   | 'annual_plan'
@@ -67,6 +83,8 @@ export interface FreeFixRequest {
   model?: string | null;
   /** Variante de cobrança já resolvida no servidor (ex.: `SEM_CENSURA`). */
   modelVariant?: string | null;
+  /** Resolução pedida. Ausente = a mesma da origem (o GET /generations/:id/free-fix pergunta assim). */
+  resolution?: Resolution | null;
 }
 
 export function isFreeFixEnabled(): boolean {
@@ -133,6 +151,7 @@ export class FreeFixService {
         createdAt: true,
         creditsConsumed: true,
         usedFreeGeneration: true,
+        resolution: true,
       },
     });
     if (!origin) return NOT_ELIGIBLE('not_found');
@@ -149,6 +168,12 @@ export class FreeFixService {
     }
     if (origin.creditsConsumed <= 0 || origin.usedFreeGeneration) {
       return NOT_ELIGIBLE('origin_not_paid');
+    }
+    if (
+      request.resolution &&
+      RESOLUTION_SIZE[request.resolution] > RESOLUTION_SIZE[origin.resolution]
+    ) {
+      return NOT_ELIGIBLE('resolution_above_origin');
     }
 
     const alreadyFixed = await this.prisma.generation.count({

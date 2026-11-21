@@ -4161,6 +4161,7 @@ CRITICAL REQUIREMENTS:
       type,
       model: dto.model,
       modelVariant,
+      resolution: dto.resolution,
     });
     return result.eligible ? originId : null;
   }

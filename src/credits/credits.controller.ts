@@ -247,6 +247,7 @@ export class CreditsController {
       type: dto.type,
       model: dto.model ?? null,
       modelVariant: dto.modelVariant ?? null,
+      resolution: dto.resolution,
     });
     if (!freeFix.eligible) return { ...estimate, freeFix: false };
     return { ...estimate, creditsRequired: 0, hasSufficientBalance: true, freeFix: true };

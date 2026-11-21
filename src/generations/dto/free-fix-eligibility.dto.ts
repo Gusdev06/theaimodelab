@@ -11,7 +11,7 @@ export class FreeFixEligibilityResponseDto {
     type: String,
     nullable: true,
     description:
-      'Motivo quando não sai grátis (disabled, not_found, origin_not_completed, origin_not_unlocked, origin_not_image, origin_too_old, origin_not_paid, origin_already_fixed, daily_limit, annual_plan, monthly_cap); null quando sai.',
+      'Motivo quando não sai grátis (disabled, not_found, origin_not_completed, origin_not_unlocked, origin_not_image, origin_too_old, origin_not_paid, resolution_above_origin, origin_already_fixed, daily_limit, annual_plan, monthly_cap); null quando sai.',
   })
   reason: FreeFixReason | null;
 }
