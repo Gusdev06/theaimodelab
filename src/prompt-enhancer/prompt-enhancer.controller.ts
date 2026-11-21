@@ -26,6 +26,7 @@ export class PromptEnhancerController {
         model: dto.context.model,
         hasReferenceImages: Boolean(dto.context.hasReferenceImages || dto.images?.length),
         referenceCount: dto.images?.length || (dto.context.hasReferenceImages ? 1 : 0),
+        hasFirstFrame: dto.context.hasFirstFrame,
         aspectRatio: dto.context.aspectRatio,
         durationSeconds: dto.context.durationSeconds,
         locale: dto.context.locale,
