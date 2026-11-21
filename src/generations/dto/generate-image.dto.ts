@@ -5,6 +5,7 @@ import {
   IsIn,
   IsArray,
   IsBoolean,
+  MaxLength,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -137,4 +138,13 @@ export class GenerateImageDto {
   @IsOptional()
   @IsBoolean()
   consent_confirmed?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Correção de uma foto (fluxo Corrigir): id da geração de origem. No Unlocked, a 1ª correção de uma foto paga sai grátis quando a origem é elegível (GET /generations/:id/free-fix); fora disso, cobra normal.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  fix_of_generation_id?: string;
 }

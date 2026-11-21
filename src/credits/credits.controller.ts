@@ -18,6 +18,7 @@ import {
 } from '@nestjs/swagger';
 import { CreditsService } from './credits.service';
 import { DailyCreditsService } from './daily-credits.service';
+import { FreeFixService } from './free-fix.service';
 import { CurrentUser } from '../common/decorators';
 import { Public } from '../common/decorators/public.decorator';
 import { PaginationDto } from '../common/dto/pagination.dto';
@@ -45,6 +46,7 @@ export class CreditsController {
     private readonly prisma: PrismaService,
     private readonly metaConversionsService: MetaConversionsService,
     private readonly checkoutCodes: CheckoutCodesService,
+    private readonly freeFix: FreeFixService,
   ) {}
 
   @Get('balance')
@@ -226,7 +228,7 @@ export class CreditsController {
     @CurrentUser('sub') userId: string,
     @Body() dto: EstimateCostDto,
   ): Promise<EstimateCostResponseDto> {
-    return this.creditsService.estimateCost(
+    const estimate = await this.creditsService.estimateCost(
       userId,
       dto.type,
       dto.resolution,
@@ -238,5 +240,15 @@ export class CreditsController {
       dto.hasVideoInput,
       dto.model,
     );
+    if (!dto.fix_of_generation_id) return estimate;
+
+    // 1ª correção grátis do Unlocked: mesma regra da cobrança em generate-image
+    const freeFix = await this.freeFix.checkEligibility(userId, dto.fix_of_generation_id, {
+      type: dto.type,
+      model: dto.model ?? null,
+      modelVariant: dto.modelVariant ?? null,
+    });
+    if (!freeFix.eligible) return { ...estimate, freeFix: false };
+    return { ...estimate, creditsRequired: 0, hasSufficientBalance: true, freeFix: true };
   }
 }

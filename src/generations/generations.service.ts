@@ -18,6 +18,11 @@ import {
   resolveFreeGenerationType,
 } from '../credits/credits.service';
 import { PlansService } from '../plans/plans.service';
+import {
+  FREE_FIX_UNLOCKED_IMAGE_REQUEST,
+  FreeFixService,
+  type FreeFixEligibility,
+} from '../credits/free-fix.service';
 import { ModelsService } from '../models/models.service';
 import { VoicesService } from '../voices/voices.service';
 import { ContentSafetyService } from '../content-safety/content-safety.service';
@@ -33,6 +38,7 @@ import {
   CreditTransactionType,
   Resolution,
   GenerationImageRole,
+  Prisma,
   SubscriptionStatus,
 } from '@prisma/client';
 import { GenerationFiltersDto } from './dto/generation-filters.dto';
@@ -221,6 +227,7 @@ export class GenerationsService {
     private readonly uploadsService: UploadsService,
     private readonly modelsService: ModelsService,
     private readonly voicesService: VoicesService,
+    private readonly freeFix: FreeFixService,
     @InjectQueue(GENERATION_QUEUE) private readonly generationQueue: Queue,
     @InjectQueue(GENERATION_UNLIMITED_QUEUE)
     private readonly unlimitedQueue: Queue,
@@ -532,6 +539,8 @@ export class GenerationsService {
     let creditsRequired = 0;
     let isFreeGeneration = false;
     let freeGenType: FreeGenerationType | null = null;
+    // 1ª correção grátis do Unlocked: origem da correção quando ela sai de graça
+    const freeFixOf = await this.resolveFreeFixOrigin(userId, dto, type, modelVariant);
 
     if (isUnlimited) {
       eligibility = await this.reserveUnlimitedOrThrow(
@@ -539,7 +548,7 @@ export class GenerationsService {
         modelVariant,
         dto.resolution,
       );
-    } else {
+    } else if (!freeFixOf) {
       freeGenType = await this.resolveFreeGenForRequest(
         userId,
         type,
@@ -561,6 +570,11 @@ export class GenerationsService {
       }
     }
 
+    const imageParameters: Record<string, unknown> = {
+      mimeType: dto.mime_type,
+      ...(isUnlimited ? { unlimited: true } : {}),
+      ...(freeFixOf ? { freeFix: true, freeFixOf } : {}),
+    };
     const generation = await this.prisma.generation.create({
       data: {
         userId,
@@ -573,10 +587,7 @@ export class GenerationsService {
         hasAudio: false,
         creditsConsumed: creditsRequired,
         usedFreeGeneration: isFreeGeneration,
-        parameters: {
-          mimeType: dto.mime_type,
-          ...(isUnlimited ? { unlimited: true } : {}),
-        },
+        parameters: imageParameters as Prisma.InputJsonObject,
       },
     });
 
@@ -602,7 +613,19 @@ export class GenerationsService {
     }
 
     if (!isUnlimited) {
-      if (isFreeGeneration && freeGenType) {
+      if (freeFixOf) {
+        creditsRequired = await this.settleFreeFix(
+          userId,
+          generation.id,
+          freeFixOf,
+          {
+            type,
+            resolution: dto.resolution,
+            modelVariant,
+            parameters: imageParameters,
+          },
+        );
+      } else if (isFreeGeneration && freeGenType) {
         await this.consumeFreeGenerationOrRollback(
           userId,
           generation.id,
@@ -712,6 +735,8 @@ export class GenerationsService {
     let creditsRequired = 0;
     let isFreeGeneration = false;
     let freeGenType: FreeGenerationType | null = null;
+    // 1ª correção grátis do Unlocked: origem da correção quando ela sai de graça
+    const freeFixOf = await this.resolveFreeFixOrigin(userId, dto, type, modelVariant);
 
     if (isUnlimited) {
       eligibility = await this.reserveUnlimitedOrThrow(
@@ -719,7 +744,7 @@ export class GenerationsService {
         modelVariant,
         dto.resolution,
       );
-    } else {
+    } else if (!freeFixOf) {
       freeGenType = await this.resolveFreeGenForRequest(
         userId,
         type,
@@ -742,6 +767,12 @@ export class GenerationsService {
       }
     }
 
+    const imageParameters: Record<string, unknown> = {
+      mimeType: dto.mime_type,
+      provider: 'theaimodelab',
+      ...(isUnlimited ? { unlimited: true } : {}),
+      ...(freeFixOf ? { freeFix: true, freeFixOf } : {}),
+    };
     const generation = await this.prisma.generation.create({
       data: {
         userId,
@@ -754,11 +785,7 @@ export class GenerationsService {
         hasAudio: false,
         creditsConsumed: creditsRequired,
         usedFreeGeneration: isFreeGeneration,
-        parameters: {
-          mimeType: dto.mime_type,
-          provider: 'theaimodelab',
-          ...(isUnlimited ? { unlimited: true } : {}),
-        },
+        parameters: imageParameters as Prisma.InputJsonObject,
       },
     });
 
@@ -784,7 +811,19 @@ export class GenerationsService {
     }
 
     if (!isUnlimited) {
-      if (isFreeGeneration && freeGenType) {
+      if (freeFixOf) {
+        creditsRequired = await this.settleFreeFix(
+          userId,
+          generation.id,
+          freeFixOf,
+          {
+            type,
+            resolution: dto.resolution,
+            modelVariant,
+            parameters: imageParameters,
+          },
+        );
+      } else if (isFreeGeneration && freeGenType) {
         await this.consumeFreeGenerationOrRollback(
           userId,
           generation.id,
@@ -4104,6 +4143,94 @@ CRITICAL REQUIREMENTS:
     }
     const hasFree = await this.creditsService.hasFreeGeneration(userId, freeType);
     return hasFree ? 'free_generation' : 'paid';
+  }
+
+  /**
+   * 1ª correção grátis da foto Unlocked (dono 20/11): id da origem quando o pedido é elegível
+   * (FreeFixService, a mesma regra do GET /generations/:id/free-fix e da estimativa); null = cobra normal.
+   */
+  private async resolveFreeFixOrigin(
+    userId: string,
+    dto: GenerateImageDto,
+    type: GenerationType,
+    modelVariant: string | null,
+  ): Promise<string | null> {
+    const originId = dto.fix_of_generation_id;
+    if (!originId || dto.unlimited === true) return null;
+    const result = await this.freeFix.checkEligibility(userId, originId, {
+      type,
+      model: dto.model,
+      modelVariant,
+    });
+    return result.eligible ? originId : null;
+  }
+
+  /**
+   * Com a geração já gravada como correção grátis, confirma que ela é a primeira (dois pedidos ao mesmo
+   * tempo passariam juntos na checagem). Perdeu a vez = vira geração paga normal, com o mesmo débito e o
+   * mesmo rollback de sempre. Devolve os créditos cobrados (0 = ficou grátis).
+   */
+  private async settleFreeFix(
+    userId: string,
+    generationId: string,
+    originId: string,
+    charge: {
+      type: GenerationType;
+      resolution: Resolution;
+      modelVariant: string | null;
+      parameters: Record<string, unknown>;
+    },
+  ): Promise<number> {
+    let creditsRequired: number;
+    try {
+      if (await this.freeFix.confirmClaim(userId, generationId, originId)) {
+        this.logger.log(`[FREE_FIX] gen=${generationId} correção grátis da origem ${originId}`);
+        return 0;
+      }
+      creditsRequired = await this.plansService.calculateGenerationCost(
+        charge.type,
+        charge.resolution,
+        undefined,
+        false,
+        1,
+        charge.modelVariant,
+      );
+      const paidParameters = Object.fromEntries(
+        Object.entries(charge.parameters).filter(
+          ([key]) => key !== 'freeFix' && key !== 'freeFixOf',
+        ),
+      );
+      await this.prisma.generation.update({
+        where: { id: generationId },
+        data: {
+          creditsConsumed: creditsRequired,
+          parameters: paidParameters as Prisma.InputJsonObject,
+        },
+      });
+    } catch (error) {
+      await this.rollbackUnchargedGeneration(generationId, error);
+      throw error;
+    }
+    await this.debitCredits(
+      userId,
+      creditsRequired,
+      generationId,
+      charge.type,
+      charge.resolution,
+    );
+    return creditsRequired;
+  }
+
+  /** GET /generations/:id/free-fix: a correção desta foto no Unlocked sai grátis? */
+  async getFreeFixEligibility(
+    userId: string,
+    generationId: string,
+  ): Promise<FreeFixEligibility> {
+    return this.freeFix.checkEligibility(
+      userId,
+      generationId,
+      FREE_FIX_UNLOCKED_IMAGE_REQUEST,
+    );
   }
 
   /**

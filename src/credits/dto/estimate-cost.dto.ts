@@ -1,4 +1,4 @@
-import { IsEnum, IsOptional, IsInt, IsBoolean, IsString, Min } from 'class-validator';
+import { IsEnum, IsOptional, IsInt, IsBoolean, IsString, MaxLength, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { FreeGenerationType, GenerationType, Resolution } from '@prisma/client';
@@ -59,6 +59,15 @@ export class EstimateCostDto {
   @IsOptional()
   @IsEnum(FreeGenerationType)
   freeGenerationType?: FreeGenerationType;
+
+  @ApiPropertyOptional({
+    description:
+      'Correção de uma foto: id da geração de origem. Unlocked elegível à 1ª correção grátis = creditsRequired 0.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  fix_of_generation_id?: string;
 }
 
 export class EstimateCostResponseDto {
@@ -79,4 +88,9 @@ export class EstimateCostResponseDto {
 
   @ApiProperty({ description: 'Quantas gerações grátis deste tipo o usuário tem' })
   freeGenerationsRemainingForType: number;
+
+  @ApiPropertyOptional({
+    description: 'true quando o pedido traz fix_of_generation_id e a 1ª correção grátis do Unlocked vale',
+  })
+  freeFix?: boolean;
 }

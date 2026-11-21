@@ -59,6 +59,7 @@ import { GenerateTalkingAvatarDto, TalkingAvatarAccessResponseDto } from './dto/
 import { GenerateMultipleAnglesDto } from './dto/generate-multiple-angles.dto';
 import { GenerateVoiceCloneDto } from './dto/generate-voice-clone.dto';
 import { UnlimitedStatusResponseDto } from './dto/unlimited-status.dto';
+import { FreeFixEligibilityResponseDto } from './dto/free-fix-eligibility.dto';
 import { UseInterceptors } from '@nestjs/common';
 import { ContentSafetyInterceptor } from '../content-safety/content-safety.interceptor';
 
@@ -495,6 +496,19 @@ export class GenerationsController {
     @Param('id') id: string,
   ): Promise<GenerationResponseDto> {
     return this.generationsService.findById(userId, id);
+  }
+
+  @Get(':id/free-fix')
+  @ApiOperation({
+    summary: 'A 1ª correção desta foto no Unlocked sai grátis? (só geração do próprio usuário)',
+  })
+  @ApiResponse({ status: 200, type: FreeFixEligibilityResponseDto })
+  @ApiParam({ name: 'id', description: 'ID da geração de origem (a foto a corrigir)' })
+  async freeFix(
+    @CurrentUser('sub') userId: string,
+    @Param('id') id: string,
+  ): Promise<FreeFixEligibilityResponseDto> {
+    return this.generationsService.getFreeFixEligibility(userId, id);
   }
 
   @Get(':id/folders')
