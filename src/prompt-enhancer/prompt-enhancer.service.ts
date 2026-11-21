@@ -334,6 +334,9 @@ Audio: [Main sound]. [Ambient bed]. [Dialogue if any: Character says: "exact tex
 [CINEMATOGRAPHY: shot + angle]. [SUBJECT in STATE]. [CONTEXT if relevant]. [STYLE & AMBIANCE: lighting source + composition + genre].
 \`\`\`
 
+### IMAGE-TO-VIDEO (context says [Has first frame reference: yes]) — overrides the VIDEO TEMPLATE
+The first frame already fixes the subject, the outfit, the place and the light. Redescribing them makes the model reinterpret the frame and the face drifts. Write ONLY what changes over time, 50-120 words: "The same character from the first frame, unchanged in every frame." + ONE action at natural speed + 1-2 micro-movements (breathing, hair, fabric) + ONE camera instruction (or "static camera") + the Audio block when the model has audio. Mention outfit, place or light only if the user wants them to change during the clip.
+
 ═══════════════════════════════════════════════════════════════════
 ## LAYER 7 — AUDIO INTEGRATION (VIDEO ONLY)
 

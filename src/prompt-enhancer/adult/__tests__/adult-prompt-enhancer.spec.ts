@@ -6,6 +6,8 @@ import {
   composeEnhanced,
   deterministicEnhancement,
   ENHANCEMENT_SCHEMA,
+  FIRST_FRAME_VIDEO_ANCHOR,
+  isFirstFrameVideo,
   looksLikeEdit,
   parseEnhancement,
 } from '../adult-enhancer.policy';
@@ -72,6 +74,33 @@ describe('política do melhorador 18+', () => {
     expect(looksLikeEdit('muda a cor do top para vermelho')).toBe(true);
     expect(looksLikeEdit('ela deitada na cama de lingerie preta olhando para a câmera')).toBe(false);
     expect(ENHANCEMENT_SCHEMA.required).toEqual(['prompt', 'avoid', 'note']);
+  });
+});
+
+describe('vídeo que parte de uma foto (estudo de 19–20/11)', () => {
+  it('1 referência no vídeo = 1º quadro; 2+ referências = vídeo por referência; o campo explícito manda', () => {
+    expect(isFirstFrameVideo({ type: 'video', hasReferenceImages: true, referenceCount: 1 })).toBe(true);
+    expect(isFirstFrameVideo({ type: 'video', hasReferenceImages: true, referenceCount: 2 })).toBe(false);
+    expect(isFirstFrameVideo({ type: 'video', hasReferenceImages: true, hasFirstFrame: false })).toBe(false);
+    expect(isFirstFrameVideo({ type: 'video', hasFirstFrame: true })).toBe(true);
+    expect(isFirstFrameVideo({ type: 'image', hasReferenceImages: true, hasFirstFrame: true })).toBe(false);
+  });
+
+  it('bloco fixo do 1º quadro: âncora de identidade + pedido intacto + movimento; sem redescrever idade, corpo ou cenário', () => {
+    const text = composeEnhanced(deterministicEnhancement('ela tira a alça devagar', { type: 'video', hasReferenceImages: true, referenceCount: 1 }));
+    expect(text.startsWith(FIRST_FRAME_VIDEO_ANCHOR)).toBe(true);
+    expect(text).toContain('ela tira a alça devagar');
+    expect(text).toContain('steady camera');
+    expect(text).toMatch(/Avoid: different face from the first frame/);
+    expect(text).not.toContain('27 years old');
+    expect(text).not.toContain('Image 1 is the identity reference');
+    expect(text).not.toMatch(/(?:photorealistic|cinematic|perfect|flawless)/i);
+  });
+
+  it('cabeçalho marca o 1º quadro e a política tem a regra por motor (H3 sem colchete de câmera)', () => {
+    expect(adultEnhancerMessage('x', { type: 'video', model: 'wavespeed-ltx-spicy', hasReferenceImages: true })).toContain('[first frame: yes]');
+    expect(ADULT_ENHANCER_SYSTEM_PROMPT).toContain('Write ONLY what changes over time');
+    expect(ADULT_ENHANCER_SYSTEM_PROMPT).toContain('not H3: do not use them');
   });
 });
 
