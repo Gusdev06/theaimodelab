@@ -178,10 +178,12 @@ describe('GET /plans · assinante recorrente não vê link de pré-pago (cobran�
     ]);
   });
 
-  it('link da marca (checkout_codes) continua com precedência', async () => {
+  // TKT-354 (22/11): o link da marca é de outro produto e abriria uma 2ª cobrança; o assinante recorrente fica
+  // no link da assinatura de sempre (antes, 17/11, a marca tinha precedência).
+  it('assinante recorrente NÃO recebe o link da marca (checkout_codes)', async () => {
     const { controller } = make({ recurring: true, links: new Map([['p-pro', 'https://funv/pro']]) });
     const result = await controller.findAll(undefined, { headers: {}, user: { sub: 'u-1' } });
-    expect(result[0].checkoutUrl).toBe('https://funv/pro');
+    expect(result[0].checkoutUrl).not.toBe('https://funv/pro');
     expect(result[1].checkoutUrl).toBe(`${PAY}PPU38CQDTOH`);
   });
 
