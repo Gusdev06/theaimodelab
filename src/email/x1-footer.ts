@@ -43,10 +43,21 @@ export function recoveryPlanFromName(planName: string | null | undefined): X1Rec
   return RECOVERY_PLANS.find((plan) => lower.includes(plan)) ?? null;
 }
 
-export function x1WhatsAppUrl(locale: X1Locale): string {
+/**
+ * Link único do WhatsApp com 2 números do suporte ativos (dono, 22/11/2026): com MIA_X1_WA_URL (ex.:
+ * https://assets.theaimodelab.com/wa, o /wa dos funis, que escolhe o número no ar) o e-mail leva esse link; sem ela,
+ * wa.me do MIA_X1_WA_NUMBER, como antes. Lido a cada envio (troca sem deploy de código).
+ */
+export function supportWaBase(): string {
+  const url = (process.env.MIA_X1_WA_URL ?? '').trim().replace(/\/+$/, '');
+  if (/^https:\/\/[a-z0-9.-]+(\/[A-Za-z0-9._~/-]*)?$/i.test(url)) return url;
   const configured = (process.env.MIA_X1_WA_NUMBER ?? '').replace(/\D/g, '');
   const number = configured.length >= 10 ? configured : DEFAULT_SUPPORT_WA_NUMBER;
-  return `https://wa.me/${number}?text=${encodeURIComponent(WA_TEXT[locale]).replace(/'/g, '%27')}`;
+  return `https://wa.me/${number}`;
+}
+
+export function x1WhatsAppUrl(locale: X1Locale): string {
+  return `${supportWaBase()}?text=${encodeURIComponent(WA_TEXT[locale]).replace(/'/g, '%27')}`;
 }
 
 export function x1TelegramUrl(locale: X1Locale, options: X1FooterOptions = {}): string {
