@@ -20,6 +20,7 @@
  */
 
 import { resolveBrand } from '../brand/brand';
+import { supportWaBase } from '../email/x1-footer';
 import type { EmailLocale } from './onboarding-sequence-templates';
 
 /** Pasta pública das MIAs no funis (`funis/public/assets/mia`). */
@@ -102,7 +103,6 @@ export function miaLine(scene: MiaEmailScene, locale: EmailLocale): string {
 }
 
 /** WhatsApp do suporte da The AI Model Lab: o mesmo número das páginas de obrigado e dos e-mails do pack. */
-const DEFAULT_SUPPORT_WA_NUMBER = '5511922198321';
 
 /** Texto que já vai escrito na conversa. Neutro de propósito: fica no histórico do WhatsApp. */
 const MIA_TALK_TEXT: Record<EmailLocale, string> = {
@@ -123,11 +123,9 @@ export function miaTalkEnabled(): boolean {
   return (process.env.MIA_X1_EMAIL ?? 'on').trim().toLowerCase() !== 'off';
 }
 
-/** Link do WhatsApp do suporte com a palavra MIA no texto, no idioma da conta. */
+/** Link do WhatsApp do suporte com a palavra MIA no texto, no idioma da conta (MIA_X1_WA_URL = link único dos 2 números). */
 export function miaTalkUrl(locale: EmailLocale): string {
-  const configured = (process.env.MIA_X1_WA_NUMBER ?? '').replace(/\D/g, '');
-  const number = configured.length >= 10 ? configured : DEFAULT_SUPPORT_WA_NUMBER;
-  return `https://wa.me/${number}?text=${encodeURIComponent(MIA_TALK_TEXT[locale]).replace(/'/g, '%27')}`;
+  return `${supportWaBase()}?text=${encodeURIComponent(MIA_TALK_TEXT[locale]).replace(/'/g, '%27')}`;
 }
 
 function miaTalkLine(locale: EmailLocale): string {

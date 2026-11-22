@@ -39,4 +39,17 @@ describe('x1-footer', () => {
     expect(x1LocaleFrom(null)).toBe('en');
     expect(decodeURIComponent(x1WhatsAppUrl('pt').split('text=')[1])).toBe('MIA · Oi, Mia! Quero conversar com você.');
   });
+
+  it('MIA_X1_WA_URL (link único dos 2 números) troca o wa.me; URL inválida cai no número', () => {
+    const before = process.env.MIA_X1_WA_URL;
+    try {
+      process.env.MIA_X1_WA_URL = 'https://assets.theaimodelab.com/wa/';
+      expect(x1WhatsAppUrl('en')).toMatch(/^https:\/\/assets\.theaimodelab\.com\/wa\?text=MIA/);
+      process.env.MIA_X1_WA_URL = 'javascript:alert(1)';
+      expect(x1WhatsAppUrl('en')).toMatch(/^https:\/\/wa\.me\/\d+\?text=/);
+    } finally {
+      if (before === undefined) delete process.env.MIA_X1_WA_URL;
+      else process.env.MIA_X1_WA_URL = before;
+    }
+  });
 });
