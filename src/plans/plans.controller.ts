@@ -61,7 +61,11 @@ export class PlansController {
       const keepCaktoSubscription = userId ? await this.plansService.hasRecurringCaktoSubscription(userId) : false;
       return brlPlans.map((p) => ({
         ...p,
-        checkoutUrl: brandLinks.get(p.id) ?? ((keepCaktoSubscription ? subscriptionCheckoutUrlFor(p.checkoutUrl) : null) ?? p.checkoutUrl),
+        // Assinante recorrente da Cakto fica no link da assinatura do MESMO produto, também na vitrine de outra
+        // marca: o link da marca (outro produto) abriria uma 2ª cobrança que não cancela a 1ª (TKT-354).
+        checkoutUrl: keepCaktoSubscription
+          ? (subscriptionCheckoutUrlFor(p.checkoutUrl) ?? p.checkoutUrl)
+          : (brandLinks.get(p.id) ?? p.checkoutUrl),
       }));
     }
 
@@ -106,7 +110,10 @@ export class PlansController {
           sortOrder: p.sortOrder,
           billingInterval: p.billingInterval,
           basePlanSlug: p.basePlanSlug ?? null,
-          checkoutUrl: brandLinks.get(p.id) ?? planCheckoutUrl(p.checkoutUrl),
+          // Mesma regra do BRL: assinante recorrente da Perfect Pay não recebe o link da marca (TKT-354).
+          checkoutUrl: keepSubscriptionLinks
+            ? planCheckoutUrl(p.checkoutUrl)
+            : (brandLinks.get(p.id) ?? planCheckoutUrl(p.checkoutUrl)),
         };
       }),
     );
