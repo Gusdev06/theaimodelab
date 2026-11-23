@@ -19,9 +19,11 @@ import { WebhookLogsModule } from '../webhook-logs/webhook-logs.module';
 import { EmailModule } from '../email/email.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { CheckoutCodesModule } from '../checkout-codes/checkout-codes.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { DeclineFallbackService } from './decline-fallback.service';
 
 @Module({
-  imports: [PrismaModule, WebhookLogsModule, EmailModule, PaymentsModule, CheckoutCodesModule],
+  imports: [PrismaModule, WebhookLogsModule, EmailModule, PaymentsModule, CheckoutCodesModule, NotificationsModule],
   controllers: [
     HublaWebhookController,
     HotmartWebhookController,
@@ -40,6 +42,7 @@ import { CheckoutCodesModule } from '../checkout-codes/checkout-codes.module';
     CaktoWebhookService,
     NoAccountPurchasesService,
     NoAccountPurchasesClaimer,
+    DeclineFallbackService,
   ],
   exports: [PendingGrantsService, NoAccountPurchasesClaimer],
 })
