@@ -363,7 +363,7 @@ export class PaymentsService {
       // PerfectpaySubscriptionExpiryService já a pôs em CANCELED. Sem assinatura ativa no gateway, a cobrança
       // com o mesmo código PPSUB reabre a assinatura antiga: conta como renovação (torre e leitura da porta),
       // sem Purchase no CAPI, sem e-mail de boas-vindas e sem comissão de 1ª venda. Antes criava uma assinatura
-      // nova (7 de 13 "assinaturas novas" de 20 a 23/11 eram isso). Desfazer: LAPSED_RENEWAL_REOPEN=off.
+      // nova (7 de 12 "assinaturas novas" de 20 a 23/11 eram isso). Desfazer: LAPSED_RENEWAL_REOPEN=off.
       const lapsedSub =
         !activeSub && subscriptionCode && !cancelAtPeriodEnd && lapsedRenewalReopenEnabled()
           ? await tx.subscription.findFirst({

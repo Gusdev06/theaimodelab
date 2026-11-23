@@ -2037,7 +2037,7 @@ export class AdminService {
       bounds AS (SELECT ${start} AS b),
       -- Renovação conta pela MESMA recorrência no gateway (usuária + provider + código PPSUB/Cakto), não pela
       -- linha local: a cobrança que a Perfect Pay/Cakto recupera depois da carência do cron já caiu numa
-      -- assinatura recriada e aparecia como "assinatura nova" (23/11: 7 de 13 de 20 a 23/11).
+      -- assinatura recriada e aparecia como "assinatura nova" (23/11: 7 de 12 de 20 a 23/11).
       r AS (
         SELECT hp.*,
                CASE WHEN hp.type = 'SUBSCRIPTION' AND hp.subscription_id IS NOT NULL
