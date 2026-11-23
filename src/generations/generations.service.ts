@@ -187,6 +187,7 @@ import {
 import { UnlimitedService } from '../unlimited/unlimited.service';
 import { UnlimitedEligibility } from '../unlimited/unlimited.types';
 import { InflightRunsService } from '../shutdown/inflight-runs.service';
+import { UPSCALE_TOOL_PROMPT } from './quality-edit';
 
 type GenerationWithRelations = {
   id: string;
@@ -683,8 +684,7 @@ export class GenerationsService {
     userId: string,
     dto: UpscaleImageDto,
   ): Promise<CreateGenerationResponseDto> {
-    const UPSCALE_PROMPT =
-      'Enhance image resolution to 4K quality while preserving all original details exactly. Improve sharpness, reduce compression artifacts, and enhance clarity without changing any visual elements. Maintain the exact same composition, colors, lighting, and all details.';
+    const UPSCALE_PROMPT = UPSCALE_TOOL_PROMPT;
 
     return this.generateImageWithFallback(
       userId,

@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import { QUALITY_EDIT_PROMPT } from '../../quality-edit';
 import {
   SeedreamProvider,
   isUnlockedEngineSwapContext,
@@ -718,6 +719,145 @@ describe('SeedreamProvider · motor do Unlocked (UNLOCKED_ENGINE)', () => {
     expect(String(created()[0].input.prompt)).not.toContain(
       'Ultra-realistic photo',
     );
+  });
+
+  describe('pedido só de qualidade numa foto (TKT-373)', () => {
+    // foto retrato 600×800 (3:4): o seletor da tela mandava 9:16 e o modelo esticava. A leitura da foto é simulada
+    // (o sharp de verdade roda fora do relógio falso e empurrava o s55 para a reserva).
+    let aspectSpy: jest.SpyInstance;
+    beforeEach(() => {
+      aspectSpy = jest
+        .spyOn(SeedreamProvider.prototype as any, 'readImageAspect')
+        .mockResolvedValue(600 / 800);
+    });
+    afterEach(() => aspectSpy.mockRestore());
+
+    function mockKieWithPhoto() {
+      let next = 0;
+      mockFetch((url) => {
+        if (url.endsWith('/api/v1/jobs/createTask'))
+          return jsonResponse({
+            code: 200,
+            msg: 'ok',
+            data: { taskId: `task-${++next}` },
+          });
+        if (url.includes('/api/v1/jobs/recordInfo?taskId=')) {
+          const taskId = url.split('taskId=')[1];
+          return jsonResponse({
+            code: 200,
+            msg: 'ok',
+            data: {
+              taskId,
+              state: 'success',
+              resultJson: JSON.stringify({
+                resultUrls: [`https://kie.test/${taskId}.jpg`],
+              }),
+            },
+          });
+        }
+        if (url.startsWith('https://kie.test/task-')) return imageResponse();
+        throw new Error(`url inesperada ${url}`);
+      });
+    }
+
+    const photoInput = (id: string, prompt: string) => ({
+      ...eligible(id, 'u1'),
+      prompt,
+      aspectRatio: '9:16',
+      imageUrls: ['https://cdn.test/in0.jpg'],
+    });
+    const ENV = {
+      ...KIE_ENV,
+      UNLOCKED_ENGINE_I2I_S55_PCT: '100',
+      ULTRA_REALISM_PROMPTS: 'on',
+    };
+
+    it('"Upscale" com foto vira edição que preserva rosto e quadro, sem o bloco de ultra-realismo e na proporção da foto', async () => {
+      mockKieWithPhoto();
+      const provider = buildProvider(ENV);
+      await run(provider.generateImage(photoInput('q1', 'Upscale')));
+      const [sent] = created();
+      const prompt = String(sent.input.prompt);
+      expect(prompt).toMatch(
+        /^Edit this exact image\. Make only this change: improve the image quality/,
+      );
+      expect(prompt).toContain('the same person with the same face');
+      expect(prompt).not.toContain('Ultra-realistic photo');
+      expect(prompt).not.toMatch(/^Upscale/);
+      expect(sent.input.aspect_ratio).toBe('3:4');
+      expect(sent.model).toBe('seedream/5-5-image-to-image');
+      expect(created()).toHaveLength(1);
+      // a âncora de adulto continua no prompt final
+      expect(prompt.length).toBeGreaterThan(QUALITY_EDIT_PROMPT.length);
+    });
+
+    it('se a leitura da foto falhar, vale a proporção que a cliente escolheu (não 1:1)', async () => {
+      aspectSpy.mockRejectedValue(new Error('cdn 503'));
+      mockKieWithPhoto();
+      const provider = buildProvider(ENV);
+      await run(provider.generateImage(photoInput('q6', 'dar nitidez')));
+      const [sent] = created();
+      expect(String(sent.input.prompt)).toMatch(/^Edit this exact image/);
+      expect(sent.input.aspect_ratio).toBe('9:16');
+    });
+
+    it('"add blur" e "reduzir a nitidez" seguem crus', async () => {
+      mockKieWithPhoto();
+      const provider = buildProvider(ENV);
+      await run(provider.generateImage(photoInput('q7', 'add blur')));
+      await run(provider.generateImage(photoInput('q8', 'reduzir a nitidez')));
+      const [blur, menos] = created().map((b) => String(b.input.prompt));
+      expect(blur).toMatch(/^add blur/);
+      expect(menos).toMatch(/^reduzir a nitidez/);
+    });
+
+    it('pedido criativo com foto segue cru, com o bloco e a proporção escolhida', async () => {
+      mockKieWithPhoto();
+      const provider = buildProvider(ENV);
+      await run(
+        provider.generateImage(
+          photoInput('q2', 'adult woman, 30, kneeling on the bed, HD'),
+        ),
+      );
+      const [sent] = created();
+      expect(String(sent.input.prompt)).toMatch(/^adult woman, 30, kneeling/);
+      expect(String(sent.input.prompt)).toContain('Ultra-realistic photo');
+      expect(sent.input.aspect_ratio).toBe('9:16');
+    });
+
+    it('sem foto, "Upscale" não muda nada (não há o que preservar)', async () => {
+      mockKieWithPhoto();
+      const provider = buildProvider(ENV);
+      await run(
+        provider.generateImage({ ...eligible('q3', 'u1'), prompt: 'Upscale' }),
+      );
+      expect(String(created()[0].input.prompt)).toMatch(/^Upscale/);
+    });
+
+    it('UNLOCKED_QUALITY_EDIT_LOCK=off devolve o comportamento antigo', async () => {
+      mockKieWithPhoto();
+      const provider = buildProvider({
+        ...ENV,
+        UNLOCKED_QUALITY_EDIT_LOCK: 'off',
+      });
+      await run(provider.generateImage(photoInput('q4', 'Upscale')));
+      const [sent] = created();
+      expect(String(sent.input.prompt)).toMatch(/^Upscale/);
+      expect(sent.input.aspect_ratio).toBe('9:16');
+      expect(created()).toHaveLength(1);
+    });
+
+    it('fora do Unlocked (com o wrapper de roupa) o pedido não é trocado', async () => {
+      mockKieWithPhoto();
+      const provider = buildProvider(ENV);
+      await run(
+        provider.generateImage({
+          ...photoInput('q5', 'Upscale'),
+          skipSafetyWrapper: false,
+        }),
+      );
+      expect(String(created()[0].input.prompt)).toMatch(/^Upscale/);
+    });
   });
 
   it('desvio de segurança: só o das imagens entra no canário', () => {
