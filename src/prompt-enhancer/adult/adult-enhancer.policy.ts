@@ -169,7 +169,7 @@ export function composeEnhanced(enhancement: AdultEnhancement): string {
 export function deterministicEnhancement(prompt: string, context: AdultEnhancerContext): AdultEnhancement {
   const clean = prompt.trim();
   if (isFirstFrameVideo(context)) return firstFrameVideoEnhancement(clean);
-  const hasAge = /\b(1[89]|[2-5]\d)\s*(?:years?\s*old|anos|años|ans|y\/?o|yo)\b|\b(?:woman|mulher|mujer|femme|homem|man|hombre)\b[^.]{0,20}\b(1[89]|[2-5]\d)\b/i.test(clean);
+  const hasAge = /\b(1[89]|[2-9]\d)\s*(?:years?\s*old|anos|años|ans|y\/?o|yo)\b|\b(?:woman|mulher|mujer|femme|homem|man|hombre)\b[^.]{0,20}\b(1[89]|[2-9]\d)\b/i.test(clean);
   const parts: string[] = [];
   if (context.hasReferenceImages) {
     parts.push(
@@ -178,7 +178,9 @@ export function deterministicEnhancement(prompt: string, context: AdultEnhancerC
         : 'Same person as in the reference image: same face, same body proportions, same skin tone.',
     );
   }
-  parts.push(hasAge ? clean : `Adult woman, 27 years old. ${clean}`);
+  // pedido de homem ou casal não vira "mulher de 27" (dono, 23/11): só a âncora de adulto
+  const malePresent = /\b(?:man|men|homem|homens|hombre|hombres|casal|couple|pareja|guy|boy ?friend)\b/i.test(clean);
+  parts.push(hasAge ? clean : `${malePresent ? 'Every person shown is an adult (18 or older).' : 'Adult woman, 27 years old.'} ${clean}`);
   parts.push(
     context.type === 'video'
       ? 'Real footage look: natural skin texture with visible pores and imperfections, no beauty filter, realistic body weight and movement, one steady camera move, natural micro-movements of hair and fabric, consistent face across frames.'

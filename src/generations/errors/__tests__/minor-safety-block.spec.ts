@@ -236,3 +236,22 @@ describe('texto da falha para o usuário', () => {
     ).toBe('Não foi possível gerar a imagem');
   });
 });
+
+describe('isMinorSafetyBlock · palavra de criança comum só conta com contexto de abuso (23/11)', () => {
+  it.each([
+    'Content blocked: a woman and her kids at the beach, sexy pose',
+    'rejected by moderation: violence',
+    'blocked: the prompt mentions children in the background of a family photo',
+  ])('não é recusa por menor: %s', (text) => {
+    expect(isMinorSafetyBlock(new ContentSafetyError(text))).toBe(false);
+  });
+  it.each([
+    'blocked: sexual content involving children',
+    'rejected: child safety policy',
+    'blocked: minors',
+    'csam detected',
+    'rejected (support code 58061214)',
+  ])('continua recusa por menor: %s', (text) => {
+    expect(isMinorSafetyBlock(new ContentSafetyError(text))).toBe(true);
+  });
+});

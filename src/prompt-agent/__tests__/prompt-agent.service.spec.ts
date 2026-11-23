@@ -212,11 +212,15 @@ describe('Clonar prompt: plano B do OpenRouter (beedf6a) com a trava de menor', 
     expect(safety.record.mock.calls[0][0].excerpt).toMatch(/imagem [0-9a-f]{12}$/);
   });
 
-  it.each([
-    ['menina', 'menina'],
-    ['novinha', 'novinha'],
-    ['teen', 'teen'],
-  ])('a análise do OpenRouter diz "%s": a trava barra antes da troca de termos (que viraria "mulher adulta")', async (word, match) => {
+  it.each(['menina', 'novinha'])('a análise do OpenRouter diz "%s": é adulta, como no pedido da cliente (dono, 23/11)', async (word) => {
+    const reply = JSON.stringify(analysis({ idade: word }));
+    const { service, safety, refund } = buildReplies([GEMINI_REFUSAL], { adult: [reply] });
+    await service.analyzeImage('user-3', IMAGE);
+    expect(refund).not.toHaveBeenCalled();
+    expect(safety.record).not.toHaveBeenCalled();
+  });
+
+  it.each([['teen', 'teen']])('a análise do OpenRouter diz "%s": a trava barra antes da troca de termos (que viraria "mulher adulta")', async (word, match) => {
     const reply = JSON.stringify(analysis({ idade: word }));
     const { service, safety, refund } = buildReplies([GEMINI_REFUSAL], { adult: [reply] });
     await minorRefusal(service);

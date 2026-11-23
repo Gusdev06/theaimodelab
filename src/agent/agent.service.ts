@@ -2,8 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ContentSafetyEventKind, Resolution } from '@prisma/client';
 import { ErrorCodes } from '../common/constants/error-codes';
 import { ContentSafetyService } from '../content-safety/content-safety.service';
-import { isUncensoredModel, requiresConsentAlways } from '../content-safety/content-safety.interceptor';
-import { assessText } from '../content-safety/minor-guard';
+import { accountDeclarationMatch, isUncensoredModel, requiresConsentAlways } from '../content-safety/content-safety.interceptor';
+import { assessText, withoutUnreadScripts } from '../content-safety/minor-guard';
 import {
   TheaimodelabChatClient,
   ChatMessage,
@@ -31,6 +31,9 @@ const optNum = (v: unknown): number | undefined => {
 const optBool = (v: unknown): boolean | undefined =>
   v === undefined || v === null ? undefined : Boolean(v);
 
+/** Resultado da trava do agente: a recusa (devolvida ao modelo) ou o atestado gravado para ligar à geração criada. */
+type SafetyGate = { refused: Record<string, unknown> } | { refused: null; attestedEventId: string | null };
+
 export interface ToolCallLog {
   name: string;
   args: Record<string, any>;
@@ -52,24 +55,25 @@ export class AgentService {
 
   /**
    * Trava de segurança do agente, antes de qualquer geração: o prompt que o LLM escreve passa pela mesma
-   * conferência de menor das rotas de geração, e foto do usuário nunca vai a modelo sem censura por aqui (o
-   * agente não tem a tela do atestado de imagem). Devolve o erro para o agente, ou null quando pode seguir.
+   * conferência de menor das rotas de geração. Foto do usuário em modelo sem censura segue com a declaração das imagens
+   * que a conta já fez (atestado gravado, como no interceptor); sem ela, recusa (o agente não tem a tela do atestado).
+   * O prompt negativo não é conferido ("child, teen" ali é o que EVITAR, como no interceptor).
    */
   private async refuseUnsafe(
     userId: string,
     tool: string,
     texts: (string | undefined)[],
     media: { hasUserImages: boolean; model?: string },
-  ): Promise<Record<string, unknown> | null> {
+  ): Promise<SafetyGate> {
     for (const text of texts) {
       const verdict = assessText(text);
       if (!verdict.blocked) continue;
       if (verdict.reason === 'script') {
         // alfabeto que a trava não lê: recusado sem leitura e fora da trilha de abuso
-        return { error: ErrorCodes.CONTENT_POLICY_LANGUAGE.message, code: ErrorCodes.CONTENT_POLICY_LANGUAGE.code };
+        return { refused: { error: ErrorCodes.CONTENT_POLICY_LANGUAGE.message, code: ErrorCodes.CONTENT_POLICY_LANGUAGE.code } };
       }
       if (verdict.reason === 'size') {
-        return { error: ErrorCodes.REQUEST_TOO_LARGE.message, code: ErrorCodes.REQUEST_TOO_LARGE.code };
+        return { refused: { error: ErrorCodes.REQUEST_TOO_LARGE.message, code: ErrorCodes.REQUEST_TOO_LARGE.code } };
       }
       await this.contentSafety.record({
         userId,
@@ -78,9 +82,20 @@ export class AgentService {
         match: verdict.match ?? null,
         excerpt: text ?? null,
       });
-      return { error: ErrorCodes.CONTENT_POLICY_MINOR.message, code: ErrorCodes.CONTENT_POLICY_MINOR.code };
+      return { refused: { error: ErrorCodes.CONTENT_POLICY_MINOR.message, code: ErrorCodes.CONTENT_POLICY_MINOR.code } };
     }
     if (requiresConsentAlways(media.model) || (media.hasUserImages && isUncensoredModel(media.model))) {
+      // a conta já fez a declaração das imagens (na porta): vale como atestado, igual às rotas de geração (dono, 23/11)
+      const declaration = await this.contentSafety.accountImageDeclaration(userId);
+      if (declaration) {
+        const attestedEventId = await this.contentSafety.recordOrThrow({
+          userId,
+          kind: ContentSafetyEventKind.CONSENT_ATTESTED,
+          route: `agent:${tool}`,
+          match: accountDeclarationMatch(declaration.version),
+        });
+        return { refused: null, attestedEventId };
+      }
       await this.contentSafety.record({
         userId,
         kind: ContentSafetyEventKind.CONSENT_MISSING,
@@ -88,11 +103,21 @@ export class AgentService {
         match: media.model ?? null,
       });
       return {
-        error: 'Foto de pessoa em modelo sem censura só pelo gerador, com a autorização de imagem. Use outro modelo aqui.',
-        code: ErrorCodes.CONSENT_REQUIRED.code,
+        refused: {
+          error: 'Foto de pessoa em modelo sem censura só pelo gerador, com a autorização de imagem. Use outro modelo aqui.',
+          code: ErrorCodes.CONSENT_REQUIRED.code,
+        },
       };
     }
-    return null;
+    return { refused: null, attestedEventId: null };
+  }
+
+  /** Liga o atestado do agente à geração criada (o desvio para o modelo sem censura confere esse vínculo). */
+  private async linkAttested(gate: SafetyGate, result: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (gate.refused === null && gate.attestedEventId && typeof result.id === 'string') {
+      await this.contentSafety.linkGeneration(gate.attestedEventId, result.id);
+    }
+    return result;
   }
 
   async chat(userId: string, dto: AgentChatDto) {
@@ -182,6 +207,8 @@ export class AgentService {
     args: Record<string, unknown>,
     images: AgentImageDto[],
   ): Promise<Record<string, unknown>> {
+    // alfabeto que a trava não lê sai do prompt em vez de recusar o pedido (mesma regra do interceptor, 23/11)
+    if (typeof args.prompt === 'string') args.prompt = withoutUnreadScripts(args.prompt);
     try {
       switch (name) {
         case 'listar_modelos_imagem': {
@@ -216,20 +243,20 @@ export class AgentService {
         }
 
         case 'melhorar_prompt': {
-          const refused = await this.refuseUnsafe(userId, name, [str(args.prompt)], { hasUserImages: false });
-          if (refused) return refused;
+          const gate = await this.refuseUnsafe(userId, name, [str(args.prompt)], { hasUserImages: false });
+          if (gate.refused) return gate.refused;
           const r = await this.promptEnhancer.enhance(str(args.prompt));
           return { prompt: r.prompt, negativePrompt: r.negativePrompt };
         }
 
         case 'gerar_imagem': {
           const refImages = this.resolveImages(args.image_indexes, images);
-          const refused = await this.refuseUnsafe(userId, name, [str(args.prompt)], {
+          const gate = await this.refuseUnsafe(userId, name, [str(args.prompt)], {
             hasUserImages: refImages.length > 0,
             model: str(args.model),
           });
-          if (refused) return refused;
-          return {
+          if (gate.refused) return gate.refused;
+          return this.linkAttested(gate, {
             ...(await this.generations.generateImage(userId, {
               prompt: str(args.prompt),
               model: str(args.model),
@@ -237,16 +264,16 @@ export class AgentService {
               aspect_ratio: optStr(args.aspect_ratio),
               ...(refImages.length ? { images: refImages } : {}),
             })),
-          };
+          });
         }
 
         case 'gerar_video_texto': {
-          const refused = await this.refuseUnsafe(userId, name, [str(args.prompt), optStr(args.negative_prompt)], {
+          const gate = await this.refuseUnsafe(userId, name, [str(args.prompt)], {
             hasUserImages: false,
             model: str(args.model),
           });
-          if (refused) return refused;
-          return {
+          if (gate.refused) return gate.refused;
+          return this.linkAttested(gate, {
             ...(await this.generations.generateTextToVideo(userId, {
               prompt: str(args.prompt),
               model: str(args.model),
@@ -256,17 +283,17 @@ export class AgentService {
               generate_audio: optBool(args.generate_audio),
               negative_prompt: optStr(args.negative_prompt),
             })),
-          };
+          });
         }
 
         case 'gerar_video_imagem': {
           const frame = this.pickImage(args.image_index, images);
-          const refused = await this.refuseUnsafe(userId, name, [str(args.prompt)], {
+          const gate = await this.refuseUnsafe(userId, name, [str(args.prompt)], {
             hasUserImages: true,
             model: optStr(args.model),
           });
-          if (refused) return refused;
-          return {
+          if (gate.refused) return gate.refused;
+          return this.linkAttested(gate, {
             ...(await this.generations.generateImageToVideo(userId, {
               prompt: str(args.prompt),
               model: optStr(args.model),
@@ -277,7 +304,7 @@ export class AgentService {
               duration_seconds: optNum(args.duration_seconds),
               generate_audio: optBool(args.generate_audio),
             })),
-          };
+          });
         }
 
         case 'consultar_geracao': {

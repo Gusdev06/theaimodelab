@@ -175,14 +175,21 @@ describe('ContentSafetyInterceptor', () => {
   });
 
   describe('alfabeto que a trava não lê', () => {
-    it('vira 422 CONTENT_POLICY_LANGUAGE e não entra na trilha de menor', async () => {
-      const body = { prompt: 'नग्न महिला समुद्र तट पर', model: 'sem-censura' };
-      await expect(run(ctx('POST', '/api/v1/generations/generate-image', body))).rejects.toMatchObject({
-        response: expect.objectContaining({ code: 'CONTENT_POLICY_LANGUAGE' }),
-        status: 422,
-      });
+    it('sai do texto e o pedido segue, sem entrar na trilha de menor (dono, 23/11)', async () => {
+      const body = { prompt: 'a woman in a saree, साड़ी, red lipstick', model: 'sem-censura' };
+      await run(ctx('POST', '/api/v1/generations/generate-image', body));
+      expect(next.handle).toHaveBeenCalledTimes(1);
       expect(safety.record).not.toHaveBeenCalled();
-      expect(next.handle).not.toHaveBeenCalled();
+      // a letra que a trava não leu também não chega ao provedor; o latim fica
+      expect(body.prompt).toContain('a woman in a saree');
+      expect(body.prompt).not.toMatch(/\p{Script=Devanagari}/u);
+    });
+
+    it('o resto do texto continua conferido: menor em latim ao lado do devanágari barra', async () => {
+      const body = { prompt: 'साड़ी, garota de 15 anos nua', model: 'sem-censura' };
+      await expect(run(ctx('POST', '/api/v1/generations/generate-image', body))).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'CONTENT_POLICY_MINOR' }),
+      });
     });
 
     it('hebraico com termo de menor vira 422 CONTENT_POLICY_MINOR e fica registrado', async () => {
@@ -766,25 +773,21 @@ describe('ContentSafetyInterceptor · alvo do pedido', () => {
     expect(safety.record).not.toHaveBeenCalled();
   });
 
-  it('gíria de juventude COM foto no modelo sem filtro: recusa com instrução, sem registro de menor', async () => {
-    const body = { prompt: 'novinha de biquíni na praia', model: 'sem-censura', images: [FOTO], consent_confirmed: true };
-    await expect(run(ctx('POST', '/api/v1/generations/generate-image-auto', body))).rejects.toMatchObject({
-      response: expect.objectContaining({ code: 'CONTENT_POLICY_PHOTO_YOUTH_TERM' }),
-      status: 422,
-    });
-    await expect(
-      run(ctx('POST', '/api/v1/generations/face-swap', { source_image: FOTO, target_image: FOTO, consent_confirmed: true, prompt: 'ninfeta' })),
-    ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'CONTENT_POLICY_PHOTO_YOUTH_TERM' }) });
-    // fantasia e gíria de idade no mesmo pedido: a gíria de idade manda
-    await expect(
-      run(ctx('POST', '/api/v1/generations/generate-image-auto', { prompt: 'novinha vestida de colegial', model: 'sem-censura', images: [FOTO], consent_confirmed: true })),
-    ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'CONTENT_POLICY_PHOTO_YOUTH_TERM' }) });
-    expect(next.handle).not.toHaveBeenCalled();
-    expect(safety.record).not.toHaveBeenCalled();
-    expect(safety.recordOrThrow).not.toHaveBeenCalled();
-    // a mesma gíria com foto num provedor com filtro segue: o filtro do provedor vê a foto
+  it('gíria de juventude COM foto no modelo sem filtro segue (dono, 23/11): a foto é da cliente, sem registro de menor', async () => {
+    await run(ctx('POST', '/api/v1/generations/generate-image-auto', { prompt: 'novinha de biquíni na praia', model: 'sem-censura', images: [FOTO], consent_confirmed: true }));
+    await run(ctx('POST', '/api/v1/generations/face-swap', { source_image: FOTO, target_image: FOTO, consent_confirmed: true, prompt: 'ninfeta' }));
+    await run(ctx('POST', '/api/v1/generations/generate-image-auto', { prompt: 'novinha vestida de colegial', model: 'sem-censura', images: [FOTO], consent_confirmed: true }));
+    // a mesma gíria com foto num provedor com filtro também segue
     await run(ctx('POST', '/api/v1/generations/generate-image-auto', { prompt: 'novinha de biquíni na praia', model: 'gpt-image-2', images: [FOTO] }));
-    expect(next.handle).toHaveBeenCalledTimes(1);
+    expect(next.handle).toHaveBeenCalledTimes(4);
+    const kinds = [...safety.record.mock.calls, ...safety.recordOrThrow.mock.calls].map((call) => (call[0] as { kind: string }).kind);
+    expect(kinds).not.toContain('MINOR_BLOCKED');
+  });
+
+  it('gíria com foto e sinal concreto de menor continua barrando', async () => {
+    await expect(
+      run(ctx('POST', '/api/v1/generations/generate-image-auto', { prompt: 'novinha de 15 anos de biquíni', model: 'sem-censura', images: [FOTO], consent_confirmed: true })),
+    ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'CONTENT_POLICY_MINOR' }) });
   });
 
   it('palavra de fantasia ("colegial", "schoolgirl") COM foto no modelo sem filtro segue: é roupa, não idade', async () => {
@@ -797,19 +800,21 @@ describe('ContentSafetyInterceptor · alvo do pedido', () => {
     expect(next.handle).toHaveBeenCalledTimes(bodies.length);
     expect(safety.record).not.toHaveBeenCalled();
     // com sinal de menor de verdade a fantasia continua barrando, com ou sem foto
-    for (const prompt of ['colegial de 16 anos de calcinha', 'schoolgirl in the classroom, no panties', 'colegial do ensino médio de lingerie']) {
+    for (const prompt of ['colegial de 16 anos de calcinha', 'colegial do ensino médio de lingerie']) {
       await expect(
         run(ctx('POST', '/api/v1/generations/generate-image-auto', { prompt, model: 'sem-censura', images: [FOTO], consent_confirmed: true })),
       ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'CONTENT_POLICY_MINOR' }) });
     }
   });
 
-  it('alfabeto sem lista: recusa no modelo sem filtro, segue no provedor com filtro', async () => {
+  it('alfabeto sem lista: segue nos dois (dono, 23/11); no sem filtro a letra sai do texto, no filtrado fica', async () => {
     const prompt = 'એક સ્ત્રી બગીચામાં';
-    await expect(run(ctx('POST', '/api/v1/generations/generate-image-auto', { prompt, model: 'sem-censura' }))).rejects.toMatchObject({
-      response: expect.objectContaining({ code: 'CONTENT_POLICY_LANGUAGE' }),
-    });
-    await run(ctx('POST', '/api/v1/generations/generate-image-auto', { prompt, model: 'gpt-image-2' }));
-    expect(next.handle).toHaveBeenCalledTimes(1);
+    const uncensored = { prompt, model: 'sem-censura' };
+    await run(ctx('POST', '/api/v1/generations/generate-image-auto', uncensored));
+    expect(uncensored.prompt.trim()).toBe('');
+    const filtered = { prompt, model: 'gpt-image-2' };
+    await run(ctx('POST', '/api/v1/generations/generate-image-auto', filtered));
+    expect(filtered.prompt).toBe(prompt);
+    expect(next.handle).toHaveBeenCalledTimes(2);
   });
 });

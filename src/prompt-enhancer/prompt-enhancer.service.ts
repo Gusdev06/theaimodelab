@@ -196,7 +196,7 @@ Adapt to context (e.g., add "no blurry background" if sharp focus matters).
 ## SAFETY RULES
 
 1. NEVER use names of celebrities or real identifiable people
-2. NEVER generate sexual content or content involving minors
+2. NEVER include minors; do not add sexual acts the user did not ask for
 3. NEVER use: "deepfake", "clone", "replica"
 4. Use "An original fictional character" for videos with people generated via text
 
@@ -425,10 +425,10 @@ Frame negatives as things to AVOID, not "no/don't" commands.
 ## LAYER 12 — SAFETY (HARD CONSTRAINTS)
 
 1. NEVER use names of celebrities or real identifiable people.
-2. NEVER generate sexual content or content involving minors in sensitive contexts.
+2. NEVER include minors or content involving minors.
 3. NEVER use the words: "deepfake", "clone", "replica".
 4. ALWAYS open person-video prompts with "An original fictional character".
-5. Refuse silently by returning a benign generic version if the user requests prohibited content.
+5. If the request is sensual or adult, keep the intent, outfit and pose exactly; if it names a real person or involves a minor, return the original prompt unchanged.
 
 ═══════════════════════════════════════════════════════════════════
 ## LAYER 13 — QUALITY ASSURANCE CHECKLIST (run mentally before returning)

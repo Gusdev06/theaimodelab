@@ -128,8 +128,8 @@ const MINOR_CODE_IN_TEXT = /(?<!\d)(58061214|17301594)(?!\d)/;
  * error"), então só conta onde é substantivo.
  */
 const MINOR_TEXT_PATTERNS: readonly RegExp[] = [
-  // termos que sozinhos já dizem menor (en / pt / es); "niño/niña" só com ñ (sem ele colide com o nome Nina)
-  /(?<![\p{L}\p{N}])(?:child(?:ren|like)?|kids?|infants?|toddlers?|newborns?|(?:pre[\s-]?)?teen(?:s|age|aged|ager|agers)?|adolescent(?:e|es|s)?|under[\s-]?aged?|minors|csam|csae|csea|p(?:a)?edophil\p{L}*|ped[oó]fil\p{L}*|crian[çc]as?|infantil|infantis|niñ[oa]s?|menor(?:es)?\s+de\s+(?:idade|edad))(?![\p{L}\p{N}])/iu,
+  // termos que sozinhos já dizem menor (en / pt / es)
+  /(?<![\p{L}\p{N}])(?:under[\s-]?aged?|minors|csam|csae|csea|p(?:a)?edophil\p{L}*|ped[oó]fil\p{L}*|menor(?:es)?\s+de\s+(?:idade|edad))(?![\p{L}\p{N}])/iu,
   // "minor" substantivo: possessivo ("a minor's body") ou antes de pessoa ("minor girl", "minor users")
   /(?<![\p{L}\p{N}])minor(?:['’]s|\s+(?:girls?|boys?|child(?:ren)?|kids?|persons?|people|individuals?|users?|females?|males?|daughters?|sons?))(?![\p{L}\p{N}])/iu,
   // "a minor", "of a minor", "involving a minor"… seguido de fim, pontuação ou palavra de ligação
@@ -145,6 +145,18 @@ const MINOR_TEXT_PATTERNS: readonly RegExp[] = [
   // pt/es: "sexualizem menores", "com menores", "abuso sexual de menores" ("de menores" sozinho é "de tamanho menor")
   /(?<![\p{L}\p{N}])(?:a|con|com|envolvendo|involucrando|sexualiz\p{L}*|sexual(?:es)?\s+(?:de|con|com|envolvendo))\s+menores(?![\p{L}\p{N}])/iu,
 ];
+
+/**
+ * Palavra de criança comum ("kids", "children", "teen", "infantil"; "niño/niña" só com ñ, sem ele colide com o nome
+ * Nina): o texto de erro pode ecoar o pedido da cliente ("a woman and her kids at the beach") ou listar categorias
+ * ("violence, nudity"). Só conta como recusa por MENOR com contexto no MESMO texto: abuso/sexual/child safety ou a
+ * detecção do próprio provedor ("the image appears to contain a child", "it depicts a child") (dono, 23/11: bloqueio
+ * comum não vira registro de menor).
+ */
+const GENERIC_MINOR_WORDS =
+  /(?<![\p{L}\p{N}])(?:child(?:ren|like)?|kids?|infants?|toddlers?|newborns?|(?:pre[\s-]?)?teen(?:s|age|aged|ager|agers)?|adolescent(?:e|es|s)?|crian[çc]as?|infantil|infantis|niñ[oa]s?)(?![\p{L}\p{N}])/iu;
+const MINOR_CONTEXT =
+  /(?:sexual\p{L}*|exploit\p{L}*|abus\p{L}*|csam|csae|nud\p{L}*|explicit|porn\p{L}*|child[\s_-]*safety|contain\p{L}*|depict\p{L}*|detect\p{L}*|identif\p{L}*)/iu;
 
 /** Texto do erro do provedor: mensagem + detalhe técnico (ProviderFailureError), sem depender de importar a classe. */
 function providerTexts(source: unknown): string[] {
@@ -185,8 +197,10 @@ export function minorSupportCodeOf(source: unknown): string | null {
  */
 export function isMinorSafetyBlock(source: unknown): boolean {
   if (minorSupportCodeOf(source)) return true;
-  return providerTexts(source).some((text) =>
-    MINOR_TEXT_PATTERNS.some((pattern) => pattern.test(text)),
+  return providerTexts(source).some(
+    (text) =>
+      MINOR_TEXT_PATTERNS.some((pattern) => pattern.test(text)) ||
+      (GENERIC_MINOR_WORDS.test(text) && MINOR_CONTEXT.test(text)),
   );
 }
 

@@ -77,9 +77,11 @@ const FOREIGN_LETTER = /[^\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]
  * conferida de novo sem essas letras.
  */
 function assessAnalysisText(text: string): MinorAssessment {
-  const verdict = assessText(text, { source: 'description' });
+  // mesma regra do pedido da cliente (dono, 23/11): "menina", "novinha", "colegial" na descrição são adulta; "teen",
+  // "criança", "menor de idade" e idade abaixo de 18 continuam barrando
+  const verdict = assessText(text);
   if (verdict.reason !== 'script') return verdict;
-  return assessText(text.replace(/\p{L}/gu, (char) => (FOREIGN_LETTER.test(canonical(char)) ? ' ' : char)), { source: 'description' });
+  return assessText(text.replace(/\p{L}/gu, (char) => (FOREIGN_LETTER.test(canonical(char)) ? ' ' : char)));
 }
 
 /** Forma do que o describePhoto põe no prompt clonado: 'text' = texto ou número, 'list' = lista de textos. */
@@ -255,7 +257,7 @@ Analise a imagem enviada e retorne APENAS o JSON correspondente, sempre incluind
 // nudez e lingerie de adulto são descritas literalmente. Menor continua barrado.
 const ADULT_RULES = `9. A PLATAFORMA É 18+ E TODAS AS PESSOAS SÃO ADULTAS. Nudez, lingerie e poses sensuais são permitidas: descreva corpo, nudez parcial ou total e roupa íntima de forma literal e detalhada (use "roupa" para o que veste ou "nua"/"seminua"), sem censurar, suavizar ou moralizar.
 10. "assunto.idade" SEMPRE começa com "adulta" ou "adulto" e uma faixa de 18 anos ou mais (a lei; a idade aparente da foto, sem margem extra). NUNCA use "jovem", "menina", "garota", "novinha", "teen", "young", "girl" ou equivalentes em nenhum campo.
-11. SE A PESSOA PUDER SER MENOR DE IDADE (traços infantis, corpo pré-adolescente, uniforme escolar, contexto infantil), retorne apenas: {"error": "menor_de_idade"}`;
+11. SOMENTE se a foto mostra CLARAMENTE uma criança ou adolescente (corpo pré-púbere, proporções de criança, ambiente de sala de aula com colegas de idade escolar), retorne apenas: {"error": "menor_de_idade"}. Uniforme escolar, fantasia, rosto jovem ou baixa estatura NÃO são indício: descreva a pessoa como adulta.`;
 
 const ADULT_SYSTEM_PROMPT = SYSTEM_PROMPT.replace(
   '9. SE CONTEÚDO INAPROPRIADO, retorne apenas: {"error": "conteudo_inapropriado"}',

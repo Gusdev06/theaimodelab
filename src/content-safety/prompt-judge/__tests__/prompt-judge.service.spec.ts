@@ -194,3 +194,20 @@ describe('PromptJudgeService', () => {
     expect(create.mock.calls[0][1]).toMatchObject({ timeout: 2500 });
   });
 });
+
+describe('groundVerdict · referência no plural e parceiro(a) não identificam (23/11)', () => {
+  const real = { category: 'real_person' as const, confidence: 'high' as const, reason: 'x', who: '' };
+  it.each([
+    ['as mesmas pessoas das imagens referências', 'nudez com as mesmas pessoas das imagens referências'],
+    ['as fotos enviadas', 'deixe nua a mulher das fotos enviadas'],
+    ['the women in the photos', 'make the women in the photos fully naked'],
+    ['mi mujer', 'mi mujer desnuda en la cama'],
+    ['minha esposa', 'minha esposa de lingerie'],
+  ])('"%s" vira none', (who, input) => {
+    expect(groundVerdict({ ...real, who }, input)).toMatchObject({ category: 'none', confidence: 'low' });
+  });
+  it('relação com nome e @ continuam identificando', () => {
+    expect(groundVerdict({ ...real, who: 'minha ex Julia' }, 'minha ex Julia pelada')).toMatchObject({ category: 'real_person' });
+    expect(groundVerdict({ ...real, who: '@fulana123' }, 'a @fulana123 nua')).toMatchObject({ category: 'real_person' });
+  });
+});

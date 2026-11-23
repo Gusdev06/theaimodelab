@@ -576,6 +576,12 @@ describe('evaluateFallback — guarda de mídia do usuário', () => {
       expect(decision.blocked).toBeUndefined();
       expect(decision.plan).toMatchObject({ model: 'wavespeed-minimax-h3', kind });
     });
+
+    it.each(kinds)('motivo %s: com atestado de imagem gravado o desvio sai sem o env (dono, 23/11)', (kind) => {
+      const decision = evaluateFallback(jobName, data, guardCtx({ kind, hasConsent: true, ...extra }));
+      expect(decision.blocked).toBeUndefined();
+      expect(decision.plan).toMatchObject({ model: 'wavespeed-minimax-h3', kind });
+    });
   });
 
   it.each<FallbackKind>(['provider', 'safety'])('sem mídia, alvo sem censura (%s): segue para o MiniMax texto', (kind) => {

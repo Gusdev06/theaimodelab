@@ -465,6 +465,17 @@ const CHILD_COMPANION_PT_ES =
   '(?:o|os|a|as|do|da|dos|das|no|na|meu|minha|meus|minhas|seu|sua|seus|suas|teu|tua|nosso|nossa|um|uma|com|segurando|carregando|abracando|amamentando|ninando|cuidando|un|una|el|la|los|las|mi|mis|tu|tus|su|sus|con|del|al|sosteniendo|cargando|abrazando|amamantando|cuidando)\\s+(?:pequen[ao]s?\\s+|novo\\s+|nova\\s+)?(?:bebes?|bebezinh\\w*|bebit[ao]s?|nenes?|nenezinh\\w*|nenem|filhas?|filhos?|hijas?|hijos?|sobrinh\\w*|sobrin[ao]s?|netas?|netos?|nietas?|nietos?|enteadas?|enteados?|hijastr[ao]s?|criancas?|ninos?|ninas?)';
 const CHILD_COMPANION_EN =
   '(?:a|an|the|her|his|my|their|our|your|with|holding|carrying|hugging|cuddling|nursing|and)\\s+(?:little\\s+|small\\s+|newborn\\s+|young\\s+)?(?:bab(?:y|ies)(?! (?:blue|pink|doll|dolls|oil|powder|hairs?|hair|bangs|fringe|curls|bump|face|tees?|shampoo|lotion|soft|shower|wipes|skin|smooth))|toddlers?|newborns?|infants?|daughters?|nieces?|granddaughters?|stepdaughters?|sons?)';
+/**
+ * Pedido livre (dono, 23/11): "bebê"/"baby" é apelido de adulta ("vem cá, meu bebê", "yes my baby") e parentesco não é
+ * idade ("a enteada", "minha sobrinha", "her stepdaughter" são papéis de adultas). O bebê só conta como criança depois
+ * de verbo de cuidado ou "com" ("segurando o bebê", "with her baby"); criança, toddler, newborn e infant seguem como estão.
+ */
+const CHILD_COMPANION_PT_ES_FREE =
+  '(?:(?:segurando|carregando|abracando|amamentando|ninando|cuidando|sosteniendo|cargando|abrazando|amamantando|com|con)\\s+(?:(?:o|a|os|as|um|uma|seu|sua|meu|minha|el|la|los|las|un|una|su|mi)\\s+)?(?:pequen[ao]s?\\s+)?(?:bebes?|bebezinh\\w*|bebit[ao]s?|nenes?|nenezinh\\w*|nenem)' +
+  '|(?:o|os|a|as|do|da|dos|das|no|na|meu|minha|meus|minhas|seu|sua|seus|suas|teu|tua|nosso|nossa|um|uma|com|segurando|carregando|abracando|amamentando|ninando|cuidando|un|una|el|la|los|las|mi|mis|tu|tus|su|sus|con|del|al|sosteniendo|cargando|abrazando|amamantando|cuidando)\\s+(?:pequen[ao]s?\\s+|novo\\s+|nova\\s+)?(?:criancas?|ninos?|ninas?))';
+const CHILD_COMPANION_EN_FREE =
+  '(?:(?:holding|carrying|hugging|cuddling|nursing|with (?:a|the|her|his|their)|a|the|newborn)\\s+(?:little\\s+|small\\s+|newborn\\s+)?bab(?:y|ies)(?! (?:blue|pink|doll|dolls|oil|powder|hairs?|hair|bangs|fringe|curls|bump|face|tees?|shampoo|lotion|soft|shower|wipes|skin|smooth))' +
+  '|(?:a|an|the|her|his|my|their|our|your|with|holding|carrying|hugging|cuddling|nursing|and)\\s+(?:little\\s+|small\\s+|newborn\\s+|young\\s+)?(?:toddlers?|newborns?|infants?|sons?))';
 
 /** Pistas que deixam a personagem com cara de criança: barram no 18+ (qualquer estilo) e nos estilos desenhados. */
 const CHILDLIKE_CUES = [
@@ -598,30 +609,16 @@ const YOUTH_SLANG = [
   'jovencit\\w*',
 ];
 const YOUTH_SLANG_SET: ReadonlySet<string> = new Set(YOUTH_SLANG);
-/**
- * Lugar de escola que só barra JUNTO da gíria de juventude: é o lugar que diz que a "schoolgirl" é aluna de verdade e
- * não adulta de fantasia. Sozinho não barra ("teacher in the classroom"). Em português e espanhol o lugar já barra
- * sozinho pelas outras listas ("sala de aula", "na escola", "colegio").
- */
-const SCHOOL_PLACE_WITH_SLANG = [
-  'class ?rooms?',
-  'school ?(?:yards?|hallways?|corridors?|bus|buses|desks?|playgrounds?|gym|library)',
-  'playgrounds?',
-  'lockers?',
-  'recess',
-  'homework',
-  'aulas?',
-  'salon de clases?',
-  'pupitres?',
-  'carteiras? escolar(?:es)?',
-  'recreo',
-];
 /** Papel que adulta faz ("papel de colegial", "roleplay as a student"): no pedido livre sai da lista de papel de criança. */
 const ROLE_FREE: ReadonlyArray<[string, string]> = [
   ['|menina|garotinha|aluna|colegial|nina|', '|menina|garotinha|nina|'],
   ['|menina|garotinha|aluna|student|estudante|colegial|schoolgirl|little girl)', '|menina|garotinha|little girl)'],
   // "ela é uma menina linda": em português "menina" é mulher; "ela é uma criança/garotinha" continua barrando
   ['(?:crianca|child|kid|menina|garotinha|', '(?:crianca|child|kid|garotinha|'],
+  // (23/11) parentesco é papel de adulta ("papel de enteada", "roleplay as stepdaughter"); os diminutivos ficam
+  ['(?:filha|filhinha|enteada|sobrinha|neta|', '(?:filhinha|'],
+  ['|hija|hijita|sobrina)', '|hijita)'],
+  ['(?:filha|daughter|hija|enteada|stepdaughter|sobrinha|niece|', '(?:'],
 ];
 /**
  * Criança na cena, no pedido livre: "menina" é como o português chama mulher ("as meninas do escritório") e
@@ -629,7 +626,85 @@ const ROLE_FREE: ReadonlyArray<[string, string]> = [
  * "menina pequena", "menininha" (lista de persona), "menina de 12" (leitura de idade) e "corpo de menina" (pista forte)
  * continuam barrando.
  */
-const CHILD_TERMS_FREE_OUT: ReadonlySet<string> = new Set(['child\\w*', 'menin\\w*', 'babysit\\w*']);
+/**
+ * Pedido livre (dono, 23/11): parentesco não é idade ("enteada de 25", "sobrinha adulta", "stepdaughter" são papéis de
+ * adultas). Os diminutivos ("filhinha", "netinha", "priminha", "maninha") seguem barrando: soam como criança.
+ */
+const KIN_ADULT_FREE = [
+  'stepdaughters?',
+  'enteada\\w*',
+  'enteado\\w*',
+  'hijastr\\w*',
+  'sobrinh\\w*',
+  '(?<!la |de |es |que )netas?',
+  'filhas?(?! de (?:\\w+os|\\w+as|pais|imigrantes|um|uma|fazendeiros|militares|medicos|artistas|nobres))',
+  'afilhad\\w*',
+  'mocinh\\w*',
+  'cacul\\w*',
+];
+/**
+ * Pedido livre (dono, 23/11): lugar de escola é cenário de adulta ("professora na sala de aula", "diretora da escola").
+ * Nem junto da gíria barra ("novinha na sala de aula", "colegial no recreio"): são dois termos ambíguos, e o provedor
+ * sem filtro recebe a gíria trocada por adulta e a âncora de idade (adult-anchor.ts). Série, ensino médio e idade
+ * abaixo de 18 seguem barrando.
+ */
+const SCHOOL_PLACE_FREE = [
+  '(?:na|da|pela|a|no|do) escola(?! de (?:samba|danca|musica|idiomas|modelos|teatro|arte|artes|moda|beleza|yoga|pilates|surf|gastronomia))',
+  '(?:la|de la|en la) escuela(?! de (?:samba|danza|baile|musica|idiomas|modelos|teatro|arte|artes|moda|belleza|yoga|pilates|surf|cocina))',
+  '(?:at|in|to|from) school',
+  'colegio',
+  'liceu',
+  'sala de aula',
+  '(?:hora do )?recreio',
+];
+/**
+ * Pedido livre (dono, 23/11): palavra que não retrata criança em cena comum ("hospital infantil", "moda infantil",
+ * "prepa" do cursinho) só barra em pedido sexual ("corpo infantil" com nudez continua barrando).
+ */
+const SEXUAL_ONLY_FREE = ['infantil\\w*', 'infancia', 'prepa'];
+const CHILD_TERMS_FREE_OUT: ReadonlySet<string> = new Set([
+  'child\\w*',
+  'menin\\w*',
+  'babysit\\w*',
+  ...KIN_ADULT_FREE,
+  ...SCHOOL_PLACE_FREE,
+  ...SEXUAL_ONLY_FREE,
+]);
+/**
+ * Faculdade e vida de estudante são de adulta (dono, 23/11): "college girls", "sorority", "caloura", "coed",
+ * "freshman", "vestibulanda", "prom night", "after school", "detention" saem da persona no pedido livre. Série, "high
+ * school" e idade abaixo de 18 seguem barrando.
+ */
+const COLLEGE_ADULT_FREE: ReadonlySet<string> = new Set([
+  'college girls?',
+  'sorority\\w*',
+  'caloura\\w*',
+  'co ?ed',
+  'freshm[ae]n',
+  'sophomores?',
+  '(?:senior|junior) year',
+  'vestibuland\\w*',
+  'after ?school',
+  'prom (?:night|queen|dress|date)',
+  'homecoming (?:queen|dance)',
+  'detention',
+]);
+/**
+ * Idade de 18+ escrita como gíria ("barely legal", "just turned 18", "acabou de fazer 18") é adulta pela lei: sai do
+ * pedido livre (dono, 23/11). "legal teens" fica (tem "teen"); "almost legal", "not yet of age" e "quase maior de
+ * idade" continuam barrando.
+ */
+const LEGAL_ADULT_AGE_TERMS: ReadonlySet<string> = new Set([
+  'barely ?legal',
+  'barely (?:18|eighteen)',
+  'just legal',
+  'fresh (?:18|eighteen)',
+  '(?:18|eighteen) and legal',
+  'newly legal',
+  'just turned (?:18|19|eighteen|nineteen)',
+  '(?:acabou|acaba|acabadinha|recem|recien|mal) (?:de )?(?:fazer|cumplir|completar|fez|completou|cumplio|cumplidos?|completados?|feitos?) (?:os |las |los )?(?:18|19|dezoito|dieciocho|dezenove|diecinueve)',
+  '(?:18|19|dezoito|dezenove) (?:acabados|recem|recien) (?:de fazer|feitos|cumplidos)',
+]);
 const CHILD_TERMS_FREE_IN = [
   'child(?!bearing|free|less)\\w*',
   'meninos?',
@@ -1090,7 +1165,7 @@ const LISTS = {
   // espaço) e "pedo" sem "pedonal/pedonale" (zona de pedestres em espanhol/italiano)
   // (06/11) sem a gíria de juventude e sem os papéis que adulta faz
   minorHardFree: compile(
-    MINOR_HARD.filter((term) => !FLOOR_25_TERMS.has(term) && !YOUTH_SLANG_SET.has(term)).map((term) => {
+    MINOR_HARD.filter((term) => !FLOOR_25_TERMS.has(term) && !YOUTH_SLANG_SET.has(term) && !LEGAL_ADULT_AGE_TERMS.has(term)).map((term) => {
       const mapped = term === 'little ?space' ? 'littlespace' : term === 'pedo(?!met)\\w*' ? 'pedo(?!met|n)\\w*' : term;
       return ROLE_FREE.reduce((acc, [from, to]) => acc.replace(from, to), mapped);
     }),
@@ -1098,11 +1173,22 @@ const LISTS = {
   minorPersona: compile(MINOR_PERSONA),
   // pedido livre (decisão do dono, 16/10): uniforme escolar como roupa de adulta não barra sozinho; escola, série e
   // colegial continuam barrando
-  minorPersonaFree: compile(MINOR_PERSONA.filter((term) => !SCHOOL_CLOTHING_FREE.has(term) && !YOUTH_SLANG_SET.has(term))),
+  // (23/11) faculdade e lugar de escola saem também (lugar só barra junto da gíria; "prepa" só em pedido sexual)
+  minorPersonaFree: compile(
+    MINOR_PERSONA.filter(
+      (term) =>
+        !SCHOOL_CLOTHING_FREE.has(term) && !YOUTH_SLANG_SET.has(term) && !COLLEGE_ADULT_FREE.has(term) && !CHILD_TERMS_FREE_OUT.has(term),
+    ),
+  ),
   child: compile([...CHILD_TERMS, CHILD_COMPANION_PT_ES, CHILD_COMPANION_EN]),
-  childFree: compile([...CHILD_TERMS.filter((term) => !CHILD_TERMS_FREE_OUT.has(term)), ...CHILD_TERMS_FREE_IN, CHILD_COMPANION_PT_ES, CHILD_COMPANION_EN]),
+  childFree: compile([
+    ...CHILD_TERMS.filter((term) => !CHILD_TERMS_FREE_OUT.has(term)),
+    ...CHILD_TERMS_FREE_IN,
+    CHILD_COMPANION_PT_ES_FREE,
+    CHILD_COMPANION_EN_FREE,
+  ]),
+  sexualOnlyFree: compile(SEXUAL_ONLY_FREE),
   youthSlang: compile(YOUTH_SLANG, 'g'),
-  schoolPlaceWithSlang: compile(SCHOOL_PLACE_WITH_SLANG),
   drawnStrongFree: compile([...CHILDLIKE_CUES, ...DRAWN_CUES].filter((term) => DRAWN_STRONG_FREE.has(term))),
   drawnAll: compile([...CHILDLIKE_CUES, ...DRAWN_CUES], 'g'),
   childlike: compile(CHILDLIKE_CUES),
@@ -1241,6 +1327,9 @@ const PERSON_NOUNS = new Set([
   // gíria e profissão liberadas no pedido livre em 06/11: a idade escrita depois delas continua valendo
   // ("ninfeta de 15", "colegial, 16", "the babysitter, 16")
   'ninfeta', 'ninfetinha', 'novinho', 'colegial', 'colegiala', 'schoolgirl', 'nymphet', 'jovencita', 'babysitter', 'baba', 'nanny', 'ninera',
+  // parentesco liberado no pedido livre em 23/11: a idade escrita depois dele continua valendo ("filha de 12")
+  'filha', 'filho', 'enteada', 'enteado', 'sobrinha', 'sobrinho', 'neta', 'neto', 'afilhada', 'afilhado', 'cacula', 'hija', 'hijo', 'hijastra',
+  'hijastro', 'sobrina', 'sobrino', 'nieta', 'nieto', 'daughter', 'stepdaughter', 'niece', 'granddaughter',
 ]);
 /** Festa e aniversário ("festa de 15", "aniversário de 17", "fiesta de quince"). */
 const EVENT_NOUNS = new Set(['festa', 'fiesta', 'aniversario', 'cumpleanos', 'birthday', 'bday', 'party', 'debut', 'baile']);
@@ -2013,11 +2102,17 @@ export function checkAdultOnly(text: string, options: SafetyOptions = {}): Safet
           : ALLOW.adult,
     );
     // "babá" (≠ "baba") e "bebê/bebé" com acento (sem acento, "e bebe vinho" é o verbo)
-    // pedido livre: "babá" é profissão de adulta (como "babysitter"); "bebê" continua
-    const accentedChild = accented.match(freeMode ? /(?:^|[^\p{L}])(beb[êé]s?)(?=$|[^\p{L}])/u : /(?:^|[^\p{L}])(babás?|beb[êé]s?)(?=$|[^\p{L}])/u);
+    // pedido livre: "babá" é profissão de adulta (como "babysitter") e "bebê" sozinho é apelido de adulta ("vem cá,
+    // bebê"); o bebê na cena ("segurando o bebê") barra pela lista de companhia (dono, 23/11)
+    const accentedChild = freeMode ? null : accented.match(/(?:^|[^\p{L}])(babás?|beb[êé]s?)(?=$|[^\p{L}])/u);
     if (accentedChild) return { ok: false, reason: 'minor', term: accentedChild[1] };
     const child = findIn(allowed, freeMode ? LISTS.childFree : LISTS.child);
     if (child) return { ok: false, reason: 'minor', term: child };
+    if (freeMode) {
+      // "infantil", "infância", "prepa" sem retratar criança ("hospital infantil"): só barram em pedido sexual
+      const sexualOnly = findIn(allowed, LISTS.sexualOnlyFree);
+      if (sexualOnly && findIn(texts, LISTS.adult)) return { ok: false, reason: 'minor', term: sexualOnly };
+    }
     if (freeMode) {
       // pedido livre: rosto, corpo e objeto de criança barram sozinhos; petite, tiny, braces, pigtails, kawaii, cute… só
       // em pedido sexual, e aí no desenhado uma basta e no realista só 3 juntas ("kawaii mascot" de infográfico passa)
@@ -2027,9 +2122,6 @@ export function checkAdultOnly(text: string, options: SafetyOptions = {}): Safet
       // colegial de verdade); no realista vale como UMA pista infantil
       const slang = youthSlangIn(texts);
       if (options.drawn && slang) return { ok: false, reason: 'drawnTerm', term: slang };
-      // gíria + lugar de escola: aluna de verdade, não fantasia
-      const schoolPlace = slang ? findIn(texts, LISTS.schoolPlaceWithSlang) : null;
-      if (schoolPlace) return { ok: false, reason: 'minor', term: schoolPlace };
       if (findIn(texts, LISTS.adult)) {
         if (options.drawn) {
           // desenhado: pista forte barra sozinha; as outras ("petite" num quadrinho, "cute") só em dupla, menos no anime

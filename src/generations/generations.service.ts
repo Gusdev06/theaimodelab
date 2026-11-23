@@ -3849,10 +3849,7 @@ CRITICAL REQUIREMENTS:
       throw new BusinessException('CONTENT_POLICY_MINOR');
     }
 
-    if (await this.contentSafety.isUnderMinorHold(userId)) {
-      this.logger.warn(`${who}: conta na guarda legal por menor`);
-      throw new BusinessException('CONTENT_POLICY_MINOR');
-    }
+    // a guarda legal da conta não trava toda foto (dono, 23/11): só a linhagem com bloqueio ou texto de menor (acima)
     if (safety.kind === 'unreadable') {
       this.logger.warn(`${who}: texto da linhagem sem conferência`);
       throw this.multipleAnglesSourceError('policy');
