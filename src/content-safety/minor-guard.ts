@@ -710,7 +710,7 @@ const READ_SCRIPTS =
  * Troca por espaço cada letra de alfabeto que a trava não lê. Letra que só PARECE latina (homógrafo) fica: a forma
  * canônica já a lê como latina e ela faz parte da palavra ofuscada.
  */
-function withoutUnreadScripts(text: string): string {
+export function withoutUnreadScripts(text: string): string {
   return text.replace(/[\p{L}\p{M}]/gu, (char) => {
     if (READ_SCRIPTS.test(char)) return char;
     const mapped = canonical(char);
@@ -898,6 +898,30 @@ export function collectTexts(body: unknown, depth = 0, out: string[] = [], textF
     }
   }
   return out;
+}
+
+/**
+ * Tira, no próprio corpo, as letras de alfabeto que a trava não lê (devanágari, grego...) dos mesmos campos que
+ * collectTexts confere (dono, 23/11: alfabeto sem lista não recusa o pedido). A letra que ninguém leu também não chega
+ * ao provedor; o resto do texto é conferido normalmente. Só para o alvo sem filtro: no filtrado o provedor lê.
+ */
+export function stripUnreadScripts(body: unknown, depth = 0, textField = false): void {
+  if (body == null || typeof body !== 'object' || depth > MAX_DEPTH) return;
+  const entries: Array<[string | number, unknown]> = Array.isArray(body)
+    ? body.slice(0, MAX_ARRAY).map((value, index): [number, unknown] => [index, value])
+    : Object.entries(body as Record<string, unknown>);
+  for (const [key, value] of entries) {
+    const keyText = String(key);
+    if (!Array.isArray(body) && (SKIP_KEY.test(keyText) || NEGATIVE_KEY.test(keyText))) continue;
+    const isText = Array.isArray(body) ? textField : TEXT_KEY.test(keyText);
+    if (typeof value === 'string') {
+      if ((isText || !looksBinaryOrUrl(value)) && /[^\p{Script=Latin}\p{Script=Common}\p{Script=Inherited}]/u.test(value)) {
+        (body as Record<string | number, unknown>)[key] = withoutUnreadScripts(value);
+      }
+    } else {
+      stripUnreadScripts(value, depth + 1, isText);
+    }
+  }
 }
 
 export function assessBody(body: unknown, options: GuardOptions = {}): MinorAssessment {

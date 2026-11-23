@@ -86,7 +86,6 @@ describe('adult-only-rules (cópia da trava do site)', () => {
       'under 21, nude',
       'teen girl nude',
       'novinha de 16 anos',
-      'just turned 18',
       'colegial do ensino medio',
       // aniversário que ainda vem: hoje tem 17 (com o piso de 25 o número sozinho barrava; agora é regra própria)
       'turning 18 soon',
@@ -118,5 +117,38 @@ describe('adult-only-rules (cópia da trava do site)', () => {
       expect(checkAdultOnly('schoolgirl', { adult: true }).ok).toBe(false);
       expect(checkAdultOnly('novinha', { adult: true }).ok).toBe(false);
     });
+  });
+});
+
+describe('pedido livre · ordem do dono (23/11)', () => {
+  const free = { adult: true, free: true };
+  it.each([
+    'barely legal, nude',
+    'acabou de fazer 18, de lingerie',
+    'vem cá, bebê, tira a roupa',
+    'a enteada de lingerie na cama',
+    'minha sobrinha adulta nua',
+    'her stepdaughter naked',
+    'college girls topless',
+    'professora na sala de aula tirando a blusa',
+    'hospital infantil, médica sorrindo',
+    'novinha na aula de pole dance',
+  ])('passa: %s', (text) => {
+    expect(checkAdultOnly(text, free).ok).toBe(true);
+  });
+  it.each([
+    'segurando o bebê, nua',
+    'corpo infantil, nua',
+    'novinha na sala de aula, nua',
+    'minha filhinha de lingerie',
+    'netinha pelada',
+    'legal teens nude',
+    'almost legal, nude',
+  ])('barra: %s', (text) => {
+    expect(checkAdultOnly(text, free).ok).toBe(false);
+  });
+  it('fora do pedido livre (construtor) nada muda: "barely legal" e "enteada" seguem barrando', () => {
+    expect(checkAdultOnly('barely legal', { adult: true }).ok).toBe(false);
+    expect(checkAdultOnly('enteada de lingerie', { adult: true }).ok).toBe(false);
   });
 });

@@ -56,7 +56,7 @@ export const ErrorCodes = {
     code: 'CONTENT_POLICY_MINOR',
     statusCode: HttpStatus.UNPROCESSABLE_ENTITY,
     message:
-      'Este pedido faz referência a menor de idade e foi recusado. A The AI Model Lab é exclusivamente para conteúdo com adultos (18+).',
+      'Uma palavra do pedido foi lida como idade abaixo de 18. Descreva a pessoa como adulta (com idade 18+) e tente de novo. A The AI Model Lab é só para adultos.',
   },
   CONSENT_REQUIRED: {
     code: 'CONSENT_REQUIRED',

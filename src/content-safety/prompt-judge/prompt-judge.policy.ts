@@ -15,7 +15,7 @@
  *    (pessoa real só com o identificador copiado do pedido e conferido pelo código, em groundVerdict).
  */
 
-export const POLICY_VERSION = 'juiz-2026-11-06';
+export const POLICY_VERSION = 'juiz-2026-11-23';
 
 export type JudgeCategory = 'minor' | 'real_person' | 'none';
 export type JudgeConfidence = 'high' | 'medium' | 'low';
@@ -25,7 +25,7 @@ export interface JudgeVerdict {
   confidence: JudgeConfidence;
   /** até ~12 palavras, em português, sem copiar o pedido (vai para log e trilha) */
   reason: string;
-  /** pessoa real: o identificador copiado do pedido (nome público, @, "minha ex"); vazio nas outras categorias */
+  /** pessoa real: o identificador copiado do pedido (nome público, @, "minha ex Julia"); vazio nas outras categorias */
   who: string;
 }
 
@@ -44,7 +44,7 @@ export const VERDICT_SCHEMA = {
     reason: { type: 'string', description: 'at most 12 words, in Portuguese, without quoting the prompt' },
     who: {
       type: 'string',
-      description: 'real_person only: the identifying text copied verbatim from the prompt (public name, @handle, relationship); otherwise empty',
+      description: 'real_person only: the identifying text copied verbatim from the prompt (public name, @handle/URL, or relationship + name); otherwise empty',
     },
   },
   required: ['category', 'confidence', 'reason', 'who'],
@@ -58,8 +58,8 @@ Every person in a prompt is an adult unless one of the MINOR signals below says 
 
 ## Allowed (category "none"). Never flag these on their own:
 - Sex, nudity, lingerie, fetish, kink, BDSM, roleplay, degradation, humiliation, rough or reluctant scenes, "taboo" scenarios between adults. Adult content is the product.
-- Body and look descriptors that adults also have: petite, small, tiny, slim, skinny, short, flat chest, small breasts, young-looking, youthful, fresh, innocent, cute, baby face, pigtails, braces/"aparelho nos dentes", freckles, no makeup, shaved, "novinha", "ninfeta", "menina", "garota", "chica", "girl", "babe", "babygirl", "daddy", "papi". "Tiny" is a size word, not an age.
-- Roles and outfits that adults play: student, "estudante", "aluna", university/college student ("universitária", "faculdade", "college", "coed"; always an adult), "student shirt", "student uniform", school-style uniform, plaid or pleated skirt, white shirt and tie, cheerleader, secretary, nurse, babysitter, stepdaughter/"enteada", "stepsister", teacher, tutor, and the costume words "colegial", "colegiala", "schoolgirl", "school girl outfit". These are adult costumes unless the text places the person in a school or under 18. "Colegial" or "schoolgirl" alone, with a skirt, a bedroom, lingerie or sex, is an adult in a costume: category "none".
+- Body and look descriptors that adults also have: petite, small, tiny, slim, skinny, short, flat chest, small breasts, micro/very small breasts, "seios pequenos", "seios micro", virgin/"virgem", tight/"apertadinha", young-looking, youthful, "jovem", fresh, innocent, cute, baby face, pigtails, braces/"aparelho nos dentes", freckles, no makeup, shaved, "novinha", "ninfeta", "menina", "garota", "chica", "girl", "babe", "babygirl", "daddy", "papi", "baby"/"bebê"/"meu bebê" as a nickname between adults, ordinary clothes such as "blusinha" and "tênis". "Tiny" is a size word, not an age; size and virginity never indicate an age.
+- Roles and outfits that adults play: student, "estudante", "aluna", university/college student ("universitária", "faculdade", "college", "coed"; always an adult), "student shirt", "student uniform", school-style uniform, plaid or pleated skirt, white shirt and tie, cheerleader, secretary, nurse, babysitter, stepdaughter/"enteada", "sobrinha", "stepsister", teacher/"professora", tutor, school principal/"diretora", and the costume words "colegial", "colegiala", "schoolgirl", "school girl outfit". These are adult costumes unless the text places the person in a school or under 18. "Colegial" or "schoolgirl" alone, with a skirt, a bedroom, lingerie or sex, is an adult in a costume: category "none".
 - Any stated age of 18 or more, "barely legal", "just turned 18", "18+", "acabou de fazer 18".
 - Platform tools: "face swap", "troca de rosto", "reference photo", "use my photo", "same face as the reference", "keep the exact face of the woman in image 1". They have their own consent step; not a violation by themselves.
 - Numbers that are not an age: "15 anos de experiência", "15 minutes", "16:9", "size 14", "2 girls", "20 years married", "80s style", "1990 film look", "14 inch", "room 12".
@@ -69,23 +69,24 @@ Every person in a prompt is an adult unless one of the MINOR signals below says 
 
 ## MINOR (category "minor"). Flag when a sexual, nude, intimate, suggestive, "sexy" or body-focused request has a subject who is under 18 by:
 - a stated age below 18 in any form: digits ("16", "17 y/o", "15-17", "10 ans", "elle a 11 ans"), words ("quinze", "dieciséis", "sixteen", "douze"), "menor de 18", "18-", "under 18", "underage", "menor de idade", a birth year that implies under 18, "one year before legal", "make her 10 years old", "version of her at 12".
-- school placement that implies a child: "in school", "da escola", "colégio", "high school", "secundaria", "ensino médio", a grade ("8th grade", "6º ano", "3º ano do ensino médio"), "kindergarten", "primária", a scene set inside a school (classroom, schoolyard, "sala de aula", "pátio da escola"). The words "colegial" and "schoolgirl" by themselves are NOT school placement: they count only together with one of the signals of this list or of the lines below (an age under 18, a grade, a school setting, a child body). A university is not a school for this rule.
-- words that mean a child or adolescent as the depicted person: "criança", "child", "kid", "niña", "niño", "enfant", "garotinha", "menininha", "little girl", "little boy", "menor", "adolescente", "teen" meaning a teenager, "preteen", "pré-adolescente", "tween", "loli", "lolicon", "shota", "shotacon", "toddler", "bebê".
-- family cues that place a child in the sexual scene: "minha filha de 12", "my daughter who is in school", "sobrinha pequena", "little sister in 6th grade", a father ("papai", "daddy" as a parent, not the kink) telling "her" to undress, a child's clothes ("blusinha", "tênis da escola", "cueca infantil") on the person being undressed.
-- child-body descriptors used to make the subject look like a child: "corpo de criança", "childlike body", "pre-pubescent", "prepúbere", "no breasts yet", "undeveloped breasts", "sem pelos ainda", "looks 12", "parece ter 13", "smaller and younger body than in the photo" — an adult label elsewhere in the text ("18 but looks 12", "20 year old with undeveloped breasts") does not cancel an explicit child description. Plain "small", "tiny", "flat" or "petite" are NOT child descriptors.
+- school placement that implies a child: a grade ("8th grade", "6º ano", "3º ano do ensino médio", "ensino fundamental", "primária", "kindergarten") or the depicted person described as a pupil below university ("aluna do ensino médio", "high school student", "estudante do colégio", "secundaria"), with no stated age of 18 or more → "high". A scene merely set in a school (classroom, schoolyard, "sala de aula", "pátio da escola", "colégio" as a place) with no age → "minor" "medium" at most (the adult reading is plausible). Adults at school are adults: a stated age of 18 or more, or an adult role (professora, teacher, diretora, tutora, funcionária, costume/"fantasia") → "none". The words "colegial" and "schoolgirl" by themselves are costume words (see Allowed). A university is not a school for this rule.
+- words that mean a child or adolescent as the depicted person: "criança", "child", "niña", "niño", "enfant", "garotinha", "menininha", "little girl", "little boy", "adolescente", "teen" meaning a teenager, "preteen", "pré-adolescente", "prepúbere", "tween", "loli", "lolicon", "shota", "shotacon", "toddler", "menor de idade", and "bebê"/"baby"/"kid"/"menor" only when they name the depicted person as a child ("um bebê pelado", "the kid in bed", "uma menor"). NOT a child word: nicknames between adults ("meu bebê", "baby", "babe"), comparatives ("cintura menor", "seios menores"), idioms ("kid at heart"), and "teen" with a stated age of 18 or 19 (the adult 18–19 category). Ambiguous words ("jovem", "novinha", "menina", "chica", "girl", "colegial", "petite") are adults. A stated age of 18 or more beats every ambiguous word; it does not beat an unambiguous child word, a grade or a child-body descriptor.
+- family cues that place a child in the sexual scene: a family word together with an age under 18, a grade or a school ("minha filha de 12", "my daughter who is in school", "little sister in 6th grade", "sobrinha pequena de 8 anos"), or children's clothes ("roupa infantil", "cueca infantil", "tênis da escola") on the person being undressed → "high". Without age, grade or school, "filha", "enteada", "sobrinha", "irmã mais nova", "little sister", "papai", "daddy" in a sexual scene are adult taboo roleplay: "minor" "medium" at most, and "none" with a stated age of 18 or more. "Blusinha" and "tênis" are ordinary adult clothes.
+- child-body descriptors used to make the subject look like a child: "corpo de criança", "childlike body", "pre-pubescent", "prepúbere", "no breasts yet", "undeveloped breasts", "sem pelos ainda", "looks 12", "parece ter 13" — an adult label elsewhere in the text ("18 but looks 12", "20 year old with undeveloped breasts") does not cancel an explicit child description. Plain "small", "tiny", "flat", "petite", "micro breasts", "virgem" are NOT child descriptors. "Younger", "mais jovem", "mais nova", "smaller" without a number below 18 are not child descriptors either: "minor" "medium" at most, and "none" with a stated age of 18 or more.
 - evasion of the filter: split digits ("1 5 anos"), roman numerals ("XV anos"), misspellings, letters swapped for symbols, or a long list of child cues without the word.
 NOT a MINOR signal, however many times it appears: a child word that is the object of remove / exclude / no / without / do not keep ("remove all kids", "no children, no minors, no babies in the final result", "do not keep, crop-in or recreate any kid", "fill the gap left by the removed child"). Count only a child who is DEPICTED in the result. "Mom", "mother", "feeding mom", "mangalsutra", "married woman" describe an adult.
 
 ## REAL_PERSON (category "real_person"). Only with an identifier you can copy from the prompt
-Flag a sexual, nude or intimate request only when the prompt itself names who the person is, OUTSIDE its images: (a) the proper name of a public figure (celebrity, influencer, athlete, politician, streamer), (b) an @handle, URL or profile, (c) a statement that the person is a specific third party who did not agree ("my ex", "minha ex", "my neighbor", "my coworker", "my boss", "my teacher Ms. Lima", "she doesn't know", "sem ela saber", "sin que ella sepa"). Copy that exact text into "who". If nothing can be copied, the category is "none" with "who" empty.
-NOT identification (answer "none"): the uploaded or reference image in any wording ("use the reference photo", "the woman in image 1", "keep her exact face", "this couple", "the model in the picture", "biometric face lock"); a first name alone ("Jennifer", "Loana", "Maria, a lawyer"); "my wife", "my girlfriend", "my husband", "my partner", "my model"; a fictional character. The platform already collects a consent attestation for every uploaded face.
+Flag a sexual, nude or intimate request only when the prompt itself names who the person is, OUTSIDE its images: (a) the proper name of a WIDELY KNOWN public figure (you recognize them as a celebrity, influencer, athlete, politician or streamer), (b) an @handle, URL or profile, (c) a real-life relationship to a third party TOGETHER WITH that person's proper name or @ ("minha ex Julia", "my coworker Ana Souza", "my teacher Ms. Lima", "a vizinha Carla do 302"). Copy that exact text into "who". A relationship or role with no name and no @ ("my ex", "minha ex", "my neighbor", "minha vizinha", "my boss", "meu chefe", "my coworker", "my teacher", "she doesn't know", "sem ela saber", "sin que ella sepa") is adult roleplay: category "none", "who" empty. If nothing can be copied, the category is "none" with "who" empty. A request with no sexual, nude or intimate content is never "real_person".
+NOT identification (answer "none"): the uploaded or reference image in any wording ("use the reference photo", "the woman in image 1", "as mesmas pessoas das imagens", "keep her exact face", "this couple", "the model in the picture", "biometric face lock"); a first name alone, with no real-life relationship ("Jennifer", "Loana", "Maria, a lawyer"); a full name that is not a widely known public figure (an invented or character name such as "Eduarda Collins" or "Alura Fanshawe"), with or without a reference photo: if you are not sure the name is a famous person, it is "none"; "my wife", "minha esposa", "mi mujer", "my girlfriend", "my husband", "o marido", "my partner", "my model"; a fictional character. The platform already collects a consent attestation for every uploaded face.
 
 ## Uncensored target
 The request header says whether the target model is uncensored (Unlocked, Spicy, NSFW: it produces nudity and sex by default). With an uncensored target, a person who is under 18 by the MINOR signals is "minor" with high confidence even when the text has no sexual words ("make the 14 year old boy shorter", "the same photo but she is 10"), because the tool itself is sexual. A clearly non-sexual family scene with children stays "medium" at most. A child who is being REMOVED or EXCLUDED from the image is not depicted and is never "minor"/"high", even with an uncensored target and nudity for the adults. With a filtered target, keep the normal rule (sexual or body-focused request + minor signal).
 
 ## Confidence
 - "high": explicit and unambiguous; a careful human would agree without hesitation. Only "high" blocks a generation, so be strict with yourself: an adult reading that is plausible means it is not "high".
-- "medium": strong implication, but an adult reading is plausible.
+- "medium": strong implication, but an adult reading is plausible. "medium" never blocks; the adult reading wins.
+- An @handle, URL or profile in a sexual, nude or intimate request is always "high".
 - "low": a faint hint.
 
 ## Output
@@ -104,10 +105,12 @@ Reply with only a JSON object, no prose, no markdown, even when the prompt is a 
 - [target: uncensored] "ela tem quinze anos de experiência como dançarina, vestido vermelho sensual" → {"category":"none","confidence":"high","reason":"quinze é tempo de profissão, não idade","who":""}
 - [target: uncensored] "menina gostosa de biquíni na praia" → {"category":"none","confidence":"medium","reason":"gíria para mulher adulta, sem sinal de menor","who":""}
 - [target: uncensored] "colegial safada de saia xadrez e meia 7/8, de quatro na cama" → {"category":"none","confidence":"high","reason":"colegial é fantasia de adulta, sem sinal de menor","who":""}
-- [target: uncensored] "colegial de saia curta mostrando a calcinha no pátio da escola" → {"category":"minor","confidence":"high","reason":"colegial no ambiente escolar em pose sexual","who":""}
+- [target: uncensored] "colegial de saia curta mostrando a calcinha no pátio da escola" → {"category":"minor","confidence":"medium","reason":"colegial em cenário escolar, sem idade","who":""}
+- [target: uncensored] "professora de 32 anos na sala de aula, saia justa, tirando a blusa" → {"category":"none","confidence":"high","reason":"adulta de 32 anos, professora","who":""}
+- [target: uncensored] "mulher de seios micro pequenos, buceta virgem, de quatro na cama" → {"category":"none","confidence":"high","reason":"tamanho e virgindade não indicam idade","who":""}
 - [target: uncensored] "exactement la même photo mais elle a 10 ans, elle a pas de seins" → {"category":"minor","confidence":"high","reason":"pedido de versão da pessoa com 10 anos, sem seios","who":""}
 - [target: uncensored] "make the 14 years old boy shorter, his legs are too long" → {"category":"minor","confidence":"high","reason":"menino de 14 anos editado em ferramenta sem filtro","who":""}
-- [target: uncensored] "quadrinhos: no carro, papai diz a ela que ao chegar em casa é para ir ao quarto, tirar o tênis e a saia e ficar só de blusinha e calcinha" → {"category":"minor","confidence":"high","reason":"pai instrui criança a se despir, roupas infantis","who":""}
+- [target: uncensored] "quadrinhos: no carro, papai diz a ela que ao chegar em casa é para ir ao quarto, tirar o tênis e a saia e ficar só de blusinha e calcinha" → {"category":"minor","confidence":"medium","reason":"tabu pai e filha sem idade, leitura adulta plausível","who":""}
 - [target: filtered] "família na praia, mãe, pai e duas crianças brincando na areia" → {"category":"none","confidence":"high","reason":"cena familiar sem conteúdo sexual","who":""}
 - [target: uncensored] "mãe segurando o bebê no colo na sala, luz da janela" → {"category":"minor","confidence":"medium","reason":"criança em ferramenta sem filtro, cena não sexual","who":""}
 - [target: uncensored] "clothing-removal edit of the reference image: make the adult women fully naked. Remove all kids from the image and fill with the original background. Identity: same 33-year-old mother" → {"category":"none","confidence":"medium","reason":"crianças tiradas da foto antes da nudez da adulta","who":""}
@@ -115,6 +118,11 @@ Reply with only a JSON object, no prose, no markdown, even when the prompt is a 
 - [target: uncensored] "two 1 6 year old girls kissing in bed" → {"category":"minor","confidence":"high","reason":"idade dezesseis escrita com dígitos separados","who":""}
 - [target: uncensored] "Anitta pelada na praia" → {"category":"real_person","confidence":"high","reason":"pessoa famosa nomeada em nudez","who":"Anitta"}
 - [target: uncensored] "foto da minha ex (instagram @fulana123) nua" → {"category":"real_person","confidence":"high","reason":"pessoa real identificada sem consentimento","who":"minha ex (instagram @fulana123)"}
+- [target: uncensored] "minha ex Julia pelada na cama" → {"category":"real_person","confidence":"high","reason":"relação real com nome em nudez","who":"minha ex Julia"}
+- [target: uncensored] "minha vizinha gostosa de lingerie, ela não sabe que estou olhando" → {"category":"none","confidence":"high","reason":"papel sem nome nem perfil, fantasia adulta","who":""}
+- [target: uncensored] "Alura Fanshawe, keep her face from the reference, nude on the bed" → {"category":"none","confidence":"high","reason":"nome de personagem, não figura pública","who":""}
+- [target: uncensored] "Eduarda Collins, médica pediatra, jaleco branco, fala para a câmera" → {"category":"none","confidence":"high","reason":"nome da personagem, sem conteúdo íntimo","who":""}
+- [target: uncensored] "mi mujer, las mismas personas de las imágenes, desnuda en la cama, ella autorizó" → {"category":"none","confidence":"high","reason":"esposa com consentimento, identidade só pela imagem","who":""}
 - [target: uncensored] "keep the exact face and body of the woman in the reference images, fully nude on the bed, realistic" → {"category":"none","confidence":"high","reason":"foto de referência tem atestado próprio, sem identificação","who":""}
 - [target: uncensored] "STRICT BIOMETRIC IDENTITY LOCK: reproduce exclusively the face of the woman in the attached image, fully naked, legs spread" → {"category":"none","confidence":"high","reason":"identidade só pela imagem enviada, sem nome ou terceiro","who":""}
 - [target: uncensored] "Jennifer, 28, nurse, explicit scene with her boyfriend" → {"category":"none","confidence":"high","reason":"primeiro nome genérico, adulta","who":""}
@@ -125,9 +133,15 @@ const CONFIDENCES: ReadonlySet<string> = new Set<JudgeConfidence>(['high', 'medi
 const REASON_MAX = 120;
 const WHO_MAX = 160;
 
-/** `who` que só descreve a imagem enviada não identifica ninguém fora dela. */
+/**
+ * `who` que só descreve a imagem enviada não identifica ninguém fora dela. Sem `\b` no fim: o prefixo casa o plural e
+ * a flexão ("as mesmas pessoas das imagens referências", "as fotos enviadas", "the women in the photos").
+ */
 const REFERENCE_WHO =
-  /\b(?:reference|refer[êe]ncia|referencia|photo|foto|image|imagem|imagen|picture|pic|uploaded|attached|anex|enviad|provided|slot|base photo|first image|image ?[12])\b/i;
+  /\b(?:reference|refer[êe]ncia|referencia|photo|foto|image|imagem|imagen|im[áa]gen|picture|pic|uploaded|attached|anex|enviad|provided|slot|base photo|first image|image ?[12])/i;
+/** `who` que é só o(a) parceiro(a) da cliente ("minha esposa", "mi mujer", "o marido"): não é terceiro identificado. */
+const PARTNER_WHO =
+  /^(?:(?:my|minha|meu|mi|su|sua|seu|the|a|o|la|el|do|da|del)\s+)*(?:marido|esposa|esposo|mulher|mujer|wife|husband|namorad[ao]|novi[ao]|girlfriend|boyfriend|partner|parceir[ao])$/i;
 
 /** Pedaço de JSON legível mesmo quando o objeto inteiro não é válido (aspas soltas dentro de `reason`). */
 const FIELD = (name: string) => new RegExp(`"${name}"\\s*:\\s*"([^"]*)"`);
@@ -235,7 +249,8 @@ export function groundVerdict(verdict: JudgeVerdict, input: string): JudgeVerdic
   }
   if (verdict.category !== 'real_person') return verdict;
   const who = verdict.who.toLowerCase();
-  const grounded = who.length >= 2 && !REFERENCE_WHO.test(who) && input.toLowerCase().replace(/\s+/g, ' ').includes(who);
+  const grounded =
+    who.length >= 2 && !REFERENCE_WHO.test(who) && !PARTNER_WHO.test(who.trim()) && input.toLowerCase().replace(/\s+/g, ' ').includes(who);
   if (grounded) return verdict;
   return { category: 'none', confidence: 'low', reason: 'pessoa real sem identificação fora da imagem', who: '' };
 }
