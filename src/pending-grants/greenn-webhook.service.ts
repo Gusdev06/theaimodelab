@@ -115,8 +115,15 @@ export class GreennWebhookService {
   ): void {
     const expected = this.configService.get<string>('GREENN_WEBHOOK_TOKEN');
     if (!expected) {
-      this.logger.warn('GREENN_WEBHOOK_TOKEN not configured — skipping signature check');
-      return;
+      // Sem token o webhook ficava ABERTO: qualquer POST criava acesso grátis
+      // (mesmo buraco do TKT-101 no PP/Cakto). Agora falha fechado; só em
+      // desenvolvimento, com GREENN_WEBHOOK_ALLOW_UNAUTHENTICATED=true, passa sem conferir.
+      if (this.configService.get<string>('GREENN_WEBHOOK_ALLOW_UNAUTHENTICATED') === 'true') {
+        this.logger.warn('GREENN_WEBHOOK_TOKEN not configured — token check skipped (GREENN_WEBHOOK_ALLOW_UNAUTHENTICATED=true)');
+        return;
+      }
+      this.logger.error('GREENN_WEBHOOK_TOKEN não configurado — webhook recusado');
+      throw new UnauthorizedException('Greenn webhook token not configured');
     }
 
     const received =

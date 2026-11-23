@@ -119,8 +119,15 @@ export class HotmartWebhookService {
   ): void {
     const expected = this.configService.get<string>('HOTMART_HOTTOK');
     if (!expected) {
-      this.logger.warn('HOTMART_HOTTOK not configured — skipping signature check');
-      return;
+      // Sem token o webhook ficava ABERTO: qualquer POST criava acesso grátis
+      // (mesmo buraco do TKT-101 no PP/Cakto). Agora falha fechado; só em
+      // desenvolvimento, com HOTMART_WEBHOOK_ALLOW_UNAUTHENTICATED=true, passa sem conferir.
+      if (this.configService.get<string>('HOTMART_WEBHOOK_ALLOW_UNAUTHENTICATED') === 'true') {
+        this.logger.warn('HOTMART_HOTTOK not configured — token check skipped (HOTMART_WEBHOOK_ALLOW_UNAUTHENTICATED=true)');
+        return;
+      }
+      this.logger.error('HOTMART_HOTTOK não configurado — webhook recusado');
+      throw new UnauthorizedException('Hotmart webhook token not configured');
     }
 
     const received =
