@@ -23,6 +23,11 @@ import { isPrepaidPlanSlug, prepaidPeriodMonths } from '../plans/prepaid-plan';
 
 const ULTRA_BASIC_WELCOME_FREE_GENERATIONS = 2;
 
+/** Cobrança atrasada da mesma recorrência reabre a assinatura cancelada pelo cron (padrão ligado; `off` volta ao antigo). */
+export function lapsedRenewalReopenEnabled(): boolean {
+  return (process.env.LAPSED_RENEWAL_REOPEN ?? 'on').trim().toLowerCase() !== 'off';
+}
+
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
@@ -353,26 +358,57 @@ export class PaymentsService {
         orderBy: { createdAt: 'desc' },
       });
 
+      // Retentativa tardia (23/11): a Perfect Pay/Cakto recupera a cobrança da MESMA assinatura recorrente
+      // dias depois do vencimento (mediana ~10 d; 15 de 19 voltaram depois da carência de 3 d), quando o
+      // PerfectpaySubscriptionExpiryService já a pôs em CANCELED. Sem assinatura ativa no gateway, a cobrança
+      // com o mesmo código PPSUB reabre a assinatura antiga: conta como renovação (torre e leitura da porta),
+      // sem Purchase no CAPI, sem e-mail de boas-vindas e sem comissão de 1ª venda. Antes criava uma assinatura
+      // nova (7 de 13 "assinaturas novas" de 20 a 23/11 eram isso). Desfazer: LAPSED_RENEWAL_REOPEN=off.
+      const lapsedSub =
+        !activeSub && subscriptionCode && !cancelAtPeriodEnd && lapsedRenewalReopenEnabled()
+          ? await tx.subscription.findFirst({
+              where: {
+                userId,
+                paymentProvider: provider,
+                externalSubscriptionId: subscriptionCode,
+                status: 'CANCELED',
+              },
+              orderBy: { createdAt: 'desc' },
+            })
+          : null;
+      const renewSub = activeSub ?? lapsedSub;
+
       // Renovação = MESMA assinatura recorrente (mesmo código PPSUB). Quando o
       // postback traz o código da assinatura, casamos por ele; sem código (subs
       // legadas/admin sem PPSUB), caímos no match por plano para manter compat.
-      const isRenewal = !!activeSub && (
+      const isRenewal = !!renewSub && (
         subscriptionCode
-          ? activeSub.externalSubscriptionId === subscriptionCode
-          : activeSub.planId === plan.id
+          ? renewSub.externalSubscriptionId === subscriptionCode
+          : renewSub.planId === plan.id
       );
 
       let subscription;
-      if (isRenewal && activeSub) {
+      if (isRenewal && renewSub) {
+        if (lapsedSub) {
+          // Reabrir a antiga não pode deixar outra assinatura ativa ao lado (ex.: a grátis do cadastro):
+          // mesma regra da criação, que cancela as ativas antes de abrir a nova.
+          await tx.subscription.updateMany({
+            where: { userId, id: { not: lapsedSub.id }, status: { in: ['ACTIVE', 'TRIALING', 'PAST_DUE'] } },
+            data: { status: 'CANCELED', cancelAtPeriodEnd: false },
+          });
+          this.logger.log(
+            `[RENOVACAO_TARDIA] user ${userId}: ${provider} ${subscriptionCode} cobrada depois da carência; assinatura ${lapsedSub.id} reaberta (venda ${saleCode})`,
+          );
+        }
         // Renovação: estende a partir do fim do período vigente. A PerfectPay pode
         // trocar o plano DENTRO da mesma assinatura recorrente (mesmo PPSUB), então
         // o planId sempre segue o plano do postback.
         const base =
-          activeSub.currentPeriodEnd > now ? activeSub.currentPeriodEnd : now;
+          renewSub.currentPeriodEnd > now ? renewSub.currentPeriodEnd : now;
         const periodEnd = new Date(base);
         periodEnd.setMonth(periodEnd.getMonth() + periodMonths);
         subscription = await tx.subscription.update({
-          where: { id: activeSub.id },
+          where: { id: renewSub.id },
           data: {
             planId: plan.id,
             status: 'ACTIVE',
@@ -382,7 +418,7 @@ export class PaymentsService {
             paymentRetryCount: 0,
             // Preenche o código PPSUB se ainda não estava salvo (ex.: sub legada/admin).
             externalSubscriptionId:
-              subscriptionCode ?? activeSub.externalSubscriptionId,
+              subscriptionCode ?? renewSub.externalSubscriptionId,
           },
         });
       } else {
