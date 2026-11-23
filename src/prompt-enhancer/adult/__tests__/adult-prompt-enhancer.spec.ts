@@ -183,3 +183,19 @@ describe('AdultPromptEnhancerService', () => {
     await expect(service.enhance('   ', { type: 'image' })).rejects.toThrow('prompt vazio');
   });
 });
+
+describe('deterministicEnhancement · homem, casal e 60+ (23/11)', () => {
+  it('idade de 60+ escrita conta como idade adulta: sem o prefixo de mulher de 27', () => {
+    const text = deterministicEnhancement('homem de barba, 62 anos, na academia', IMAGE).prompt;
+    expect(text).toContain('62 anos');
+    expect(text).not.toContain('Adult woman, 27 years old');
+  });
+  it('pedido de homem ou casal sem idade leva só a âncora de adulto', () => {
+    const text = deterministicEnhancement('casal na cama, luz de abajur', IMAGE).prompt;
+    expect(text).toContain('Every person shown is an adult (18 or older).');
+    expect(text).not.toContain('Adult woman, 27 years old');
+  });
+  it('idade abaixo de 18 nunca conta como idade adulta', () => {
+    expect(deterministicEnhancement('ela, 15 anos', IMAGE).prompt).toContain('Adult woman, 27 years old.');
+  });
+});

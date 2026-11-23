@@ -592,15 +592,12 @@ describe('multiple-angles', () => {
       expect(h.creditsService.debit).toHaveBeenCalledTimes(1);
     });
 
-    it('conta na guarda legal por menor (admin, suspensão desligada ou guarda antiga): 422 sem registro novo', async () => {
+    it('conta na guarda legal por menor não trava foto limpa (dono, 23/11): a trava é por linhagem', async () => {
       const h = harness(stored, {}, [], { onHold: true });
-      await expect(h.service.generateMultipleAngles('user-1', { source_generation_id: SOURCE_ID, horizontal_angle: 0 })).rejects.toMatchObject({
-        status: 422,
-        response: { code: 'CONTENT_POLICY_MINOR' },
-      });
-      expect(h.contentSafety.isUnderMinorHold).toHaveBeenCalledWith('user-1');
+      await h.service.generateMultipleAngles('user-1', { source_generation_id: SOURCE_ID, horizontal_angle: 0 });
+      expect(h.contentSafety.isUnderMinorHold).not.toHaveBeenCalled();
       expect(h.contentSafety.record).not.toHaveBeenCalled();
-      expectNothingCharged(h);
+      expect(h.creditsService.debit).toHaveBeenCalledTimes(1);
     });
 
     describe('juiz de prompt sobre a linhagem', () => {

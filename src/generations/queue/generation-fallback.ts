@@ -101,6 +101,11 @@ export interface FallbackContext {
    */
   allowUncensoredWithMedia?: boolean;
   /**
+   * A geração tem atestado de imagem gravado (campo do pedido ou declaração da conta): libera o desvio para modelo sem
+   * censura com a mídia da cliente, como `allowUncensoredWithMedia` (dono, 23/11).
+   */
+  hasConsent?: boolean;
+  /**
    * `WAN_ANIMATE_PROVIDER=kie`: a troca de pessoa já roda na kie primeiro e cai na WaveSpeed dentro do processador,
    * então a falha que chega aqui já passou pelas duas.
    */
@@ -569,7 +574,7 @@ export function evaluateFallback(
   const plan = planAlternative(jobName, data, ctx);
   if (!plan) return { plan: null };
   if (
-    !ctx.allowUncensoredWithMedia &&
+    !(ctx.allowUncensoredWithMedia || ctx.hasConsent) &&
     isUncensoredFallbackModel(plan.model) &&
     (hasUserMedia(data, ctx) || carriesUserMedia(plan.data))
   ) {

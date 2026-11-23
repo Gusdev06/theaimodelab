@@ -20,16 +20,17 @@ export class PromptEnhancerController {
   async enhance(@Body() dto: EnhancePromptDto) {
     // modelo sem filtro (Unlocked, Spicy...): o melhorador de sempre recusa cena sensível e devolve outra cena sem
     // avisar; o melhorador 18+ mantém o pedido e só melhora a técnica (identidade, idade adulta, realismo, câmera)
-    if (dto.context && isUncensoredModel(dto.context.model) && this.adultEnhancer.enabled()) {
+    // sem modelo no contexto vale a mesma regra da trava (alvo sem filtro), dono 23/11
+    if (this.adultEnhancer.enabled() && (!dto.context?.model || isUncensoredModel(dto.context.model))) {
       const adult = await this.adultEnhancer.enhance(dto.prompt, {
-        type: dto.context.type,
-        model: dto.context.model,
-        hasReferenceImages: Boolean(dto.context.hasReferenceImages || dto.images?.length),
-        referenceCount: dto.images?.length || (dto.context.hasReferenceImages ? 1 : 0),
-        hasFirstFrame: dto.context.hasFirstFrame,
-        aspectRatio: dto.context.aspectRatio,
-        durationSeconds: dto.context.durationSeconds,
-        locale: dto.context.locale,
+        type: dto.context?.type ?? 'image',
+        model: dto.context?.model,
+        hasReferenceImages: Boolean(dto.context?.hasReferenceImages || dto.images?.length),
+        referenceCount: dto.images?.length || (dto.context?.hasReferenceImages ? 1 : 0),
+        hasFirstFrame: dto.context?.hasFirstFrame,
+        aspectRatio: dto.context?.aspectRatio,
+        durationSeconds: dto.context?.durationSeconds,
+        locale: dto.context?.locale,
       });
       return {
         enhancedPrompt: adult.enhancedPrompt,

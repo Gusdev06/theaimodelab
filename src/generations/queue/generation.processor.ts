@@ -65,6 +65,7 @@ import {
 import { ContentSafetyService } from '../../content-safety/content-safety.service';
 import { assessText } from '../../content-safety/minor-guard';
 import { hasAgeSlang } from '../../content-safety/adult-anchor';
+import { hasAdultTerms } from '../../content-safety/adult-only-rules';
 import {
   ConsentRequiredSafetyError,
   ContentSafetyError,
@@ -627,6 +628,8 @@ export class GenerationProcessor extends WorkerHost {
       aspectRatio: generation.aspectRatio,
       inputImageUrls,
       allowUncensoredWithMedia: this.uncensoredWithMediaAllowed(),
+      // atestado de imagem gravado no pedido (campo ou declaração da conta): libera o desvio com a foto da cliente
+      hasConsent: await this.hasConsentForGeneration(generation.id),
       wanAnimateKiePrimary: wanAnimateOnKie(
         this.configService.get<string>('WAN_ANIMATE_PROVIDER'),
       ),
@@ -2584,14 +2587,8 @@ export class GenerationProcessor extends WorkerHost {
       (request.ownCleanMedia === true ||
         (request.ownCleanMedia === undefined &&
           (await this.prepareOwnImagesForUnlocked(generationId))));
-    // gíria de juventude ("novinha", "colegial") com foto que não é geração limpa da própria conta: a troca por
-    // "mulher adulta" não muda quem está na foto, então ela não segue para o modelo sem filtro
-    if (text.slang && hasUserImages && !ownClean) {
-      this.logger.warn(
-        `[SAFETY_GUARD] gen=${generationId} model=${request.model}: gíria de juventude com foto do usuário — encerrada sem desvio para modelo sem censura`,
-      );
-      throw new UncensoredFallbackRefusedError(error, request.model);
-    }
+    // gíria de juventude ("novinha", "colegial") com foto segue para o desvio (dono, 23/11): a foto é da cliente, a
+    // declaração das imagens já foi feita e o modelo sem filtro recebe "mulher adulta" com a âncora de adulto
     const decision = decideSafetyFallback({
       target: request.target,
       isMinor,
@@ -3004,6 +3001,14 @@ export class GenerationProcessor extends WorkerHost {
     if (isMinorRefusal(originalError)) {
       this.logger.warn(
         `Generation ${generationId} recusada por menor — sem reescrita do prompt`,
+      );
+      return null;
+    }
+    // pedido adulto (nudez, lingerie, sexo) não é reescrito para outra cena (dono, 23/11): o erro original sobe e o
+    // desvio para o modelo sem filtro atende o pedido como veio (com as guardas de menor e de atestado de sempre)
+    if (hasAdultTerms(originalPrompt)) {
+      this.logger.warn(
+        `Generation ${generationId}: pedido adulto recusado pelo filtro — sem reescrita, segue para o desvio`,
       );
       return null;
     }
