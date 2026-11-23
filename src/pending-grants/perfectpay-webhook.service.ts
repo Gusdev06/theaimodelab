@@ -23,6 +23,7 @@ import {
   resolvePerfectpayBuyerLocale,
 } from './buyer-locale';
 import { NoAccountPurchasesService } from './no-account-purchases.service';
+import { DeclineFallbackService } from './decline-fallback.service';
 
 /** De onde veio a venda: webhook ao vivo (com log) ou reprocesso de venda guardada sem conta (B-01). */
 interface SaleContext {
@@ -82,6 +83,7 @@ export class PerfectpayWebhookService {
     private readonly paymentsService: PaymentsService,
     private readonly checkoutCodes: CheckoutCodesService,
     @Optional() private readonly noAccountPurchases?: NoAccountPurchasesService,
+    @Optional() private readonly declineFallback?: DeclineFallbackService,
   ) {}
 
   async handle(
@@ -177,6 +179,11 @@ export class PerfectpayWebhookService {
     }
 
     if (kind !== 'paid') {
+      // 1ª compra de plano recusada no cartão: aviso no sino + folha no site com o avulso de 30 d do mesmo plano
+      // (dono 23/11). O serviço nunca lança; a resposta à PP continua a mesma.
+      if (kind === 'ignore' && !ctx.replay && this.declineFallback) {
+        await this.declineFallback.notifyIfFirstPlanDecline(payload, email, this.extractPlanCandidates(payload));
+      }
       return {
         processed: false,
         reason: `ignored event: status=${payload?.sale_status_enum ?? 'n/a'} (${payload?.sale_status_detail ?? 'n/a'})`,
