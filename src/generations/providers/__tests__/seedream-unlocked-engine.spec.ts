@@ -1,5 +1,5 @@
 import { ConfigService } from '@nestjs/config';
-import * as sharp from 'sharp';
+import { QUALITY_EDIT_PROMPT } from '../../quality-edit';
 import {
   SeedreamProvider,
   isUnlockedEngineSwapContext,
@@ -722,24 +722,19 @@ describe('SeedreamProvider · motor do Unlocked (UNLOCKED_ENGINE)', () => {
   });
 
   describe('pedido só de qualidade numa foto (TKT-373)', () => {
-    // foto retrato 600×800 (3:4): o seletor da tela mandava 9:16 e o modelo esticava
-    let portrait: Buffer;
-    beforeAll(async () => {
-      portrait = await sharp({
-        create: { width: 600, height: 800, channels: 3, background: '#888' },
-      })
-        .jpeg()
-        .toBuffer();
+    // foto retrato 600×800 (3:4): o seletor da tela mandava 9:16 e o modelo esticava. A leitura da foto é simulada
+    // (o sharp de verdade roda fora do relógio falso e empurrava o s55 para a reserva).
+    let aspectSpy: jest.SpyInstance;
+    beforeEach(() => {
+      aspectSpy = jest
+        .spyOn(SeedreamProvider.prototype as any, 'readImageAspect')
+        .mockResolvedValue(600 / 800);
     });
+    afterEach(() => aspectSpy.mockRestore());
 
     function mockKieWithPhoto() {
       let next = 0;
       mockFetch((url) => {
-        if (url === 'https://cdn.test/in0.jpg')
-          return new Response(new Uint8Array(portrait), {
-            status: 200,
-            headers: { 'content-type': 'image/jpeg' },
-          });
         if (url.endsWith('/api/v1/jobs/createTask'))
           return jsonResponse({
             code: 200,
@@ -783,12 +778,37 @@ describe('SeedreamProvider · motor do Unlocked (UNLOCKED_ENGINE)', () => {
       await run(provider.generateImage(photoInput('q1', 'Upscale')));
       const [sent] = created();
       const prompt = String(sent.input.prompt);
-      expect(prompt).toMatch(/^Edit this exact image\. Make only this change: improve the image quality/);
+      expect(prompt).toMatch(
+        /^Edit this exact image\. Make only this change: improve the image quality/,
+      );
       expect(prompt).toContain('the same person with the same face');
       expect(prompt).not.toContain('Ultra-realistic photo');
       expect(prompt).not.toMatch(/^Upscale/);
       expect(sent.input.aspect_ratio).toBe('3:4');
       expect(sent.model).toBe('seedream/5-5-image-to-image');
+      expect(created()).toHaveLength(1);
+      // a âncora de adulto continua no prompt final
+      expect(prompt.length).toBeGreaterThan(QUALITY_EDIT_PROMPT.length);
+    });
+
+    it('se a leitura da foto falhar, vale a proporção que a cliente escolheu (não 1:1)', async () => {
+      aspectSpy.mockRejectedValue(new Error('cdn 503'));
+      mockKieWithPhoto();
+      const provider = buildProvider(ENV);
+      await run(provider.generateImage(photoInput('q6', 'dar nitidez')));
+      const [sent] = created();
+      expect(String(sent.input.prompt)).toMatch(/^Edit this exact image/);
+      expect(sent.input.aspect_ratio).toBe('9:16');
+    });
+
+    it('"add blur" e "reduzir a nitidez" seguem crus', async () => {
+      mockKieWithPhoto();
+      const provider = buildProvider(ENV);
+      await run(provider.generateImage(photoInput('q7', 'add blur')));
+      await run(provider.generateImage(photoInput('q8', 'reduzir a nitidez')));
+      const [blur, menos] = created().map((b) => String(b.input.prompt));
+      expect(blur).toMatch(/^add blur/);
+      expect(menos).toMatch(/^reduzir a nitidez/);
     });
 
     it('pedido criativo com foto segue cru, com o bloco e a proporção escolhida', async () => {
@@ -824,6 +844,7 @@ describe('SeedreamProvider · motor do Unlocked (UNLOCKED_ENGINE)', () => {
       const [sent] = created();
       expect(String(sent.input.prompt)).toMatch(/^Upscale/);
       expect(sent.input.aspect_ratio).toBe('9:16');
+      expect(created()).toHaveLength(1);
     });
 
     it('fora do Unlocked (com o wrapper de roupa) o pedido não é trocado', async () => {

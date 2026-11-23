@@ -7,104 +7,298 @@
  * Medido em 14 dias: todos os pedidos curtos desse tipo eram dessa cliente (7 gerações, 1.710 créditos), e ela reclamou
  * no suporte. Aqui o pedido é reconhecido e trocado por uma edição que preserva a pessoa, a pose e o enquadramento.
  *
- * O reconhecimento é estrito de propósito: o texto inteiro tem que ser pedido de qualidade (mais palavras de enchimento).
- * Qualquer outra palavra ("de rodillas", "sin ropa", "fundo de praia") mantém o pedido como veio. Funções puras.
+ * O reconhecimento é estrito de propósito, porque errar para o lado do "sim" joga fora o pedido da cliente:
+ * - todas as palavras têm que ser de qualidade, de gramática (verbo, artigo, "a foto", "por favor") ou de defeito;
+ * - qualidade ("nitidez", "HD", "upscale") não pode vir depois de negação/redução ("sem nitidez", "reduzir a nitidez");
+ * - defeito ("blur", "ruído", "desfoque", "pixelado") só vale depois de um verbo de tirar ("tirar o desfoque"), nunca
+ *   sozinho nem com "mais/add" ("add grain", "desfocar a foto" seguem crus);
+ * - nada que fale da pessoa ("ela", "her", "a ella"): pedido de qualidade fala da foto.
+ * Funções puras.
  */
 
 /** Prompt fixo da ferramenta Upscale (generations.service.ts, generateUpscale). */
 export const UPSCALE_TOOL_PROMPT =
   'Enhance image resolution to 4K quality while preserving all original details exactly. Improve sharpness, reduce compression artifacts, and enhance clarity without changing any visual elements. Maintain the exact same composition, colors, lighting, and all details.';
 
-/** Edição que só melhora a qualidade: a pessoa, a pose e o quadro ficam iguais. */
+/** Edição que só melhora a qualidade: a pessoa, a pose, o estilo e o quadro ficam iguais. */
 export const QUALITY_EDIT_PROMPT =
   'Edit this exact image. Make only this change: improve the image quality, with higher sharpness, clarity and fine detail, and remove blur, noise and compression artifacts. ' +
   'Keep everything else exactly the same: the same person with the same face, facial features and identity, the same expression, hair, skin tone, body shape and pose, ' +
   'the same clothing or lack of it, the same background, lighting and colors, and the exact same framing, crop, orientation and aspect ratio. ' +
-  'Do not add, remove, move, rotate, zoom or restyle anything. Photorealistic result.';
+  'Do not add, remove, move, rotate, zoom or restyle anything. Keep the original style and medium of the image.';
 
 const MAX_QUALITY_REQUEST_CHARS = 120;
 
-// Termos de qualidade (pt/es/en), já sem acento. Pelo menos um tem que aparecer.
-const QUALITY_TERMS = new RegExp(
-  '\\b(?:' +
-    [
-      'up\\s?scal\\w*',
-      'upres',
-      'up\\s?res',
-      'nitid\\w*',
-      'sharp\\w*',
-      'enhanc\\w*',
-      'realz\\w*',
-      'realce',
-      'melhor(?:ar|e|a)',
-      'mejor(?:ar|e|a)',
-      'improve\\w*',
-      'qualidade',
-      'calidad',
-      'quality',
-      'resoluc\\w*',
-      'resolucao',
-      'resolution',
-      'definic\\w*',
-      'definicao',
-      'definition',
-      'detalhes?',
-      'detalles?',
-      'details?',
-      'full\\s?hd',
-      'u?hd',
-      '[248]k',
-      'limp(?:ar|iar|a|ia|e|ie)',
-      'clean\\s?up',
-      'clean',
-      'denoise',
-      'ruidos?',
-      'noise',
-      'granulad\\w*',
-      'grain\\w*',
-      'desenfo(?:c|qu)\\w*',
-      'desfo(?:c|qu)\\w*',
-      'borros\\w*',
-      'borrao',
-      'embacad\\w*',
-      'blur\\w*',
-      'deblur',
-      'unblur',
-      'enfoc\\w*',
-      'focar',
-      'foco',
-      'focus',
-      'crisp\\w*',
-      'clarity',
-      'claridad',
-      'clareza',
-      'clear(?:er)?',
-      'pixelad\\w*',
-      'pixelated',
-    ].join('|') +
-    ')\\b',
-  'g',
+const whole = (source: string) => new RegExp(`^(?:${source})$`);
+
+/** Pedir mais qualidade (pt/es/en, sem acento). */
+const QUALITY = whole(
+  [
+    'up\\s?scal\\w*',
+    'upres',
+    'nitid\\w*',
+    'sharp(?:en|er|ness|ened|ening)?',
+    'enhanc\\w*',
+    'realz\\w*',
+    'realce',
+    'melhor(?:ar|e|a)',
+    'mejor(?:ar|e|a)',
+    'improve\\w*',
+    'qualidade',
+    'calidad',
+    'quality',
+    'resoluc\\w*',
+    'resolucao',
+    'resolution',
+    'definic\\w*',
+    'definicao',
+    'definition',
+    'detalhes?',
+    'detalles?',
+    'details?',
+    'fullhd',
+    'u?hd',
+    '[248]k',
+    'clarity',
+    'claridad',
+    'clareza',
+    'clearer',
+    'crisp\\w*',
+    'restaur\\w*',
+    'foco',
+    'focus',
+    'focar',
+    'enfocar',
+    'nitido',
+    'nitida',
+  ].join('|'),
 );
 
-// Enchimento que pode sobrar sem mudar o sentido de "só melhorar a qualidade".
-const FILLER_WORDS = new Set(
-  [
-    'solo', 'so', 'apenas', 'somente', 'just', 'only',
-    'a', 'o', 'os', 'as', 'el', 'la', 'los', 'las', 'the', 'an', 'un', 'una', 'um', 'uma',
-    'imagen', 'imagem', 'image', 'img', 'foto', 'photo', 'picture', 'pic', 'pict',
-    'esta', 'essa', 'este', 'esse', 'this', 'it', 'her', 'dela', 'ella', 'ela',
-    'dar', 'dale', 'de', 'da', 'do', 'del', 'make', 'give', 'add', 'poner', 'colocar', 'por', 'put',
-    'deixa', 'deixe', 'deixar', 'deja', 'deje', 'dejar', 'leave', 'lo', 'le', 'lhe', 'me', 'mi', 'my', 'minha', 'meu',
-    'more', 'mas', 'mais', 'mejor', 'melhor', 'better', 'mucho', 'muito', 'much', 'very', 'muy', 'super', 'ultra',
-    'y', 'e', 'and', 'con', 'com', 'with', 'sin', 'sem', 'without', 'no', 'nao',
-    'favor', 'please', 'pls', 'plz', 'pf', 'porfa', 'porfavor', 'plis',
-    'quiero', 'quero', 'i', 'want', 'need', 'preciso', 'necesito', 'que', 'quede', 'fique', 'se', 'vea', 'veja', 'look',
-    'poco', 'pouco', 'bit', 'little', 'alta', 'alto', 'high', 'higher', 'max', 'maxima', 'maximo', 'maximum',
-    'tirar', 'quitar', 'remove', 'eliminar', 'remover', 'reduce', 'reducir', 'reduzir',
-    'en', 'em', 'in', 'to', 'al', 'ao', 'na', 'no', 'aumentar', 'increase', 'subir', 'aumenta',
-    'version', 'versao', 'nivel', 'level', 'mismo', 'mesmo', 'same', 'igual', 'tal', 'cual', 'como', 'esta',
-  ],
+/** Verbos que já são "deixar melhor" sozinhos e também tiram o defeito que vem depois ("limpar o ruído"). */
+const CLEAN = whole(
+  'limp(?:ar|iar|a|ia|e|ie)|clean|cleanup|denoise|deblur|unblur',
 );
+
+/** Defeito: só vale como objeto de "tirar/limpar" ("tirar o desfoque"). */
+const DEFECT = whole(
+  [
+    'blur\\w*',
+    'borros\\w*',
+    'borrad\\w*',
+    'borrao',
+    'desfo(?:c|qu)\\w*',
+    'desenfo(?:c|qu)\\w*',
+    'embacad\\w*',
+    'ruidos?',
+    'noise',
+    'noisy',
+    'granulad\\w*',
+    'grain\\w*',
+    'pixelad\\w*',
+    'pixelated',
+    'artefatos?',
+    'artefactos?',
+    'artifacts?',
+    'compression',
+    'compressao',
+    'compresion',
+  ].join('|'),
+);
+
+/** Tirar, reduzir ou negar: antes de defeito é bom; antes de qualidade inverte o pedido. */
+const REMOVE = new Set([
+  'tirar',
+  'tira',
+  'tire',
+  'quitar',
+  'quita',
+  'quite',
+  'remove',
+  'remover',
+  'removes',
+  'eliminar',
+  'elimina',
+  'reduce',
+  'reducir',
+  'reduzir',
+  'reduz',
+  'reduza',
+  'sem',
+  'sin',
+  'without',
+  'no',
+  'nao',
+  'menos',
+  'less',
+  'fix',
+  'corrigir',
+  'corrige',
+  'corregir',
+  'corrige',
+  'arreglar',
+  'arregla',
+  'consertar',
+  'conserta',
+]);
+
+/** Pedir mais ou pôr: antes de qualidade é bom ("mais nítida"); antes de defeito pede o defeito ("add blur"). */
+const ADD = new Set([
+  'dar',
+  'dale',
+  'da',
+  'make',
+  'give',
+  'add',
+  'poner',
+  'pon',
+  'colocar',
+  'coloca',
+  'put',
+  'deixa',
+  'deixe',
+  'deixar',
+  'deja',
+  'deje',
+  'dejar',
+  'leave',
+  'more',
+  'mas',
+  'mais',
+  'aumentar',
+  'aumenta',
+  'increase',
+  'subir',
+  'sube',
+  'higher',
+  'alta',
+  'alto',
+  'high',
+  'max',
+  'maxima',
+  'maximo',
+  'maximum',
+  'super',
+  'ultra',
+  'full',
+]);
+
+/** Gramática neutra que pode sobrar. Nada de pessoa (ela, her, ella): pedido de qualidade fala da foto. */
+const NEUTRAL = new Set([
+  'solo',
+  'so',
+  'apenas',
+  'somente',
+  'just',
+  'only',
+  'a',
+  'o',
+  'os',
+  'as',
+  'el',
+  'la',
+  'los',
+  'las',
+  'lo',
+  'the',
+  'an',
+  'un',
+  'una',
+  'um',
+  'uma',
+  'imagen',
+  'imagem',
+  'image',
+  'img',
+  'foto',
+  'photo',
+  'picture',
+  'pic',
+  'pict',
+  'esta',
+  'essa',
+  'este',
+  'esse',
+  'this',
+  'it',
+  'dessa',
+  'desta',
+  'desse',
+  'deste',
+  'nessa',
+  'nesta',
+  'nesse',
+  'neste',
+  'de',
+  'do',
+  'del',
+  'por',
+  'y',
+  'e',
+  'and',
+  'con',
+  'com',
+  'with',
+  'en',
+  'em',
+  'in',
+  'to',
+  'al',
+  'ao',
+  'na',
+  'of',
+  'me',
+  'mi',
+  'my',
+  'minha',
+  'meu',
+  'favor',
+  'please',
+  'pls',
+  'plz',
+  'pf',
+  'pfv',
+  'pfvr',
+  'porfa',
+  'porfis',
+  'porfavor',
+  'plis',
+  'quiero',
+  'quero',
+  'i',
+  'want',
+  'need',
+  'preciso',
+  'necesito',
+  'que',
+  'quede',
+  'fique',
+  'se',
+  'vea',
+  'veja',
+  'look',
+  'mucho',
+  'muito',
+  'much',
+  'very',
+  'muy',
+  'poco',
+  'pouco',
+  'bit',
+  'little',
+  'better',
+  'mejor',
+  'melhor',
+  'version',
+  'versao',
+  'nivel',
+  'level',
+  'toda',
+  'todo',
+  'inteira',
+  'inteiro',
+  'whole',
+  'entire',
+]);
 
 function normalize(text: string): string {
   return text
@@ -116,26 +310,58 @@ function normalize(text: string): string {
 }
 
 /**
- * O pedido inteiro é "melhorar a qualidade desta foto" (nitidez, upscale, HD, limpar, tirar o desfoque)? Pedido longo
- * ou com qualquer outra intenção devolve false. O prompt fixo da ferramenta Upscale também conta.
+ * O pedido inteiro é "melhorar a qualidade desta foto" (nitidez, upscale, HD, limpar, tirar o desfoque)? Pedido longo,
+ * com qualquer outra intenção, com negação da qualidade ou pedindo o defeito devolve false. O prompt fixo da ferramenta
+ * Upscale também conta.
  */
-export function isQualityOnlyEditRequest(prompt: string | null | undefined): boolean {
+export function isQualityOnlyEditRequest(
+  prompt: string | null | undefined,
+): boolean {
   const raw = (prompt ?? '').trim();
   if (!raw) return false;
   if (raw === UPSCALE_TOOL_PROMPT) return true;
   if (raw.length > MAX_QUALITY_REQUEST_CHARS) return false;
-  const text = normalize(raw);
-  if (!text) return false;
-  const withoutQuality = text.replace(QUALITY_TERMS, ' ');
-  if (withoutQuality === text) return false;
-  return withoutQuality
-    .split(' ')
-    .filter(Boolean)
-    .every((word) => FILLER_WORDS.has(word));
+  const words = normalize(raw).split(' ').filter(Boolean);
+  if (!words.length) return false;
+
+  let asked = false;
+  // o último verbo de direção visto: 'remove' (tirar/sem/reduzir) ou 'add' (dar/mais/pôr)
+  let direction: 'remove' | 'add' | null = null;
+  for (const word of words) {
+    if (CLEAN.test(word)) {
+      asked = true;
+      direction = 'remove';
+      continue;
+    }
+    if (REMOVE.has(word)) {
+      direction = 'remove';
+      continue;
+    }
+    if (QUALITY.test(word)) {
+      if (direction === 'remove') return false;
+      asked = true;
+      continue;
+    }
+    if (DEFECT.test(word)) {
+      if (direction !== 'remove') return false;
+      asked = true;
+      continue;
+    }
+    if (ADD.has(word)) {
+      direction = 'add';
+      continue;
+    }
+    if (/^(?:\d+x|x\d+)$/.test(word)) continue;
+    if (NEUTRAL.has(word)) continue;
+    return false;
+  }
+  return asked;
 }
 
 /** UNLOCKED_QUALITY_EDIT_LOCK: ligado por padrão; "off", "false" ou "0" devolve o comportamento antigo. */
-export function qualityEditLockEnabled(flag: string | undefined | null): boolean {
+export function qualityEditLockEnabled(
+  flag: string | undefined | null,
+): boolean {
   const value = (flag ?? '').trim().toLowerCase();
   return !(value === 'off' || value === 'false' || value === '0');
 }

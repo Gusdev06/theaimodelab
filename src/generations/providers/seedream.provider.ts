@@ -429,9 +429,10 @@ export class SeedreamProvider {
 
     // KIE exige aspect_ratio fixo (não tem `match_input_image`). Quando o request
     // não define (ou é pedido só de qualidade), derivamos da proporção da 1ª imagem de entrada.
-    const aspectRatio = await this.resolveAspectRatio(
-      qualityEdit ? { ...input, aspectRatio: undefined } : input,
-    );
+    // Na edição de qualidade, a proporção da foto; se a leitura falhar, a que a cliente escolheu (nunca 1:1 às cegas).
+    const aspectRatio =
+      (qualityEdit ? await this.aspectFromInputImage(input) : null) ??
+      (await this.resolveAspectRatio(input));
 
     if (qualityEdit) {
       this.logger.log(
@@ -503,18 +504,24 @@ export class SeedreamProvider {
 
     // Sem aspect explícito: deriva da imagem de entrada (preserva o comportamento
     // `match_input_image` da WaveSpeed, essencial no undress/face-swap).
+    return (await this.aspectFromInputImage(input)) ?? '1:1';
+  }
+
+  /** Proporção suportada mais próxima da 1ª foto de entrada; null sem foto ou se a leitura falhar. */
+  private async aspectFromInputImage(
+    input: Pick<SeedreamImageInput, 'imageUrls'>,
+  ): Promise<string | null> {
     const firstUrl = input.imageUrls?.[0];
-    if (firstUrl) {
-      try {
-        const ratio = await this.readImageAspect(firstUrl);
-        if (ratio) return this.nearestAspect(ratio);
-      } catch (error) {
-        this.logger.warn(
-          `[SEEDREAM_PRO] Could not read input image dimensions, defaulting to 1:1: ${(error as Error).message}`,
-        );
-      }
+    if (!firstUrl) return null;
+    try {
+      const ratio = await this.readImageAspect(firstUrl);
+      return ratio ? this.nearestAspect(ratio) : null;
+    } catch (error) {
+      this.logger.warn(
+        `[SEEDREAM_PRO] Could not read input image dimensions: ${(error as Error).message}`,
+      );
+      return null;
     }
-    return '1:1';
   }
 
   private async readImageAspect(url: string): Promise<number | null> {
