@@ -15,6 +15,11 @@ import {
 } from '../../content-safety/ultra-realism';
 import { ProviderFailureError } from '../errors/failure-reason';
 import { adultSafePrompt } from '../../content-safety/adult-anchor';
+import {
+  QUALITY_EDIT_PROMPT,
+  isQualityOnlyEditRequest,
+  qualityEditLockEnabled,
+} from '../quality-edit';
 
 // Seedream V5.0 Pro na KIE (api.kie.ai). Sem imagem de referência usamos o
 // modelo text-to-image; com imagem(ns), o modelo image-to-image (edição).
@@ -205,6 +210,7 @@ export class SeedreamProvider {
   private readonly unlockedTextEngine: 'default' | 's55';
   private readonly unlockedEditS55Pct: number;
   private readonly ultraRealism: boolean;
+  private readonly qualityEditLock: boolean;
 
   constructor(
     private readonly configService: ConfigService,
@@ -252,6 +258,9 @@ export class SeedreamProvider {
       : 0;
     this.ultraRealism = ultraRealismEnabled(
       this.configService.get<string>('ULTRA_REALISM_PROMPTS', ''),
+    );
+    this.qualityEditLock = qualityEditLockEnabled(
+      this.configService.get<string>('UNLOCKED_QUALITY_EDIT_LOCK', ''),
     );
     if (this.unlockedEditS55Pct > 0) {
       this.logger.log(
@@ -399,19 +408,36 @@ export class SeedreamProvider {
     // que mantém o personagem vestido.
     // Ultra-realismo (ULTRA_REALISM_PROMPTS, dono 13/11) só no motor sem censura e só em pedido não estilizado. O bloco
     // vai no fim e o teto corta o texto da cliente, nunca o bloco nem a âncora de adulto.
-    const realism = input.skipSafetyWrapper
-      ? ultraRealismFor(this.ultraRealism, input.prompt)
-      : '';
+    // Pedido só de qualidade numa foto ("Upscale", "dar nitidez", TKT-373): vira edição que preserva a pessoa, a pose e
+    // o quadro, sem o bloco de ultra-realismo (que manda refazer a pele) e na proporção da própria foto (o seletor da
+    // tela esticava a imagem). UNLOCKED_QUALITY_EDIT_LOCK=off volta ao texto cru.
+    const qualityEdit =
+      this.qualityEditLock &&
+      hasImages &&
+      !!input.skipSafetyWrapper &&
+      isQualityOnlyEditRequest(input.prompt);
+    const promptForModel = qualityEdit ? QUALITY_EDIT_PROMPT : input.prompt;
+    const realism =
+      input.skipSafetyWrapper && !qualityEdit
+        ? ultraRealismFor(this.ultraRealism, input.prompt)
+        : '';
     const finalPrompt = input.skipSafetyWrapper
       ? realism
-        ? `${adultSafePrompt(input.prompt, MAX_PROMPT_LENGTH - realism.length - 2)}\n\n${realism}`
-        : adultSafePrompt(input.prompt, MAX_PROMPT_LENGTH)
+        ? `${adultSafePrompt(promptForModel, MAX_PROMPT_LENGTH - realism.length - 2)}\n\n${realism}`
+        : adultSafePrompt(promptForModel, MAX_PROMPT_LENGTH)
       : applySafetyWrapper(input.prompt);
 
     // KIE exige aspect_ratio fixo (não tem `match_input_image`). Quando o request
-    // não define, derivamos da proporção da 1ª imagem de entrada.
-    const aspectRatio = await this.resolveAspectRatio(input);
+    // não define (ou é pedido só de qualidade), derivamos da proporção da 1ª imagem de entrada.
+    const aspectRatio = await this.resolveAspectRatio(
+      qualityEdit ? { ...input, aspectRatio: undefined } : input,
+    );
 
+    if (qualityEdit) {
+      this.logger.log(
+        `[UNLOCKED_NITIDEZ] gen=${input.id} pedido só de qualidade ("${input.prompt.slice(0, 60)}"): edição que preserva rosto e quadro, aspect da foto=${aspectRatio} (pedido=${input.aspectRatio ?? '-'})`,
+      );
+    }
     this.logger.log(
       `[SEEDREAM_PRO] engine=${engine} mode=${hasImages ? 'image-to-image' : 'text-to-image'} quality=${quality} aspectRatio=${aspectRatio} images=${input.imageUrls?.length ?? 0} skipSafety=${!!input.skipSafetyWrapper} prompt="${input.prompt.slice(0, 120)}"`,
     );
