@@ -16,6 +16,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   CreditsService,
   resolveFreeGenerationType,
+  wanFreeOnLtxType,
 } from '../credits/credits.service';
 import { PlansService } from '../plans/plans.service';
 import {
@@ -3104,17 +3105,32 @@ CRITICAL REQUIREMENTS:
 
     await this.modelsService.assertActiveBySlug(model, AiModelType.VIDEO);
 
-    const creditsRequired = await this.plansService.calculateGenerationCost(
-      type,
+    // TKT-382: o LTX não tem grátis própria; a grátis do Wan (desligado) vale aqui no vídeo curto.
+    const wanFreeType = wanFreeOnLtxType(
+      modelVariant,
       resolution,
       dto.duration_seconds,
-      false,
-      1,
-      modelVariant,
     );
+    const freeGenType = wanFreeType
+      ? await this.resolveFreeGenForRequest(userId, type, modelVariant, wanFreeType)
+      : null;
+    const isFreeGeneration = freeGenType !== null;
+
+    const creditsRequired = isFreeGeneration
+      ? 0
+      : await this.plansService.calculateGenerationCost(
+          type,
+          resolution,
+          dto.duration_seconds,
+          false,
+          1,
+          modelVariant,
+        );
 
     await this.checkConcurrentLimit(userId);
-    await this.ensureSufficientBalance(userId, creditsRequired);
+    if (!isFreeGeneration) {
+      await this.ensureSufficientBalance(userId, creditsRequired);
+    }
 
     const generation = await this.prisma.generation.create({
       data: {
@@ -3127,6 +3143,7 @@ CRITICAL REQUIREMENTS:
         durationSeconds: dto.duration_seconds,
         hasAudio: false,
         creditsConsumed: creditsRequired,
+        usedFreeGeneration: isFreeGeneration,
         parameters: { provider: 'wavespeed', preset: dto.preset ?? 'tuned' },
       },
     });
@@ -3149,18 +3166,27 @@ CRITICAL REQUIREMENTS:
       ],
     });
 
-    await this.debitCredits(
-      userId,
-      creditsRequired,
-      generation.id,
-      type,
-      resolution,
-    );
+    if (isFreeGeneration && freeGenType) {
+      await this.consumeFreeGenerationOrRollback(
+        userId,
+        generation.id,
+        freeGenType,
+      );
+    } else {
+      await this.debitCredits(
+        userId,
+        creditsRequired,
+        generation.id,
+        type,
+        resolution,
+      );
+    }
 
     await this.generationQueue.add(GenerationJobName.WAVESPEED_IMAGE_TO_VIDEO, {
       generationId: generation.id,
       userId,
       creditsConsumed: creditsRequired,
+      usedFreeGeneration: isFreeGeneration,
       prompt: dto.prompt,
       resolution,
       durationSeconds: dto.duration_seconds,

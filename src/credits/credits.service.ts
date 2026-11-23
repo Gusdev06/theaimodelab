@@ -94,6 +94,47 @@ export function resolveFreeGenerationType(
   return null;
 }
 
+/**
+ * TKT-382 · o Pack ainda entrega 2 grátis de COMFYDEPLOY_WAN, mas o Wan (comfydeploy-wan) está desligado no catálogo:
+ * a tela troca sozinha para o LTX 2.3 Spicy, que não tinha grátis, e a cliente caía em "créditos insuficientes".
+ * A grátis do Wan passa a valer num LTX equivalente ao vídeo prometido (até 5 s, 480p ou 720p).
+ * Custo: LTX US$ 0,04/s × 5 = US$ 0,20, abaixo do Wan prometido (US$ 0,30). Desligar sem deploy: WAN_FREE_ON_LTX=off.
+ */
+export const WAN_FREE_ON_LTX_VARIANT = 'WAVESPEED_LTX_SPICY';
+export const WAN_FREE_ON_LTX_MAX_SECONDS = 5;
+const WAN_FREE_ON_LTX_RESOLUTIONS: ReadonlySet<Resolution> = new Set<Resolution>([
+  Resolution.RES_480P,
+  Resolution.RES_720P,
+]);
+
+type EnvLike = Record<string, string | undefined>;
+
+export function isWanFreeOnLtxEnabled(env: EnvLike = process.env): boolean {
+  const value = (env.WAN_FREE_ON_LTX ?? '').trim().toLowerCase();
+  return value !== 'off' && value !== 'false' && value !== '0';
+}
+
+/** COMFYDEPLOY_WAN quando o pedido de LTX cabe no vídeo grátis do Wan; null nos outros casos (cobra normal). */
+export function wanFreeOnLtxType(
+  modelVariant: string | null | undefined,
+  resolution: Resolution | null | undefined,
+  durationSeconds: number | null | undefined,
+  env: EnvLike = process.env,
+): FreeGenerationType | null {
+  if (!isWanFreeOnLtxEnabled(env)) return null;
+  if (modelVariant !== WAN_FREE_ON_LTX_VARIANT) return null;
+  if (!resolution || !WAN_FREE_ON_LTX_RESOLUTIONS.has(resolution)) return null;
+  if (
+    typeof durationSeconds !== 'number' ||
+    !Number.isFinite(durationSeconds) ||
+    durationSeconds <= 0 ||
+    durationSeconds > WAN_FREE_ON_LTX_MAX_SECONDS
+  ) {
+    return null;
+  }
+  return FreeGenerationType.COMFYDEPLOY_WAN;
+}
+
 @Injectable()
 export class CreditsService {
   private readonly logger = new Logger(CreditsService.name);
@@ -211,9 +252,20 @@ export class CreditsService {
     );
 
     const balance = await this.getBalance(userId);
-    const freeGenerationType =
+    let freeGenerationType =
       freeGenerationTypeOverride ??
       resolveFreeGenerationType(type, resolvedVariant);
+    // TKT-382: a grátis do Wan (modelo desligado) vale no LTX Spicy curto; mesma regra da geração.
+    if (
+      !freeGenerationTypeOverride &&
+      freeGenerationType === null &&
+      type === GenerationType.IMAGE_TO_VIDEO
+    ) {
+      const wanType = wanFreeOnLtxType(resolvedVariant, resolution, durationSeconds);
+      if (wanType && balance.freeGenerations[wanType] > 0) {
+        freeGenerationType = wanType;
+      }
+    }
 
     const freeGenerationsRemainingForType = freeGenerationType
       ? balance.freeGenerations[freeGenerationType]
