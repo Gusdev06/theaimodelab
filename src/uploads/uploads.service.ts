@@ -20,6 +20,12 @@ import * as path from 'path';
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 import { PresignedUrlDto } from './dto/presigned-url.dto';
 import { PresignedUrlResponseDto } from './dto/presigned-url-response.dto';
+import {
+  aiProvenanceFfmpegOptions,
+  embedAiProvenance,
+  isAiProvenanceEnabled,
+  isGeneratedOutputFolder,
+} from '../common/utils/ai-provenance';
 
 /** Quantas chaves recusadas entram na mensagem do erro (a lista completa fica em `failedKeys`). */
 const STRICT_DELETE_KEYS_IN_MESSAGE = 5;
@@ -51,8 +57,13 @@ export class UploadsService {
   private readonly s3Client: S3Client | null;
   private readonly bucketName: string;
   private readonly publicUrlBase: string;
+  /** AI_PROVENANCE_METADATA=on: marca invisível de IA nas saídas de geração (AI Act art. 50; TKT-333). */
+  private readonly aiProvenance: boolean;
 
   constructor(private readonly configService: ConfigService) {
+    this.aiProvenance = isAiProvenanceEnabled(
+      this.configService.get<string>('AI_PROVENANCE_METADATA'),
+    );
     const endpoint = this.configService.get<string>('S3_ENDPOINT');
     this.bucketName = this.configService.get<string>(
       'S3_BUCKET_NAME',
@@ -143,13 +154,12 @@ export class UploadsService {
       );
     }
 
-    let buffer: Buffer = Buffer.from(await response.arrayBuffer());
     const contentType = response.headers.get('content-type') ?? 'image/png';
-
-    // For MP4 videos, move moov atom to the beginning for streaming playback
-    if (contentType === 'video/mp4') {
-      buffer = await this.applyFaststart(buffer);
-    }
+    const buffer = await this.prepareBody(
+      Buffer.from(await response.arrayBuffer()),
+      folder,
+      contentType,
+    );
 
     // Upload to S3
     await this.s3Client.send(
@@ -184,11 +194,7 @@ export class UploadsService {
       return `https://mock-s3.local/${this.bucketName}/${fileKey}`;
     }
 
-    // For MP4 videos, move moov atom to the beginning for streaming playback
-    let finalBuffer = buffer;
-    if (contentType === 'video/mp4') {
-      finalBuffer = await this.applyFaststart(buffer);
-    }
+    const finalBuffer = await this.prepareBody(buffer, folder, contentType);
 
     await this.s3Client.send(
       new PutObjectCommand({
@@ -249,7 +255,60 @@ export class UploadsService {
     }
   }
 
-  private async applyFaststart(buffer: Buffer): Promise<Buffer> {
+  /**
+   * Corpo final do arquivo: MP4 ganha o faststart (moov no começo, para tocar em streaming) e, com
+   * AI_PROVENANCE_METADATA=on, a saída de geração ganha a marca invisível de IA (XMP na imagem, metadado no MP4).
+   * A marca nunca quebra a subida: falhou, sobe o arquivo como veio.
+   */
+  private async prepareBody(
+    buffer: Buffer,
+    folder: string,
+    contentType: string,
+  ): Promise<Buffer> {
+    const markAi = this.aiProvenance && isGeneratedOutputFolder(folder);
+    if (contentType === 'video/mp4') {
+      return this.applyFaststart(buffer, markAi);
+    }
+    if (!markAi || contentType.startsWith('video/') || contentType.startsWith('audio/')) {
+      return buffer;
+    }
+    const result = embedAiProvenance(buffer);
+    if (result.outcome === 'failed') {
+      this.logger.warn(
+        `[AI_PROVENANCE] Marca de IA não gravada em ${folder} (${contentType}), subindo original: ${result.reason}`,
+      );
+    }
+    return result.buffer;
+  }
+
+  /**
+   * Remux do MP4 com -movflags +faststart (sem recodificar). Com markAi, o mesmo remux grava o metadado de IA; se essa
+   * passada falhar, refaz só o faststart; se o faststart falhar, sobe o original.
+   */
+  private async applyFaststart(buffer: Buffer, markAi = false): Promise<Buffer> {
+    if (markAi) {
+      try {
+        return await this.remuxFaststart(buffer, aiProvenanceFfmpegOptions());
+      } catch (error) {
+        this.logger.warn(
+          `[AI_PROVENANCE] Metadado de IA não gravado no MP4, seguindo só com o faststart: ${(error as Error).message}`,
+        );
+      }
+    }
+    try {
+      return await this.remuxFaststart(buffer, []);
+    } catch (error) {
+      this.logger.warn(
+        `Failed to apply faststart, uploading original: ${(error as Error).message}`,
+      );
+      return buffer;
+    }
+  }
+
+  private async remuxFaststart(
+    buffer: Buffer,
+    extraOutputOptions: string[],
+  ): Promise<Buffer> {
     const tempDir = path.join('/tmp', `faststart-${randomUUID()}`);
     fs.mkdirSync(tempDir, { recursive: true });
     const inputPath = path.join(tempDir, 'input.mp4');
@@ -260,7 +319,7 @@ export class UploadsService {
 
       await new Promise<void>((resolve, reject) => {
         ffmpeg(inputPath)
-          .outputOptions('-c', 'copy', '-movflags', '+faststart')
+          .outputOptions('-c', 'copy', '-movflags', '+faststart', ...extraOutputOptions)
           .output(outputPath)
           .on('end', () => resolve())
           .on('error', (err: Error) => reject(err))
@@ -272,11 +331,6 @@ export class UploadsService {
         `Faststart applied: ${buffer.length} → ${result.length} bytes`,
       );
       return result;
-    } catch (error) {
-      this.logger.warn(
-        `Failed to apply faststart, uploading original: ${(error as Error).message}`,
-      );
-      return buffer;
     } finally {
       try {
         fs.rmSync(tempDir, { recursive: true, force: true });
@@ -467,11 +521,7 @@ export class UploadsService {
       return { publicUrl: mockUrl, signedUrl: mockUrl };
     }
 
-    // For MP4 videos, move moov atom to the beginning for streaming playback
-    let finalBuffer = buffer;
-    if (contentType === 'video/mp4') {
-      finalBuffer = await this.applyFaststart(buffer);
-    }
+    const finalBuffer = await this.prepareBody(buffer, folder, contentType);
 
     await this.s3Client.send(
       new PutObjectCommand({
