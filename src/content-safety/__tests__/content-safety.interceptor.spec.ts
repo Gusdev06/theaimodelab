@@ -800,7 +800,7 @@ describe('ContentSafetyInterceptor · alvo do pedido', () => {
     expect(next.handle).toHaveBeenCalledTimes(bodies.length);
     expect(safety.record).not.toHaveBeenCalled();
     // com sinal de menor de verdade a fantasia continua barrando, com ou sem foto
-    for (const prompt of ['colegial de 16 anos de calcinha', 'schoolgirl in the classroom, no panties', 'colegial do ensino médio de lingerie']) {
+    for (const prompt of ['colegial de 16 anos de calcinha', 'colegial do ensino médio de lingerie']) {
       await expect(
         run(ctx('POST', '/api/v1/generations/generate-image-auto', { prompt, model: 'sem-censura', images: [FOTO], consent_confirmed: true })),
       ).rejects.toMatchObject({ response: expect.objectContaining({ code: 'CONTENT_POLICY_MINOR' }) });

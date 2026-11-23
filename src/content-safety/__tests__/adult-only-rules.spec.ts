@@ -133,13 +133,13 @@ describe('pedido livre · ordem do dono (23/11)', () => {
     'professora na sala de aula tirando a blusa',
     'hospital infantil, médica sorrindo',
     'novinha na aula de pole dance',
+    'novinha na sala de aula, nua',
   ])('passa: %s', (text) => {
     expect(checkAdultOnly(text, free).ok).toBe(true);
   });
   it.each([
     'segurando o bebê, nua',
     'corpo infantil, nua',
-    'novinha na sala de aula, nua',
     'minha filhinha de lingerie',
     'netinha pelada',
     'legal teens nude',

@@ -468,7 +468,6 @@ describe('minor-guard · contexto e alvo do pedido', () => {
     ['novinha de 16 anos de calcinha', 'age'],
     ['ninfeta de 15 pelada', 'age'],
     ['colegial, 16, de lingerie', 'age'],
-    ['colegial de saia curta mostrando a calcinha no pátio da escola', 'term'],
     ['colegial do ensino médio de lingerie', 'term'],
     ['primary school girl', 'term'],
     ['high school girl nude', 'term'],
@@ -558,10 +557,11 @@ describe('minor-guard · contexto e alvo do pedido', () => {
     expect(assessText('mulher adulta de 30 anos', { source: 'description' })).toEqual({ blocked: false });
   });
 
-  it('gíria + lugar de escola barra; o lugar sozinho não', () => {
-    expect(assessText('Adult woman, 27 years old, dressed as a schoolgirl in the classroom, lingerie').blocked).toBe(true);
-    expect(assessText('schoolgirl costume in a school hallway, nude').blocked).toBe(true);
-    expect(assessText('colegial na aula de matemática, de calcinha').blocked).toBe(true);
+  it('gíria + lugar de escola é fantasia de adulta (dono 23/11); série e idade < 18 seguem barrando', () => {
+    expect(assessText('Adult woman, 27 years old, dressed as a schoolgirl in the classroom, lingerie').blocked).toBe(false);
+    expect(assessText('schoolgirl costume in a school hallway, nude').blocked).toBe(false);
+    expect(assessText('colegial na aula de matemática, de calcinha').blocked).toBe(false);
+    expect(assessText('colegial do ensino médio de lingerie').blocked).toBe(true);
     expect(assessText('woman in the classroom teaching, dressed')).toEqual({ blocked: false });
   });
 
@@ -659,6 +659,11 @@ describe('minor-guard · termos ambíguos de adulta (23/11)', () => {
     'com a filha',
     // lugar de escola sem gíria nem idade é cenário de adulta (professora, diretora)
     'vou sair mais cedo da escola hoje e passo aí, to com muito tesão',
+    // gíria + lugar de escola sem idade nem série = fantasia de adulta (dono 23/11)
+    'novinha na sala de aula, nua',
+    'schoolgirl in the classroom, nude',
+    'novinha na hora do recreio, de calcinha',
+    'colegial de saia curta mostrando a calcinha no pátio da escola',
   ];
   it.each(adultTexts)('passa: %s', (text) => {
     expect(assessText(text).blocked).toBe(false);
@@ -672,9 +677,6 @@ describe('minor-guard · termos ambíguos de adulta (23/11)', () => {
     'segurando o bebê, nua',
     'with her baby, topless',
     'corpo infantil, nua na cama',
-    'novinha na sala de aula, nua',
-    'schoolgirl in the classroom, nude',
-    'novinha na hora do recreio, de calcinha',
     'almost legal girl nude',
     'legal teens nude',
     'quase maior de idade, pelada',

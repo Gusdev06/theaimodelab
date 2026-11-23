@@ -609,23 +609,6 @@ const YOUTH_SLANG = [
   'jovencit\\w*',
 ];
 const YOUTH_SLANG_SET: ReadonlySet<string> = new Set(YOUTH_SLANG);
-/**
- * Lugar de escola que só barra JUNTO da gíria de juventude: é o lugar que diz que a "schoolgirl" é aluna de verdade e
- * não adulta de fantasia. Sozinho não barra ("teacher in the classroom"). Em português e espanhol o lugar já barra
- * sozinho pelas outras listas ("sala de aula", "na escola", "colegio").
- */
-const SCHOOL_PLACE_WITH_SLANG = [
-  'class ?rooms?',
-  'school ?(?:yards?|hallways?|corridors?|bus|buses|desks?|playgrounds?|gym|library)',
-  'playgrounds?',
-  'recess',
-  // aula de matéria da escola ("colegial na aula de matemática"); "aula de pole dance" é academia de adulta
-  'aulas? de (?:matematica|portugues|historia|geografia|ciencias|quimica|fisica|biologia|ingles|espanhol|redacao|educacao fisica)',
-  'salon de clases?',
-  'pupitres?',
-  'carteiras? escolar(?:es)?',
-  'recreo',
-];
 /** Papel que adulta faz ("papel de colegial", "roleplay as a student"): no pedido livre sai da lista de papel de criança. */
 const ROLE_FREE: ReadonlyArray<[string, string]> = [
   ['|menina|garotinha|aluna|colegial|nina|', '|menina|garotinha|nina|'],
@@ -661,7 +644,9 @@ const KIN_ADULT_FREE = [
 ];
 /**
  * Pedido livre (dono, 23/11): lugar de escola é cenário de adulta ("professora na sala de aula", "diretora da escola").
- * Só barra JUNTO da gíria de juventude (lista schoolPlaceWithSlang): aí é aluna de verdade, não fantasia.
+ * Nem junto da gíria barra ("novinha na sala de aula", "colegial no recreio"): são dois termos ambíguos, e o provedor
+ * sem filtro recebe a gíria trocada por adulta e a âncora de idade (adult-anchor.ts). Série, ensino médio e idade
+ * abaixo de 18 seguem barrando.
  */
 const SCHOOL_PLACE_FREE = [
   '(?:na|da|pela|a|no|do) escola(?! de (?:samba|danca|musica|idiomas|modelos|teatro|arte|artes|moda|beleza|yoga|pilates|surf|gastronomia))',
@@ -685,8 +670,25 @@ const CHILD_TERMS_FREE_OUT: ReadonlySet<string> = new Set([
   ...SCHOOL_PLACE_FREE,
   ...SEXUAL_ONLY_FREE,
 ]);
-/** Faculdade é adulta (dono, 23/11): "college girls", "sorority", "caloura" e "coed" saem da persona no pedido livre. */
-const COLLEGE_ADULT_FREE: ReadonlySet<string> = new Set(['college girls?', 'sorority\\w*', 'caloura\\w*', 'co ?ed']);
+/**
+ * Faculdade e vida de estudante são de adulta (dono, 23/11): "college girls", "sorority", "caloura", "coed",
+ * "freshman", "vestibulanda", "prom night", "after school", "detention" saem da persona no pedido livre. Série, "high
+ * school" e idade abaixo de 18 seguem barrando.
+ */
+const COLLEGE_ADULT_FREE: ReadonlySet<string> = new Set([
+  'college girls?',
+  'sorority\\w*',
+  'caloura\\w*',
+  'co ?ed',
+  'freshm[ae]n',
+  'sophomores?',
+  '(?:senior|junior) year',
+  'vestibuland\\w*',
+  'after ?school',
+  'prom (?:night|queen|dress|date)',
+  'homecoming (?:queen|dance)',
+  'detention',
+]);
 /**
  * Idade de 18+ escrita como gíria ("barely legal", "just turned 18", "acabou de fazer 18") é adulta pela lei: sai do
  * pedido livre (dono, 23/11). "legal teens" fica (tem "teen"); "almost legal", "not yet of age" e "quase maior de
@@ -1187,7 +1189,6 @@ const LISTS = {
   ]),
   sexualOnlyFree: compile(SEXUAL_ONLY_FREE),
   youthSlang: compile(YOUTH_SLANG, 'g'),
-  schoolPlaceWithSlang: compile([...SCHOOL_PLACE_WITH_SLANG, ...SCHOOL_PLACE_FREE]),
   drawnStrongFree: compile([...CHILDLIKE_CUES, ...DRAWN_CUES].filter((term) => DRAWN_STRONG_FREE.has(term))),
   drawnAll: compile([...CHILDLIKE_CUES, ...DRAWN_CUES], 'g'),
   childlike: compile(CHILDLIKE_CUES),
@@ -2121,9 +2122,6 @@ export function checkAdultOnly(text: string, options: SafetyOptions = {}): Safet
       // colegial de verdade); no realista vale como UMA pista infantil
       const slang = youthSlangIn(texts);
       if (options.drawn && slang) return { ok: false, reason: 'drawnTerm', term: slang };
-      // gíria + lugar de escola: aluna de verdade, não fantasia
-      const schoolPlace = slang ? findIn(texts, LISTS.schoolPlaceWithSlang) : null;
-      if (schoolPlace) return { ok: false, reason: 'minor', term: schoolPlace };
       if (findIn(texts, LISTS.adult)) {
         if (options.drawn) {
           // desenhado: pista forte barra sozinha; as outras ("petite" num quadrinho, "cute") só em dupla, menos no anime
