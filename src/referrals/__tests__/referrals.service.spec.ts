@@ -180,6 +180,45 @@ describe('ReferralsService', () => {
       });
     });
 
+    it('candy-retencao L15 desligado (sem REFERRAL_REWARD_ON): só o indicador ganha, gatilho = 1ª geração', async () => {
+      const { service, prisma, tx } = setup();
+      prisma.referral.findUnique.mockResolvedValue(pendingReferral());
+      await expect(service.tryReward('referred_1')).resolves.toBe('rewarded');
+      expect(service.rewardMode()).toBe('first_generation');
+      expect(tx.creditBalance.upsert).toHaveBeenCalledTimes(1);
+      const referredQuery = prisma.user.findFirst.mock.calls.find(([arg]) => arg.where.id === 'referred_1')?.[0];
+      expect(referredQuery.where).toMatchObject({ emailVerified: true, generations: expect.anything() });
+      expect(referredQuery.where).not.toHaveProperty('payments');
+    });
+
+    it('candy-retencao L15 REFERRAL_REWARD_ON=subscription: exige assinatura paga e paga os DOIS lados na mesma transação', async () => {
+      const { service, prisma, tx } = setup({ env: { REFERRAL_REWARD_ON: 'subscription' } });
+      prisma.referral.findUnique.mockResolvedValue(pendingReferral());
+
+      await expect(service.tryReward('referred_1')).resolves.toBe('rewarded');
+
+      const referredQuery = prisma.user.findFirst.mock.calls.find(([arg]) => arg.where.id === 'referred_1')?.[0];
+      expect(referredQuery.where.payments).toEqual({
+        some: { type: 'SUBSCRIPTION', status: 'COMPLETED', amountCents: { gt: 0 } },
+      });
+      expect(tx.creditBalance.upsert).toHaveBeenCalledWith({
+        where: { userId: 'referred_1' },
+        create: { userId: 'referred_1', bonusCreditsRemaining: 200 },
+        update: { bonusCreditsRemaining: { increment: 200 } },
+      });
+      expect(tx.creditTransaction.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ userId: 'referred_1', amount: 200, description: 'referral:ref_1:referred' }),
+      });
+      expect(tx.creditTransaction.create).toHaveBeenCalledTimes(2);
+    });
+
+    it('candy-retencao L15 modo assinatura sem assinatura paga: ninguém ganha', async () => {
+      const { service, prisma, tx } = setup({ env: { REFERRAL_REWARD_ON: 'subscription' }, referredEligible: false });
+      prisma.referral.findUnique.mockResolvedValue(pendingReferral());
+      await expect(service.tryReward('referred_1')).resolves.toBe('not_eligible');
+      expectNoCredit(tx);
+    });
+
     it('o teto do dia e o global são contados DENTRO da transação (depois da trava)', async () => {
       const { service, prisma, tx } = setup();
       prisma.referral.findUnique.mockResolvedValue(pendingReferral());

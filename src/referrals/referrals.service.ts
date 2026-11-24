@@ -68,6 +68,13 @@ export interface ReferralSummary {
   needsEmailVerification: boolean;
   totals: { invited: number; rewarded: number; pending: number; creditsEarned: number };
   recent: Array<{ id: string; name: string; stage: ReferralStage; credits: number; createdAt: string }>;
+  /**
+   * candy-retencao L15: só vem no modo assinatura (REFERRAL_REWARD_ON=subscription). O site troca os textos para
+   * "seu amigo também ganha quando assinar"; sem o campo, tudo como hoje.
+   */
+  rewardOn?: 'subscription';
+  /** Créditos que o amigo ganha quando a assinatura dele fica ativa (só no modo assinatura). */
+  referredRewardCredits?: number;
 }
 
 export interface ReferralSettings {
@@ -97,6 +104,25 @@ const ELIGIBLE_REFERRED: Prisma.UserWhereInput = {
   generations: { some: { status: GenerationStatus.COMPLETED } },
 };
 const ELIGIBLE_REFERRER: Prisma.UserWhereInput = { isActive: true, emailVerified: true };
+
+/**
+ * candy-retencao L15 (24/11/2026), molde Candy: 200 tokens para quem convida E para o amigo quando a assinatura dele
+ * fica ativa (Photo AI: 1.000 créditos aos dois lados). REFERRAL_REWARD_ON=subscription troca o gatilho da 1ª geração
+ * pela 1ª assinatura paga do indicado e paga também o indicado; ausente ou 'first_generation' = como hoje.
+ * Mesmas travas (teto por indicador, por dia, global por dia, IP com sal). Conta: 400 cr = US$ 0,32 por assinatura
+ * nova (Creator +5,56 − 0,32 = +5,24; Studio +1,22 − 0,32 = +0,90); sem compra, custo 0.
+ */
+export type ReferralRewardMode = 'first_generation' | 'subscription';
+
+export function referralRewardMode(raw: string | null | undefined): ReferralRewardMode {
+  return (raw ?? '').trim().toLowerCase() === 'subscription' ? 'subscription' : 'first_generation';
+}
+
+/** Indicado que já pagou a 1ª assinatura (pagamento concluído; estornado não conta). */
+const ELIGIBLE_REFERRED_SUBSCRIBED: Prisma.UserWhereInput = {
+  isActive: true,
+  payments: { some: { type: 'SUBSCRIPTION', status: 'COMPLETED', amountCents: { gt: 0 } } },
+};
 
 /** Interrompe a transação do pagamento (rollback) com o destino da indicação. */
 class RewardStop extends Error {
@@ -134,6 +160,15 @@ export class ReferralsService {
   ) {}
 
   // ─── configuração ──────────────────────────────────────────────────────────
+
+  /** Gatilho do pagamento da indicação (L15): 1ª geração (padrão, hoje) ou 1ª assinatura paga do indicado. */
+  rewardMode(): ReferralRewardMode {
+    return referralRewardMode(this.configService.get<string>('REFERRAL_REWARD_ON'));
+  }
+
+  private eligibleReferred(): Prisma.UserWhereInput {
+    return this.rewardMode() === 'subscription' ? ELIGIBLE_REFERRED_SUBSCRIBED : ELIGIBLE_REFERRED;
+  }
 
   /** Erro de configuração aparece uma vez por processo, não a cada cadastro. */
   private warnOnce(key: string, message: string): void {
@@ -366,7 +401,7 @@ export class ReferralsService {
 
       // A conta indicada precisa existir de verdade: ativa, e-mail confirmado e 1 geração concluída.
       const referred = await this.prisma.user.findFirst({
-        where: { id: referredUserId, ...ELIGIBLE_REFERRED },
+        where: { id: referredUserId, ...this.eligibleReferred() },
         select: { id: true },
       });
       if (!referred) return 'not_eligible';
@@ -385,6 +420,8 @@ export class ReferralsService {
       }
 
       const limits = await this.getLimits();
+      // L15: no modo assinatura o amigo também ganha, na mesma transação da virada PENDING → REWARDED (1 vez só)
+      const payReferredToo = this.rewardMode() === 'subscription';
       try {
         await this.prisma.$transaction(async (tx) => {
           // O UPDATE trava a linha do código do indicador até o fim da transação: outra concessão do mesmo
@@ -440,6 +477,22 @@ export class ReferralsService {
               description: `referral:${referral.id}`,
             },
           });
+          if (payReferredToo) {
+            await tx.creditBalance.upsert({
+              where: { userId: referredUserId },
+              create: { userId: referredUserId, bonusCreditsRemaining: amount },
+              update: { bonusCreditsRemaining: { increment: amount } },
+            });
+            await tx.creditTransaction.create({
+              data: {
+                userId: referredUserId,
+                type: CreditTransactionType.REFERRAL_BONUS,
+                amount,
+                source: 'bonus',
+                description: `referral:${referral.id}:referred`,
+              },
+            });
+          }
         });
       } catch (error) {
         if (error instanceof RewardStop) return this.settle(referral, error);
@@ -447,7 +500,8 @@ export class ReferralsService {
       }
 
       this.logger.log(
-        `Indicação paga: referralId=${referral.id} referrerId=${referral.referrerId} amount=${amount}`,
+        `Indicação paga: referralId=${referral.id} referrerId=${referral.referrerId} amount=${amount}` +
+          (payReferredToo ? ` (+${amount} para o indicado)` : ''),
       );
       return 'rewarded';
     } catch (error) {
@@ -530,7 +584,7 @@ export class ReferralsService {
     const candidates = await this.prisma.referral.findMany({
       where: {
         status: ReferralStatus.PENDING,
-        referredUser: ELIGIBLE_REFERRED,
+        referredUser: this.eligibleReferred(),
         referrer: ELIGIBLE_REFERRER,
       },
       select: { referredUserId: true },
@@ -568,7 +622,7 @@ export class ReferralsService {
     // Quem abre o painel não espera o cron: as pendentes já elegíveis são pagas agora.
     if (rewardCredits > 0 && me?.emailVerified) {
       const ready = await this.prisma.referral.findMany({
-        where: { referrerId: userId, status: ReferralStatus.PENDING, referredUser: ELIGIBLE_REFERRED },
+        where: { referrerId: userId, status: ReferralStatus.PENDING, referredUser: this.eligibleReferred() },
         select: { referredUserId: true },
         orderBy: { updatedAt: 'asc' },
         take: ON_DEMAND_BATCH,
@@ -613,8 +667,11 @@ export class ReferralsService {
 
     const countOf = (status: ReferralStatus) =>
       byStatus.find((row) => row.status === status)?._count._all ?? 0;
+    // L15: no modo assinatura a etapa de quem ainda não assinou é a de espera (o site lê "aguardando a assinatura")
+    const subscriptionMode = this.rewardMode() === 'subscription';
 
     return {
+      ...(subscriptionMode ? { rewardOn: 'subscription' as const, referredRewardCredits: rewardCredits } : {}),
       enabled: rewardCredits > 0,
       code,
       rewardCredits,
@@ -628,10 +685,16 @@ export class ReferralsService {
       recent: recent.map((row) => ({
         id: row.id,
         name: displayFirstName(row.referredUser?.name),
-        stage: stageOf(row.status, row.reason, {
-          created: (row.referredUser?.generations.length ?? 0) > 0,
-          emailVerified: !!row.referredUser?.emailVerified,
-        }),
+        stage: stageOf(
+          row.status,
+          row.reason,
+          subscriptionMode
+            ? { created: false, emailVerified: true }
+            : {
+                created: (row.referredUser?.generations.length ?? 0) > 0,
+                emailVerified: !!row.referredUser?.emailVerified,
+              },
+        ),
         credits: row.creditsAwarded,
         // só o dia: o horário exato do cadastro de outra pessoa não precisa sair daqui
         createdAt: row.createdAt.toISOString().slice(0, 10),

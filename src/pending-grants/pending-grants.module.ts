@@ -21,6 +21,7 @@ import { PaymentsModule } from '../payments/payments.module';
 import { CheckoutCodesModule } from '../checkout-codes/checkout-codes.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { DeclineFallbackService } from './decline-fallback.service';
+import { RenewalDeclineRecoveryService } from './renewal-decline-recovery.service';
 
 @Module({
   imports: [PrismaModule, WebhookLogsModule, EmailModule, PaymentsModule, CheckoutCodesModule, NotificationsModule],
@@ -43,6 +44,8 @@ import { DeclineFallbackService } from './decline-fallback.service';
     NoAccountPurchasesService,
     NoAccountPurchasesClaimer,
     DeclineFallbackService,
+    // candy-retencao L04: régua D0/D3/D7 da renovação recusada (RECOVERY_PP_ENABLED=on liga)
+    RenewalDeclineRecoveryService,
   ],
   exports: [PendingGrantsService, NoAccountPurchasesClaimer],
 })
