@@ -17,6 +17,8 @@ import {
   resolveEmailLocale,
   type SequenceEmail,
 } from '../email-sequences/onboarding-sequence-templates';
+import { withDescriptorLine } from '../email-sequences/retencao-templates';
+import { billingDescriptorFor } from '../payments/billing-descriptor';
 
 const SCHEDULE = '0 13 * * *'; // 1x/dia às 13h UTC = 10h BRT
 
@@ -47,6 +49,8 @@ interface SequenceRecipient {
   locale: string | null;
   /** users.signup_brand: site em que a conta nasceu (null = The AI Model Lab) — marca e links do e-mail */
   signupBrand?: string | null;
+  /** candy-retencao L17: gateway da assinatura (nome na fatura no e-mail de ativação; sem BILLING_DESCRIPTOR_* nada muda) */
+  paymentProvider?: string | null;
 }
 
 @Injectable()
@@ -178,6 +182,7 @@ export class OnboardingSequenceService {
       orderBy: { createdAt: 'desc' },
       select: {
         createdAt: true,
+        paymentProvider: true,
         plan: { select: { name: true } },
         user: {
           select: {
@@ -219,6 +224,7 @@ export class OnboardingSequenceService {
           plan: sub.plan.name,
           locale: sub.user.locale,
           signupBrand: sub.user.signupBrand,
+          paymentProvider: sub.paymentProvider,
         },
         appUrl,
         logoUrl,
@@ -244,9 +250,19 @@ export class OnboardingSequenceService {
       const brand = resolveBrand(recipient.signupBrand);
       const brandAppUrl = brand.key === 'taml' ? appUrl : brand.frontendUrl;
       const brandLogoUrl = brand.key === 'taml' ? logoUrl : brand.logoUrl || logoUrl;
-      const content = template.content[resolveEmailLocale(recipient.locale)];
+      const emailLocale = resolveEmailLocale(recipient.locale);
+      const content = template.content[emailLocale];
+      // candy-retencao L17: o nome na fatura no e-mail de ativação da Perfect Pay/Cakto (só com BILLING_DESCRIPTOR_*)
+      const descriptor =
+        template.key === 'postsub_1_activation' && recipient.paymentProvider
+          ? billingDescriptorFor(recipient.paymentProvider, {
+              BILLING_DESCRIPTOR: this.configService.get<string>('BILLING_DESCRIPTOR'),
+              BILLING_DESCRIPTOR_PERFECTPAY: this.configService.get<string>('BILLING_DESCRIPTOR_PERFECTPAY'),
+              BILLING_DESCRIPTOR_CAKTO: this.configService.get<string>('BILLING_DESCRIPTOR_CAKTO'),
+            })
+          : null;
       const innerHtml = await renderMarkdownToEmailHtml(
-        content.body(brandAppUrl, { mia: brand.key === 'taml' }),
+        withDescriptorLine(content.body(brandAppUrl, { mia: brand.key === 'taml' }), emailLocale, descriptor),
       );
       const wrappedHtml = wrapInBroadcastTemplate(innerHtml, brandLogoUrl);
       const vars = buildMergeVars({

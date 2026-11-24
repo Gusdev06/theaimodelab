@@ -52,6 +52,8 @@ import { UnlimitedModule } from './unlimited/unlimited.module';
 import { WorkspacesModule } from './workspaces/workspaces.module';
 import { CommunityModule } from './community/community.module';
 import { NotificationsModule } from './notifications/notifications.module';
+// candy-retencao (24/11): modelo esperando (L10), lembrete antes de renovar (L17), cartão de fidelidade (L27)
+import { RetencaoModule } from './retencao/retencao.module';
 import { parseRedisConfig } from './common/redis-config';
 import { MetaModule } from './meta/meta.module';
 import { MarketingLeadsModule } from './marketing-leads/marketing-leads.module';
@@ -141,6 +143,7 @@ import { GracefulShutdownService } from './shutdown/graceful-shutdown.service';
     WorkspacesModule,
     CommunityModule,
     NotificationsModule,
+    RetencaoModule,
     AdminEmailsModule,
     ResendWebhooksModule,
     EmailPreferencesModule,

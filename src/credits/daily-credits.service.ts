@@ -10,6 +10,7 @@ import { CreditTransactionType, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreditsService } from './credits.service';
 import { CreditBalanceResponseDto } from './dto/credit-balance-response.dto';
+import { dailyPaidWindowDays, isDailyPaidOnly, isPayingCustomer } from './paying-customer';
 
 export const DAILY_CREDITS_ENV = 'DAILY_CREDITS_AMOUNT';
 
@@ -30,6 +31,11 @@ export interface DailyCreditsStatus {
   amount: number;
   claimedToday: boolean;
   streakDays: number;
+  /**
+   * candy-retencao L26: só vem com DAILY_CREDITS_PAID_ONLY=true. false = quem ainda não pagou (o site esconde o
+   * botão). Sem a trava o campo não sai e tudo fica como hoje.
+   */
+  eligible?: boolean;
 }
 
 export interface DailyClaimResult {
@@ -82,10 +88,25 @@ export class DailyCreditsService {
     return parsed;
   }
 
+  /** candy-retencao L26: DAILY_CREDITS_PAID_ONLY=true limita o diário a quem já pagou (plano, pré-pago ou pack). */
+  isPaidOnly(): boolean {
+    return isDailyPaidOnly({ DAILY_CREDITS_PAID_ONLY: this.configService.get<string>('DAILY_CREDITS_PAID_ONLY') });
+  }
+
+  private async isEligiblePayer(userId: string, now: Date): Promise<boolean> {
+    const windowDays = dailyPaidWindowDays({
+      DAILY_CREDITS_PAID_WINDOW_DAYS: this.configService.get<string>('DAILY_CREDITS_PAID_WINDOW_DAYS'),
+    });
+    return isPayingCustomer(this.prisma, userId, now, windowDays);
+  }
+
   async getStatus(userId: string, now: Date = new Date()): Promise<DailyCreditsStatus> {
     const amount = this.getConfiguredAmount();
     if (amount <= 0) {
       return { enabled: false, amount: 0, claimedToday: false, streakDays: 0 };
+    }
+    if (this.isPaidOnly() && !(await this.isEligiblePayer(userId, now))) {
+      return { enabled: true, amount, claimedToday: false, streakDays: 0, eligible: false };
     }
 
     const last = await this.findLastClaim(this.prisma, userId);
@@ -99,6 +120,7 @@ export class DailyCreditsService {
       amount,
       claimedToday: last?.dayKey === today,
       streakDays: last !== null && streakAlive ? last.streakDays : 0,
+      ...(this.isPaidOnly() ? { eligible: true } : {}),
     };
   }
 
@@ -128,6 +150,12 @@ export class DailyCreditsService {
       throw new ForbiddenException({
         code: 'EMAIL_NOT_VERIFIED',
         message: 'Confirme seu e-mail para resgatar os créditos de hoje.',
+      });
+    }
+    if (this.isPaidOnly() && !(await this.isEligiblePayer(userId, now))) {
+      throw new ForbiddenException({
+        code: 'DAILY_NOT_PAYING',
+        message: 'Os créditos de hoje são para quem tem plano ou pack ativo.',
       });
     }
 

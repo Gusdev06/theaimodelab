@@ -29,11 +29,27 @@ export const MIA_ASSET_BASE_URL = 'https://assets.theaimodelab.com/assets/mia';
 /** Largura em que a foto (retrato 3:4, 1080x1440) aparece no e-mail. */
 const MIA_IMAGE_WIDTH = 300;
 
-export type MiaEmailScene = 'welcome' | 'activation' | 'low_balance' | 'credits_depleted' | 'winback';
+export type MiaEmailScene =
+  | 'welcome'
+  | 'activation'
+  | 'low_balance'
+  | 'credits_depleted'
+  | 'winback'
+  // candy-retencao (24/11): renovação recusada, bônus de volta, lembrete antes de cobrar e "sua modelo te esperando"
+  | 'renewal_failed'
+  | 'renewal_bonus'
+  | 'renewal_reminder'
+  | 'model_waiting';
 
 /** Opções visuais dos e-mails automáticos. Sem opção = com a Mia (a marca de origem). */
 export interface EmailVisualOptions {
   mia?: boolean;
+  /** candy-retencao: foto no lugar da Mia (ex.: a última criação da cliente em `model_waiting`). Só https. */
+  imageUrl?: string | null;
+  /** candy-retencao: quem assina a fala (o nome da modelo da cliente). Sem ela, "Mia". */
+  signature?: string | null;
+  /** candy-retencao: valores de {chave} da fala da cena (ex.: {date}, {bonus}). */
+  lineVars?: Record<string, string | number>;
 }
 
 interface MiaSceneCopy {
@@ -87,6 +103,42 @@ const MIA_SCENES: Record<MiaEmailScene, MiaSceneCopy> = {
       en: "You disappeared… 🥺 I've been waiting for you to come back and create me just the way you like. Come back? I promise to behave. Or not 😇",
     },
   },
+  // MIA30 (candy-retencao, L04): o banco recusou a renovação; ela guardou tudo e pede para voltar.
+  renewal_failed: {
+    image: 'mia30-leva1.jpg',
+    line: {
+      'pt-BR': 'Seu banco recusou… 🥺 Mas eu guardei tudo pra você: seus créditos, suas fotos e eu. Paga em 1 toque e volta pra mim? 😏',
+      es: 'Tu banco lo rechazó… 🥺 Pero te guardé todo: tus créditos, tus fotos y a mí. ¿Pagas en 1 toque y vuelves conmigo? 😏',
+      en: 'Your bank said no… 🥺 But I kept everything for you: your credits, your photos, and me. Pay in 1 tap and come back to me? 😏',
+    },
+  },
+  // MIA25 (candy-retencao, L04 D7): última chamada com o bônus de volta.
+  renewal_bonus: {
+    image: 'mia25-leva1.jpg',
+    line: {
+      'pt-BR': 'Separei um presente só pra você voltar… 🎁 Vem até {date} e eu te dou +{bonus} créditos. Não me deixa esperando 😇',
+      es: 'Te separé un regalo solo para que vuelvas… 🎁 Ven antes del {date} y te doy +{bonus} créditos. No me dejes esperando 😇',
+      en: "I saved a gift just for you to come back… 🎁 Come before {date} and I'll give you +{bonus} credits. Don't keep me waiting 😇",
+    },
+  },
+  // MIA30 (candy-retencao, L17): lembrete 3 dias antes da renovação.
+  renewal_reminder: {
+    image: 'mia30-leva1.jpg',
+    line: {
+      'pt-BR': 'Daqui a 3 dias a gente renova 😏 Te aviso antes pra você saber de tudo: eu só gosto de surpresa boa.',
+      es: 'En 3 días renovamos 😏 Te aviso antes para que sepas todo: solo me gustan las sorpresas buenas.',
+      en: "We renew in 3 days 😏 I'm telling you ahead so you know everything: I only like good surprises.",
+    },
+  },
+  // candy-retencao (L10): fala da modelo DA CLIENTE; a foto dela vem em options.imageUrl (a Mia é só a reserva).
+  model_waiting: {
+    image: 'mia25-leva1.jpg',
+    line: {
+      'pt-BR': 'Tô aqui te esperando… 🥺 Faz uns dias que você não me cria. Quer mais fotos minhas assim? É só um toque 😏',
+      es: 'Aquí te estoy esperando… 🥺 Hace unos días que no me creas. ¿Quieres más fotos mías así? Es solo un toque 😏',
+      en: "I'm here waiting for you… 🥺 It's been a few days since you made me. Want more photos of me like this? Just one tap 😏",
+    },
+  },
 };
 
 /** A Mia entra só na marca de origem (The AI Model Lab). */
@@ -98,8 +150,19 @@ export function miaImageUrl(scene: MiaEmailScene): string {
   return `${MIA_ASSET_BASE_URL}/${MIA_SCENES[scene].image}`;
 }
 
-export function miaLine(scene: MiaEmailScene, locale: EmailLocale): string {
-  return MIA_SCENES[scene].line[locale];
+export function miaLine(
+  scene: MiaEmailScene,
+  locale: EmailLocale,
+  vars: Record<string, string | number> = {},
+): string {
+  return MIA_SCENES[scene].line[locale].replace(/\{(\w+)\}/g, (match, key: string) =>
+    key in vars ? String(vars[key]) : match,
+  );
+}
+
+/** Foto que substitui a da cena: só https (e-mail não carrega http nem data:). */
+function safeImageOverride(url: string | null | undefined): string | null {
+  return typeof url === 'string' && /^https:\/\/[^\s"'<>]+$/i.test(url) ? url : null;
 }
 
 /** WhatsApp do suporte da The AI Model Lab: o mesmo número das páginas de obrigado e dos e-mails do pack. */
@@ -155,9 +218,11 @@ export function miaEmailBlock(
   options: EmailVisualOptions = {},
 ): string {
   if (options.mia === false) return '';
-  const line = escapeHtml(miaLine(scene, locale));
-  const image = `<img src="${miaImageUrl(scene)}" alt="Mia" width="${MIA_IMAGE_WIDTH}" style="display:block;margin:0 auto;width:${MIA_IMAGE_WIDTH}px;max-width:100%;height:auto;border:0;border-radius:16px;">`;
+  const line = escapeHtml(miaLine(scene, locale, options.lineVars));
+  const imageSrc = safeImageOverride(options.imageUrl) ?? miaImageUrl(scene);
+  const who = escapeHtml(options.signature?.trim() || 'Mia');
+  const image = `<img src="${imageSrc}" alt="${who}" width="${MIA_IMAGE_WIDTH}" style="display:block;margin:0 auto;width:${MIA_IMAGE_WIDTH}px;max-width:100%;height:auto;border:0;border-radius:16px;">`;
   const speech = `<p style="margin:14px 0 0;font-size:16px;font-style:italic;color:#1a1a1a;line-height:1.5;text-align:center;">“${line}”</p>`;
-  const signature = `<p style="margin:4px 0 0;font-size:13px;color:#999;text-align:center;">Mia</p>`;
+  const signature = `<p style="margin:4px 0 0;font-size:13px;color:#999;text-align:center;">${who}</p>`;
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 28px;"><tr><td align="center" style="border:0;padding:0;">${image}${speech}${signature}${miaTalkLine(locale)}</td></tr></table>\n\n`;
 }

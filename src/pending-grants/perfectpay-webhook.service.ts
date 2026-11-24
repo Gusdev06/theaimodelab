@@ -24,6 +24,7 @@ import {
 } from './buyer-locale';
 import { NoAccountPurchasesService } from './no-account-purchases.service';
 import { DeclineFallbackService } from './decline-fallback.service';
+import { RenewalDeclineRecoveryService } from './renewal-decline-recovery.service';
 
 /** De onde veio a venda: webhook ao vivo (com log) ou reprocesso de venda guardada sem conta (B-01). */
 interface SaleContext {
@@ -84,6 +85,7 @@ export class PerfectpayWebhookService {
     private readonly checkoutCodes: CheckoutCodesService,
     @Optional() private readonly noAccountPurchases?: NoAccountPurchasesService,
     @Optional() private readonly declineFallback?: DeclineFallbackService,
+    @Optional() private readonly renewalRecovery?: RenewalDeclineRecoveryService,
   ) {}
 
   async handle(
@@ -183,6 +185,10 @@ export class PerfectpayWebhookService {
       // (dono 23/11). O serviço nunca lança; a resposta à PP continua a mesma.
       if (kind === 'ignore' && !ctx.replay && this.declineFallback) {
         await this.declineFallback.notifyIfFirstPlanDecline(payload, email, this.extractPlanCandidates(payload));
+      }
+      // candy-retencao L04: renovação recusada de quem já pagou (régua D0/D3/D7). RECOVERY_PP_ENABLED=on liga; nunca lança.
+      if (kind === 'ignore' && !ctx.replay && this.renewalRecovery) {
+        await this.renewalRecovery.onPerfectpayPostback(payload, email, this.extractSubscriptionCode(payload));
       }
       return {
         processed: false,

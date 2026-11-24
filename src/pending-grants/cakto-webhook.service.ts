@@ -12,6 +12,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { PaymentsService } from '../payments/payments.service';
 import { CheckoutCodesService, SalePackage } from '../checkout-codes/checkout-codes.service';
 import { NoAccountPurchasesService } from './no-account-purchases.service';
+import { RenewalDeclineRecoveryService } from './renewal-decline-recovery.service';
 import { resolveBuyerLocale } from './buyer-locale';
 
 /** De onde veio a venda: webhook ao vivo (com log) ou reprocesso de venda guardada sem conta (B-01). */
@@ -66,6 +67,7 @@ export class CaktoWebhookService {
     private readonly paymentsService: PaymentsService,
     private readonly checkoutCodes: CheckoutCodesService,
     @Optional() private readonly noAccountPurchases?: NoAccountPurchasesService,
+    @Optional() private readonly renewalRecovery?: RenewalDeclineRecoveryService,
   ) {}
 
   async handle(
@@ -225,6 +227,15 @@ export class CaktoWebhookService {
     }
 
     if (kind !== 'paid') {
+      // candy-retencao L04: renovação recusada na Cakto (régua D0/D3/D7). RECOVERY_PP_ENABLED=on liga; nunca lança.
+      if (!ctx.replay && this.renewalRecovery && eventType === 'subscription_renewal_refused') {
+        await this.renewalRecovery.onRenewalDeclined({
+          provider: 'cakto',
+          declined: true,
+          email,
+          subscriptionCode: this.extractSubscriptionCode(data),
+        });
+      }
       return {
         processed: false,
         reason: `ignored event: ${eventType ?? 'n/a'} (status=${data?.status ?? 'n/a'})`,
