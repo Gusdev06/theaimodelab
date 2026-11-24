@@ -1,7 +1,26 @@
+import { createHash } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService, SETTING_KEYS } from '../settings/settings.service';
+
+/**
+ * A/B das boas-vindas (dono 23/11/2026). Desde 16/11 a 1ª foto sem censura 2K custa 235 e a conta nova ganha
+ * 50 + 150 = 200: a ativação em 48 h caiu de 71–80% para 23–29%, mas o pagante por conta nova subiu de 2,6% para
+ * 5,7% no mesmo período. Por isso é teste, não troca: `WELCOME_CREDITS_AB_PCT` (0–100; vazio/0 = desligado) é a
+ * fatia de contas que ganha `WELCOME_CREDITS_AB_EXTRA` créditos a mais (padrão 50, o que paga a 1ª foto 2K).
+ * Sorteio fixo por conta (hash do id). A variante fica no extrato: o `amount` da transação `welcome_credits`
+ * (base = A, base + extra = B), então a leitura não precisa de tabela nova.
+ */
+export function welcomeAbExtraFor(userId: string, pctRaw?: string | null, extraRaw?: string | null): number {
+  const pct = Number.parseInt(String(pctRaw ?? '').trim(), 10);
+  if (!Number.isFinite(pct) || pct <= 0) return 0;
+  const extraText = String(extraRaw ?? '').trim();
+  const extra = extraText === '' ? 50 : Number.parseInt(extraText, 10);
+  if (!Number.isFinite(extra) || extra <= 0) return 0;
+  const bucket = createHash('sha256').update(`welcome-ab:${userId}`).digest().readUInt32BE(0) % 100;
+  return bucket < Math.min(pct, 100) ? extra : 0;
+}
 
 /**
  * Concede créditos de boas-vindas (bônus, nunca expiram) a novos usuários,
@@ -59,6 +78,15 @@ export class WelcomeCreditsService {
     return this.getEnvAmount();
   }
 
+  /** Créditos a mais do A/B das boas-vindas para esta conta (0 = variante A ou teste desligado). */
+  private abExtraFor(userId: string): number {
+    return welcomeAbExtraFor(
+      userId,
+      this.configService.get<string>('WELCOME_CREDITS_AB_PCT'),
+      this.configService.get<string>('WELCOME_CREDITS_AB_EXTRA'),
+    );
+  }
+
   /** True se a conta já recebeu os créditos de boas-vindas. */
   private async alreadyGranted(userId: string): Promise<boolean> {
     const existing = await this.prisma.creditTransaction.findFirst({
@@ -80,7 +108,7 @@ export class WelcomeCreditsService {
     try {
       const amount = await this.getConfiguredAmount();
       if (amount <= 0) return 0;
-      return (await this.alreadyGranted(userId)) ? 0 : amount;
+      return (await this.alreadyGranted(userId)) ? 0 : amount + this.abExtraFor(userId);
     } catch (err) {
       this.logger.warn(
         `pendingAmountFor(${userId}) falhou: ${err instanceof Error ? err.message : String(err)}`,
@@ -96,11 +124,14 @@ export class WelcomeCreditsService {
    */
   async grantIfEligible(userId: string): Promise<number> {
     try {
-      const amount = await this.getConfiguredAmount();
-      if (amount <= 0) {
+      const baseAmount = await this.getConfiguredAmount();
+      if (baseAmount <= 0) {
         // Feature desligada (default). Não faz nada.
         return 0;
       }
+      // A/B das boas-vindas: a variante B leva o extra na MESMA transação (o amount do extrato marca a variante).
+      const abExtra = this.abExtraFor(userId);
+      const amount = baseAmount + abExtra;
 
       // Idempotência: já concedido antes?
       if (await this.alreadyGranted(userId)) {
@@ -148,7 +179,7 @@ export class WelcomeCreditsService {
 
       if (!granted) return 0;
       this.logger.log(
-        `Welcome credits granted: userId=${userId} amount=${amount}`,
+        `Welcome credits granted: userId=${userId} amount=${amount}${abExtra > 0 ? ` [AB_BOAS_VINDAS] B +${abExtra}` : ''}`,
       );
       return amount;
     } catch (err) {
