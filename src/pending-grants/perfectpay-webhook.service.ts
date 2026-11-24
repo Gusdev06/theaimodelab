@@ -537,12 +537,6 @@ export class PerfectpayWebhookService {
     };
   }
 
-  /**
-   * Rede de segurança para casar o plano pelo NOME que vem no postback da assinatura
-   * ("Plan Creator" → slug "creator"), quando o código do plano ainda não foi
-   * cadastrado em `perfectpayPlanCode`. Casa o plano ativo cujo slug apareça como
-   * palavra no nome do postback. Usado só para vendas recorrentes.
-   */
   /** Plano do candy-vitrine pelo código do postback (env CANDY_PLAN_CODES); vale com isActive:false. */
   private async findCandyPlan(candidates: string[]): Promise<{ id: string; slug: string; name: string } | null> {
     const slug = candyPlanSlugForCodes(candidates);
@@ -564,6 +558,12 @@ export class PerfectpayWebhookService {
     return creditPackage;
   }
 
+  /**
+   * Rede de segurança para casar o plano pelo NOME que vem no postback da assinatura
+   * ("Plan Creator" → slug "creator"), quando o código do plano ainda não foi
+   * cadastrado em `perfectpayPlanCode`. Casa o plano ativo cujo slug apareça como
+   * palavra no nome do postback. Usado só para vendas recorrentes.
+   */
   private async matchPlanByName(
     payload: any,
   ): Promise<{ id: string; slug: string; name: string } | null> {
