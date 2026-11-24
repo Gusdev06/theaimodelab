@@ -60,6 +60,10 @@ import { ContentSafetyModule } from './content-safety/content-safety.module';
 import { ReportsModule } from './reports/reports.module';
 import { InflightRunsModule } from './shutdown/inflight-runs.module';
 import { GracefulShutdownService } from './shutdown/graceful-shutdown.service';
+// candy-superficies (24/11): prova social real (L14), paywall de curiosidade (L02) e Web Push (L16), tudo desligado por env
+import { PublicStatsModule } from './public-stats/public-stats.module';
+import { CuriosityLockModule } from './curiosity-lock/curiosity-lock.module';
+import { WebPushModule } from './web-push/web-push.module';
 
 
 @Module({
@@ -151,6 +155,9 @@ import { GracefulShutdownService } from './shutdown/graceful-shutdown.service';
     AnalyticsModule,
     DiscoveryModule,
     InflightRunsModule,
+    PublicStatsModule,
+    CuriosityLockModule,
+    WebPushModule,
   ],
   controllers: [AppController],
   providers: [
