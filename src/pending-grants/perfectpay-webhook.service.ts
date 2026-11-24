@@ -24,6 +24,7 @@ import {
 } from './buyer-locale';
 import { NoAccountPurchasesService } from './no-account-purchases.service';
 import { DeclineFallbackService } from './decline-fallback.service';
+import { MiaChatterService } from '../mia-chatter/mia-chatter.service';
 
 /** De onde veio a venda: webhook ao vivo (com log) ou reprocesso de venda guardada sem conta (B-01). */
 interface SaleContext {
@@ -84,6 +85,7 @@ export class PerfectpayWebhookService {
     private readonly checkoutCodes: CheckoutCodesService,
     @Optional() private readonly noAccountPurchases?: NoAccountPurchasesService,
     @Optional() private readonly declineFallback?: DeclineFallbackService,
+    @Optional() private readonly miaChatter?: MiaChatterService,
   ) {}
 
   async handle(
@@ -129,6 +131,18 @@ export class PerfectpayWebhookService {
     const email = this.extractEmail(payload);
 
     const kind = this.classifyEvent(payload);
+
+    // Mia Chatter US$ 39/mês (candy-chatter): só com MIA_CHATTER_ENABLED on e o código em MIA_CHATTER_PP_PLAN_CODES.
+    // Fora disso devolve null e o webhook segue exatamente como antes.
+    if (this.miaChatter) {
+      const chatter = await this.miaChatter.applyPerfectpaySale({
+        kind,
+        email,
+        planCandidates: this.extractPlanCandidates(payload),
+        saleCode: this.extractSaleCode(payload),
+      });
+      if (chatter) return chatter;
+    }
 
     // Troca de plano (upgrade/downgrade): a PerfectPay cancela a assinatura ANTIGA
     // automaticamente. Não revoga nada aqui — a assinatura nova chega em outro

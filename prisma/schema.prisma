@@ -88,6 +88,7 @@ model User {
   referralCode            ReferralCode?
   referralsMade           Referral[]                @relation("referrals_made")
   referralReceived        Referral?                 @relation("referral_received")
+  miaChatterAccount       MiaChatterAccount?
 
   @@index([email])
   @@index([oauthProvider, oauthProviderId])
@@ -1523,4 +1524,74 @@ model Referral {
   @@index([referrerId, emailFingerprint])
   @@index([referrerId, emailDomainKey])
   @@map("referrals")
+}
+
+/// Mia Chatter (candy-chatter, 24/11/2026): a conta da Fanvue da cliente ligada por OAuth para a Mia responder DM e
+/// vender o catálogo PPV. Uma linha por cliente. Tokens só cifrados (AES-256-GCM, MIA_CHATTER_TOKEN_KEY). Atrás de
+/// MIA_CHATTER_ENABLED (default off). Tabela criada à mão: prisma/manual/2026-11-24-candy-chatter.sql.
+model MiaChatterAccount {
+  id                String    @id @default(cuid())
+  userId            String    @unique @map("user_id")
+  /// disconnected | pending | connected | error
+  status            String    @default("disconnected")
+  /// a cliente ligou a Mia (ela pode pausar sem desconectar)
+  active            Boolean   @default(false)
+  fanvueCreatorUuid String?   @map("fanvue_creator_uuid")
+  fanvueHandle      String?   @map("fanvue_handle")
+  accessTokenEnc    String?   @map("access_token_enc")
+  refreshTokenEnc   String?   @map("refresh_token_enc")
+  tokenExpiresAt    DateTime? @map("token_expires_at")
+  scopes            String?
+  /// OAuth em andamento: state aleatório + verificador PKCE (cifrado), vencem em 15 min
+  oauthState        String?   @unique @map("oauth_state")
+  oauthVerifierEnc  String?   @map("oauth_verifier_enc")
+  oauthStartedAt    DateTime? @map("oauth_started_at")
+  /// assinatura US$ 39/mês: acesso até esta data (o webhook da Perfect Pay estende a cada cobrança)
+  paidUntil         DateTime? @map("paid_until")
+  lastSaleCode      String?   @map("last_sale_code")
+  /// persona, idioma, mídias da Fanvue por degrau (ver mia-chatter.settings.ts)
+  settings          Json?
+  /// teto de custo do modelo de texto por mês: mês corrente (AAAA-MM) e quanto já foi gasto nele, em US$
+  llmMonth          String?   @map("llm_month")
+  llmCostUsd        Decimal   @default(0) @map("llm_cost_usd") @db.Decimal(10, 4)
+  /// contadores para a tela (conversas, ofertas, vendas, receita vista)
+  stats             Json?
+  lastPolledAt      DateTime? @map("last_polled_at")
+  lastError         String?   @map("last_error")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fans              MiaChatterFan[]
+
+  @@index([status, active])
+  @@map("mia_chatter_accounts")
+}
+
+/// Um fã da Fanvue numa conta ligada: em que passo do roteiro de 8 passos ele está, quanto já gastou e se a cliente
+/// já foi avisada de que ele virou baleia (> US$ 200).
+model MiaChatterFan {
+  id                 String            @id @default(cuid())
+  accountId          String            @map("account_id")
+  fanUuid            String            @map("fan_uuid")
+  handle             String?
+  step               String            @default("welcome")
+  spentUsd           Decimal           @default(0) @map("spent_usd") @db.Decimal(10, 2)
+  purchases          Int               @default(0)
+  /// ids das mensagens pagas já somadas (evita somar 2×), no máximo as 200 últimas
+  countedPurchaseIds Json?             @map("counted_purchase_ids")
+  lastInboundUuid    String?           @map("last_inbound_uuid")
+  lastInboundAt      DateTime?         @map("last_inbound_at")
+  lastReplyAt        DateTime?         @map("last_reply_at")
+  lastOfferAt        DateTime?         @map("last_offer_at")
+  declinedAt         DateTime?         @map("declined_at")
+  /// pediu para parar: a Mia não fala mais com ele
+  stopped            Boolean           @default(false)
+  whaleAlertedAt     DateTime?         @map("whale_alerted_at")
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
+  account            MiaChatterAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, fanUuid])
+  @@index([accountId, spentUsd(sort: Desc)])
+  @@map("mia_chatter_fans")
 }

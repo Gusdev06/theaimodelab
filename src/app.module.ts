@@ -59,6 +59,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { ContentSafetyModule } from './content-safety/content-safety.module';
 import { ReportsModule } from './reports/reports.module';
 import { InflightRunsModule } from './shutdown/inflight-runs.module';
+import { MiaChatterModule } from './mia-chatter/mia-chatter.module';
 import { GracefulShutdownService } from './shutdown/graceful-shutdown.service';
 
 
@@ -151,6 +152,8 @@ import { GracefulShutdownService } from './shutdown/graceful-shutdown.service';
     AnalyticsModule,
     DiscoveryModule,
     InflightRunsModule,
+    // candy-chatter (L20): Mia Chatter na Fanvue; MIA_CHATTER_ENABLED off = rotas 404 e cron parado
+    MiaChatterModule,
   ],
   controllers: [AppController],
   providers: [

@@ -21,9 +21,10 @@ import { PaymentsModule } from '../payments/payments.module';
 import { CheckoutCodesModule } from '../checkout-codes/checkout-codes.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { DeclineFallbackService } from './decline-fallback.service';
+import { MiaChatterModule } from '../mia-chatter/mia-chatter.module';
 
 @Module({
-  imports: [PrismaModule, WebhookLogsModule, EmailModule, PaymentsModule, CheckoutCodesModule, NotificationsModule],
+  imports: [PrismaModule, WebhookLogsModule, EmailModule, PaymentsModule, CheckoutCodesModule, NotificationsModule, MiaChatterModule],
   controllers: [
     HublaWebhookController,
     HotmartWebhookController,
