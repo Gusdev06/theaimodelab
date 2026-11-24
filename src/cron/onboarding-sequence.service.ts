@@ -23,6 +23,21 @@ const SCHEDULE = '0 13 * * *'; // 1x/dia às 13h UTC = 10h BRT
 /** Email expira se o dia dele passou há mais deste tanto de dias (sem rajada retroativa). */
 const CATCHUP_DAYS = 3;
 
+/**
+ * O cadastro cria uma assinatura ACTIVE do plano grátis (936 de 936 contas novas em 21 dias, leitura de 23/11/2026).
+ * Por isso a trilha de conversão (exige "nenhuma assinatura") nunca enviou um e-mail, e a pós-assinatura dizia
+ * "sua assinatura está ativa" a quem não pagou. Env `CONVERSION_TRACK_FREE_PLAN_SINCE` (data ISO):
+ * - vazia ou inválida = comportamento antigo (nada muda no deploy);
+ * - com data = conta grátis criada a partir dela entra na trilha de conversão, e a pós-assinatura fica só com plano pago.
+ *   Só contas novas a partir da data: ligar não dispara rajada para a base antiga.
+ */
+export function readFreePlanSince(raw: string | undefined | null): Date | null {
+  const text = (raw ?? '').trim();
+  if (!text) return null;
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 interface SequenceRecipient {
   userId: string;
   email: string;
@@ -88,15 +103,24 @@ export class OnboardingSequenceService {
     const maxOffset = Math.max(...ONBOARDING_EMAILS.map((e) => e.offsetDays));
     const cutoff = this.daysAgo(maxOffset + CATCHUP_DAYS);
 
+    const freePlanSince = readFreePlanSince(this.configService.get<string>('CONVERSION_TRACK_FREE_PLAN_SINCE'));
     const users = await this.prisma.user.findMany({
-      where: {
-        isActive: true,
-        emailVerified: true,
-        createdAt: { gte: cutoff },
-        // Nunca passou pelo checkout — quem já tem qualquer assinatura
-        // (ativa, cancelada, past_due) sai da trilha de conversão.
-        subscriptions: { none: {} },
-      },
+      where: freePlanSince
+        ? {
+            isActive: true,
+            emailVerified: true,
+            createdAt: { gte: cutoff > freePlanSince ? cutoff : freePlanSince },
+            // Nunca teve plano pago (ativo, cancelado ou past_due); a assinatura do plano grátis não conta.
+            subscriptions: { none: { plan: { slug: { not: 'free' } } } },
+          }
+        : {
+            isActive: true,
+            emailVerified: true,
+            createdAt: { gte: cutoff },
+            // Nunca passou pelo checkout — quem já tem qualquer assinatura
+            // (ativa, cancelada, past_due) sai da trilha de conversão.
+            subscriptions: { none: {} },
+          },
       select: {
         id: true,
         email: true,
@@ -139,10 +163,13 @@ export class OnboardingSequenceService {
     const maxOffset = Math.max(...POST_SUBSCRIPTION_EMAILS.map((e) => e.offsetDays));
     const cutoff = this.daysAgo(maxOffset + CATCHUP_DAYS);
 
+    const freePlanSince = readFreePlanSince(this.configService.get<string>('CONVERSION_TRACK_FREE_PLAN_SINCE'));
     const subs = await this.prisma.subscription.findMany({
       where: {
         status: 'ACTIVE',
         createdAt: { gte: cutoff },
+        // com a correção ligada, "assinatura ativa" é só plano pago (o grátis vai para a trilha de conversão)
+        ...(freePlanSince ? { plan: { slug: { not: 'free' } } } : {}),
         user: {
           isActive: true,
           emailVerified: true,
