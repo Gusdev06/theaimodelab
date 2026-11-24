@@ -186,7 +186,7 @@ describe('ReferralsService', () => {
       await expect(service.tryReward('referred_1')).resolves.toBe('rewarded');
       expect(service.rewardMode()).toBe('first_generation');
       expect(tx.creditBalance.upsert).toHaveBeenCalledTimes(1);
-      const referredQuery = prisma.user.findFirst.mock.calls.find(([arg]) => arg.where.id === 'referred_1')?.[0];
+      const referredQuery: any = prisma.user.findFirst.mock.calls.find(([arg]: any[]) => arg.where.id === 'referred_1')?.[0];
       expect(referredQuery.where).toMatchObject({ emailVerified: true, generations: expect.anything() });
       expect(referredQuery.where).not.toHaveProperty('payments');
     });
@@ -197,7 +197,7 @@ describe('ReferralsService', () => {
 
       await expect(service.tryReward('referred_1')).resolves.toBe('rewarded');
 
-      const referredQuery = prisma.user.findFirst.mock.calls.find(([arg]) => arg.where.id === 'referred_1')?.[0];
+      const referredQuery: any = prisma.user.findFirst.mock.calls.find(([arg]: any[]) => arg.where.id === 'referred_1')?.[0];
       expect(referredQuery.where.payments).toEqual({
         some: { type: 'SUBSCRIPTION', status: 'COMPLETED', amountCents: { gt: 0 } },
       });
