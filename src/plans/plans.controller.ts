@@ -6,6 +6,7 @@ import { Public } from '../common/decorators/public.decorator';
 import { CheckoutCodesService } from '../checkout-codes/checkout-codes.service';
 import { OptionalJwtAuthGuard } from '../common/guards/optional-jwt-auth.guard';
 import { isInAppHomeReferer, subscriptionCheckoutUrlFor } from './prepaid-plan';
+import { candyCheckoutUrls, isFirstMonthOfferSlug } from './candy-vitrine';
 
 // Preço de assinatura em USD (centavos) por plano. Fonte da verdade é a tabela
 // plan_prices (USD); este mapa é só um fallback para nunca exibir preço em BRL
@@ -59,14 +60,14 @@ export class PlansController {
       // do Pix Automático). Assinante recorrente da Cakto segue vendo o link da assinatura: o
       // pré-pago criaria outra cobrança enquanto a recorrência continua.
       const keepCaktoSubscription = userId ? await this.plansService.hasRecurringCaktoSubscription(userId) : false;
-      return brlPlans.map((p) => ({
+      return this.withCandyOffers(brlPlans.map((p) => ({
         ...p,
         // Assinante recorrente da Cakto fica no link da assinatura do MESMO produto, também na vitrine de outra
         // marca: o link da marca (outro produto) abriria uma 2ª cobrança que não cancela a 1ª (TKT-354).
         checkoutUrl: keepCaktoSubscription
           ? (subscriptionCheckoutUrlFor(p.checkoutUrl) ?? p.checkoutUrl)
           : (brandLinks.get(p.id) ?? p.checkoutUrl),
-      }));
+      })), 'BRL', userId);
     }
 
     const plans = await this.plansService.findAllPlans();
@@ -80,7 +81,7 @@ export class PlansController {
       : isInAppHomeReferer(req?.headers?.referer);
     const planCheckoutUrl = (url: string | null | undefined): string | null =>
       (keepSubscriptionLinks ? subscriptionCheckoutUrlFor(url) : null) ?? url ?? null;
-    return Promise.all(
+    const usdPlans = await Promise.all(
       plans.map(async (p) => {
         // Sempre USD. Ordem: plan_prices(USD) → fallback fixo → (último caso) priceCents.
         let priceCents = USD_PRICE_CENTS_FALLBACK[p.slug] ?? p.priceCents;
@@ -117,5 +118,24 @@ export class PlansController {
         };
       }),
     );
+    return this.withCandyOffers(usdPlans, 'USD', userId);
+  }
+
+  /**
+   * candy-vitrine: soma os planos novos com link por env (1º mês, trimestral, 28 dias). Sem env a lista
+   * volta igual (nenhuma consulta). O 1º mês de entrada só aparece para quem nunca pagou plano.
+   */
+  private async withCandyOffers(
+    base: PlanResponseDto[],
+    currency: 'USD' | 'BRL',
+    userId: string | null,
+  ): Promise<PlanResponseDto[]> {
+    if (candyCheckoutUrls(currency).size === 0) return base;
+    const offers = await this.plansService.findCandyOfferPlans(currency);
+    if (offers.length === 0) return base;
+    const paidBefore =
+      userId && offers.some((p) => isFirstMonthOfferSlug(p.slug)) ? await this.plansService.hasPaidPlanBefore(userId) : false;
+    const visible = offers.filter((p) => !(paidBefore && isFirstMonthOfferSlug(p.slug)));
+    return visible.length === 0 ? base : [...base, ...visible];
   }
 }

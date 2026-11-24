@@ -21,6 +21,8 @@ export class PlanResponseDto {
   basePlanSlug?: string | null;
   @ApiPropertyOptional({ description: 'Link de checkout da assinatura mensal (Perfect Pay)' })
   checkoutUrl?: string | null;
+  @ApiPropertyOptional({ description: 'Plano de 1º mês de entrada (candy-vitrine): créditos do 1º mês; depois, creditsPerMonth' })
+  firstMonthCredits?: number | null;
 }
 
 export class CreditPackageResponseDto {
@@ -29,4 +31,6 @@ export class CreditPackageResponseDto {
   @ApiProperty() credits: number;
   @ApiProperty() priceCents: number;
   @ApiProperty({ example: 'BRL' }) currency: string;
+  @ApiPropertyOptional({ description: 'candy-vitrine L28: pacote só para assinante (braço B do A/B); sem link de checkout' })
+  locked?: boolean;
 }

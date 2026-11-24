@@ -110,6 +110,17 @@ const ANNUAL_PLANS: Record<string, { usd: number; brl: number; eur: number; chec
   agency: { usd: 139900, brl: 629700, eur: 132900, checkout: 'https://checkout.centerpag.com/pay/PPU38CQG714', ppCode: 'PPLQQQGA3' }, // 199,90 / 899,90 / 189,90
 };
 
+// ── candy-vitrine (24/11/2026): planos novos, fora da vitrine até o link existir ──
+// usd/brl em centavos. Trimestral: −25% no USD contra 3× o mensal; no BRL o desconto que fecha a conta
+// (câmbio 5,30, pior caso US$ 0,000805/cr): Creator −18% (R$ 219,90), Pro −9% (R$ 489,90).
+const CANDY_PLANS: Array<{ slug: string; base: string; billingInterval: string; usd: number; brl: number }> = [
+  { slug: 'creator-entrada', base: 'creator', billingInterval: 'month', usd: 1490, brl: 6990 }, // 1º mês; renova a 19,90 / 89,90
+  { slug: 'creator-trimestral', base: 'creator', billingInterval: 'quarter', usd: 4490, brl: 21990 },
+  { slug: 'pro-trimestral', base: 'pro', billingInterval: 'quarter', usd: 8990, brl: 48990 },
+  { slug: 'creator-28d', base: 'creator', billingInterval: '28d', usd: 1990, brl: 8990 },
+  { slug: 'pro-28d', base: 'pro', billingInterval: '28d', usd: 3990, brl: 17990 },
+];
+
 // ── Cakto (gateway BRL, Brasil) — assinatura recorrente ──
 // Produto único "THE AI MODEL LAB" (id d954f7b1-…); cada plano é uma OFERTA cujo
 // short-code é o segmento do link pay.cakto.com.br/<offer>. Esse offer code casa a
@@ -255,6 +266,40 @@ async function main() {
     planData.push({ slug: `${base}-anual`, update: shared, create: { slug: `${base}-anual`, ...shared } } as any);
   }
 
+  // ── candy-vitrine (24/11/2026): 1º mês de entrada (L03), trimestral (L13) e 28 dias (L21) ──
+  // Nascem FORA da vitrine (isActive:false, sem checkoutUrl nem código de postback). O link entra pela env
+  // CANDY_CHECKOUT_USD/BRL ("slug=url") e o código do postback por CANDY_PLAN_CODES ("CODIGO=slug") quando o
+  // produto existir na Perfect Pay/Cakto. update vazio: rodar o seed de novo não mexe no que o banco já tem.
+  // Preços pela conta de prejuízo zero (PRODUTO/INTELIGENCIA-NICHO/2026-11-24-CANDY-VENDAS/matriz-completa.json).
+  for (const candy of CANDY_PLANS) {
+    const monthly = planData.find((p) => p.slug === candy.base);
+    if (!monthly) continue;
+    const src = monthly.create as Record<string, unknown>;
+    planData.push({
+      slug: candy.slug,
+      update: {},
+      create: {
+        slug: candy.slug,
+        name: src.name as string,
+        priceCents: candy.brl,
+        creditsPerMonth: src.creditsPerMonth as number,
+        maxConcurrentGenerations: src.maxConcurrentGenerations as number,
+        hasWatermark: src.hasWatermark as boolean,
+        galleryRetentionDays: src.galleryRetentionDays as number | null,
+        hasApiAccess: src.hasApiAccess as boolean,
+        isActive: false,
+        isPublic: true,
+        billingInterval: candy.billingInterval,
+        basePlanSlug: candy.base,
+        sortOrder: src.sortOrder as number,
+        avatar_clone_enabled: src.avatar_clone_enabled as boolean,
+        avatar_clone_limit: src.avatar_clone_limit as number,
+        unlimitedPriority: src.unlimitedPriority as number,
+        unlimitedModels: src.unlimitedModels,
+      },
+    } as any);
+  }
+
   const plans: Plan[] = [];
   for (const plan of planData) {
     plans.push(
@@ -317,6 +362,14 @@ async function main() {
     const offer = process.env[`CAKTO_OFFER_${base.toUpperCase()}_ANUAL`];
     if (offer) CAKTO_OFFERS[`${base}-anual`] = offer;
   }
+  // candy-vitrine: preço USD e BRL sem link (o link vem da env CANDY_CHECKOUT_USD/BRL).
+  for (const candy of CANDY_PLANS) {
+    planPriceData.push(
+      { slug: candy.slug, currency: 'USD', priceCents: candy.usd, stripePriceId: '' },
+      { slug: candy.slug, currency: 'BRL', priceCents: candy.brl, stripePriceId: '' },
+    );
+  }
+  const candySlugs = new Set(CANDY_PLANS.map((candy) => candy.slug));
 
   const plansBySlug = new Map(plans.map((p) => [p.slug, p]));
   let planPriceCount = 0;
@@ -328,7 +381,7 @@ async function main() {
     // que habilita o preço é ter uma oferta Cakto, não um stripePriceId.
     const caktoOffer = pp.currency === 'BRL' ? CAKTO_OFFERS[pp.slug] : undefined;
     // Anuais (e o Agency) não têm Stripe: a linha existe pra vitrine mesmo sem price id.
-    const isAnnual = pp.slug.endsWith('-anual') || pp.slug === 'agency';
+    const isAnnual = pp.slug.endsWith('-anual') || pp.slug === 'agency' || candySlugs.has(pp.slug);
     if (!pp.stripePriceId && !caktoOffer && !isAnnual) continue;
 
     const checkoutUrl = caktoOffer ? caktoCheckoutUrl(caktoOffer) : null;

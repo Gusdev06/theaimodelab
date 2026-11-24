@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { GenerationType, Resolution } from '@prisma/client';
 import { PlanResponseDto } from './dto/plan-response.dto';
 import { prepaidPlanWhere } from './prepaid-plan';
+import { candyCheckoutUrls, isFirstMonthOfferSlug, resolveFirstMonthCredits, type CandyEnv } from './candy-vitrine';
 import { WAN_ANIMATE_MODEL_VARIANT, wanAnimateCredits, wanAnimateOnKie, WAN3_REFERENCE_MODEL_VARIANT, wan3ReferenceCredits } from '../generations/motion-control-engine';
 
 /**
@@ -134,6 +135,59 @@ export class PlansService {
         basePlanSlug: pp.plan.basePlanSlug ?? null,
         checkoutUrl: pp.checkoutUrl,
       }));
+  }
+
+  /**
+   * Planos novos do candy-vitrine (1º mês de entrada, trimestral, 28 dias) com link de checkout
+   * por env (CANDY_CHECKOUT_USD/BRL "slug=url"). Sem env: lista vazia e nenhuma consulta ao banco.
+   * O plano vale mesmo com isActive:false (fica fora dos fluxos antigos); precisa de isPublic e de
+   * preço na moeda pedida. O de entrada só sai com FIRST_MONTH_CREDITS ligado (conta que fecha).
+   */
+  async findCandyOfferPlans(currency: string, env: CandyEnv = process.env): Promise<PlanResponseDto[]> {
+    const links = candyCheckoutUrls(currency, env);
+    if (links.size === 0) return [];
+    const upper = currency.toUpperCase();
+    const firstMonthCredits = resolveFirstMonthCredits(env);
+    const plans = await this.prisma.plan.findMany({
+      where: { slug: { in: [...links.keys()] }, isPublic: true },
+      include: { prices: { where: { currency: upper, isActive: true } } },
+      orderBy: { sortOrder: 'asc' },
+    });
+    const offers: PlanResponseDto[] = [];
+    for (const plan of plans) {
+      const price = plan.prices[0];
+      if (!price || price.priceCents <= 0) continue;
+      const isFirstMonth = isFirstMonthOfferSlug(plan.slug);
+      if (isFirstMonth && firstMonthCredits <= 0) continue;
+      offers.push({
+        id: plan.id,
+        slug: plan.slug,
+        name: plan.name,
+        description: plan.description,
+        priceCents: price.priceCents,
+        currency: upper,
+        creditsPerMonth: plan.creditsPerMonth,
+        maxConcurrentGenerations: plan.maxConcurrentGenerations,
+        hasWatermark: plan.hasWatermark,
+        galleryRetentionDays: plan.galleryRetentionDays,
+        hasApiAccess: plan.hasApiAccess,
+        sortOrder: plan.sortOrder,
+        billingInterval: plan.billingInterval,
+        basePlanSlug: plan.basePlanSlug ?? null,
+        checkoutUrl: links.get(plan.slug.toLowerCase()) ?? null,
+        ...(isFirstMonth ? { firstMonthCredits: Math.min(firstMonthCredits, plan.creditsPerMonth) } : {}),
+      });
+    }
+    return offers;
+  }
+
+  /** Já pagou alguma assinatura (o 1º mês de entrada é só para quem nunca pagou plano). */
+  async hasPaidPlanBefore(userId: string): Promise<boolean> {
+    const paid = await this.prisma.payment.findFirst({
+      where: { userId, type: 'SUBSCRIPTION', status: 'COMPLETED', amountCents: { gt: 0 } },
+      select: { id: true },
+    });
+    return paid !== null;
   }
 
   async findPlanBySlug(slug: string) {
