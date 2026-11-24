@@ -8,6 +8,7 @@ import { StripeService } from './stripe.service';
 import { MetaConversionsService } from '../meta/meta-conversions.service';
 import { renewalEarnsCommission, resolveAffiliateRecurringWindow } from '../affiliates/affiliate-recurring';
 import { computeAffiliateNetCents, warnDiscardedAffiliateGatewayFees } from '../affiliates/affiliate-net';
+import { parseAffiliatePercentByPlan, resolveEffectiveAffiliatePercent } from '../affiliates/affiliate-percent-by-plan';
 import {
   AFFILIATE_EARNING_LEVEL_DIRECT,
   AFFILIATE_EARNING_LEVEL_PARENT,
@@ -1640,8 +1641,29 @@ export class PaymentsService {
       process.env.AFFILIATE_GATEWAY_FEE_PERCENT,
     );
 
+    // Comissão por produto (AFFILIATE_PERCENT_BY_PLAN, L05 candy 24/11): vazia = o percentual do afiliado, como sempre
+    // (nem consulta o pagamento). Com a env, o produto citado usa o da lista, limitado ao teto de prejuízo zero.
+    const percentTable = parseAffiliatePercentByPlan(process.env.AFFILIATE_PERCENT_BY_PLAN);
+    let commissionPercent = affiliate.commissionPercent;
+    if (percentTable.size > 0) {
+      const sold = await tx.payment.findUnique({
+        where: { id: payment.id },
+        select: {
+          type: true,
+          subscription: { select: { plan: { select: { slug: true, basePlanSlug: true, billingInterval: true } } } },
+        },
+      });
+      const soldPlan = sold?.subscription?.plan;
+      commissionPercent = resolveEffectiveAffiliatePercent(affiliate.commissionPercent, percentTable, {
+        paymentType: sold?.type ?? null,
+        planSlug: soldPlan?.slug ?? null,
+        basePlanSlug: soldPlan?.basePlanSlug ?? null,
+        billingInterval: soldPlan?.billingInterval ?? null,
+      }).percent;
+    }
+
     const commissionCents = Math.round(
-      (netAmountCents * affiliate.commissionPercent) / 100,
+      (netAmountCents * commissionPercent) / 100,
     );
 
     if (commissionCents <= 0) return;
@@ -1661,7 +1683,7 @@ export class PaymentsService {
     });
 
     this.logger.log(
-      `Affiliate earning recorded: ${commissionCents} centavos${currency ? ` ${currency}` : ''} for affiliate ${affiliate.id} (${affiliate.commissionPercent}% of net ${netAmountCents}, original ${amountCents}, ${rule === 'gateway-percent' ? `${provider} fee` : 'stripe fee'} ${feeCents})`,
+      `Affiliate earning recorded: ${commissionCents} centavos${currency ? ` ${currency}` : ''} for affiliate ${affiliate.id} (${commissionPercent}% of net ${netAmountCents}, original ${amountCents}, ${rule === 'gateway-percent' ? `${provider} fee` : 'stripe fee'} ${feeCents})`,
     );
 
     await this.recordSecondLevelEarning(tx, {
