@@ -2035,11 +2035,18 @@ export class AdminService {
     >`
       WITH ${DEDUP_PAYMENTS_CTE},
       bounds AS (SELECT ${start} AS b),
+      -- Renovação conta pela MESMA recorrência no gateway (usuária + provider + código PPSUB/Cakto), não pela
+      -- linha local: a cobrança que a Perfect Pay/Cakto recupera depois da carência do cron já caiu numa
+      -- assinatura recriada e aparecia como "assinatura nova" (23/11: 7 de 12 de 20 a 23/11).
       r AS (
         SELECT hp.*,
-               CASE WHEN type = 'SUBSCRIPTION' AND subscription_id IS NOT NULL
-                    THEN row_number() OVER (PARTITION BY subscription_id ORDER BY created_at) END AS rn
+               CASE WHEN hp.type = 'SUBSCRIPTION' AND hp.subscription_id IS NOT NULL
+                    THEN row_number() OVER (
+                      PARTITION BY COALESCE(hp.user_id || ':' || hp.provider || ':' || s.external_subscription_id, hp.subscription_id)
+                      ORDER BY hp.created_at
+                    ) END AS rn
         FROM hp
+        LEFT JOIN subscriptions s ON s.id = hp.subscription_id
       ),
       pay AS (
         SELECT date_trunc(${u}, ${SP_TS}) AS b,
