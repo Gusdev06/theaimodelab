@@ -16,7 +16,13 @@ import { assessText, MinorAssessment } from '../content-safety/minor-guard';
 import { canonical } from '../content-safety/adult-only-rules';
 import { OpenRouterVisionClient } from './openrouter-vision.client';
 
-const CREDIT_COST = 5;
+// TKT-366: o Grok 4.3 custa US$ 0,009–0,016 por análise; 20 cr cobre o pior caso a
+// US$ 0,000805/cr (US$ 0,0161). Env PROMPT_AGENT_CREDIT_COST troca sem deploy de código;
+// valor inválido ou < 1 volta a 20. Lido uma vez na carga (cobrança e devolução usam o mesmo).
+const CREDIT_COST = (() => {
+  const parsed = Number.parseInt(process.env.PROMPT_AGENT_CREDIT_COST ?? '', 10);
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : 20;
+})();
 
 /** Rota do clonador na trilha de segurança (mesmo formato do interceptor). */
 const SAFETY_ROUTE = 'POST /api/v1/prompt-agent/analyze-image';
