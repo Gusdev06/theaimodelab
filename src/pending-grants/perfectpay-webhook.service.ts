@@ -24,6 +24,7 @@ import {
 } from './buyer-locale';
 import { NoAccountPurchasesService } from './no-account-purchases.service';
 import { DeclineFallbackService } from './decline-fallback.service';
+import { bumpPackageNameForCodes, candyPlanSlugForCodes, PLAN_BUMP_SALE_SUFFIX } from '../plans/candy-vitrine';
 
 /** De onde veio a venda: webhook ao vivo (com log) ou reprocesso de venda guardada sem conta (B-01). */
 interface SaleContext {
@@ -228,6 +229,22 @@ export class PerfectpayWebhookService {
       else if (extra?.kind === 'package') extraPackage = extra.creditPackage;
     }
 
+    // 1c) candy-vitrine: plano novo (1º mês, trimestral, 28 dias) cujo código está só na env
+    // CANDY_PLAN_CODES ("CODIGO=slug"). Sem env não consulta nada.
+    if (!plan && !extraPackage) {
+      plan = await this.findCandyPlan(planCandidates);
+    }
+
+    // 1d) candy-vitrine L09: bump de créditos no checkout do plano (PERFECTPAY_PLAN_BUMP_CODES
+    // "CODIGO=Plus"). Credita o pacote com id próprio ("<venda>-bump"): se a Perfect Pay mandar o bump
+    // com o mesmo código de venda do plano, a idempotência não descarta nenhum dos dois.
+    if (!plan && !extraPackage) {
+      const bumpPackage = await this.findPlanBumpPackage(planCandidates);
+      if (bumpPackage) {
+        return this.handleCreditPurchase(payload, email, bumpPackage, ctx, PLAN_BUMP_SALE_SUFFIX);
+      }
+    }
+
     // 1b) Rede de segurança para assinaturas: se o código não casou (ex.: plano novo
     // sem perfectpayPlanCode cadastrado), tenta casar pelo nome do plano do postback
     // ("Plan Creator" → slug "creator"). Só para vendas recorrentes, para não
@@ -395,11 +412,14 @@ export class PerfectpayWebhookService {
     email: string,
     creditPackage: { id: string; name: string; credits: number },
     ctx: SaleContext,
+    /** Sufixo do id externo (bump do plano: '-bump'); vazio = o código da venda, como sempre. */
+    saleCodeSuffix = '',
   ): Promise<{ processed: boolean; reason?: string }> {
-    const saleCode = this.extractSaleCode(payload);
-    if (!saleCode) {
+    const rawSaleCode = this.extractSaleCode(payload);
+    if (!rawSaleCode) {
       throw new BadRequestException('Código da venda (code) não encontrado no payload');
     }
+    const saleCode = `${rawSaleCode}${saleCodeSuffix}`;
 
     const user = await this.prisma.user.findUnique({
       where: { email },
@@ -444,6 +464,17 @@ export class PerfectpayWebhookService {
     kind: string,
   ): Promise<{ processed: boolean; reason?: string } | null> {
     const saleCode = this.extractSaleCode(payload);
+    // Bump do plano (candy-vitrine L09): estorna só o pacote ("<venda>-bump"), nunca a assinatura.
+    if (saleCode && bumpPackageNameForCodes(this.extractPlanCandidates(payload))) {
+      const bumpRefund = await this.paymentsService.refundExternalPayment(`${saleCode}${PLAN_BUMP_SALE_SUFFIX}`, kind);
+      if (!bumpRefund.found) return { processed: false, reason: 'refund of plan bump with no recorded payment' };
+      return bumpRefund.alreadyRefunded
+        ? { processed: false, reason: 'plan bump already refunded' }
+        : {
+            processed: true,
+            reason: `plan bump refunded: ${bumpRefund.creditsRevoked} credits revoked, ${bumpRefund.creditsShortfall} already used`,
+          };
+    }
     if (saleCode) {
       const refund = await this.paymentsService.refundExternalPayment(saleCode, kind);
       if (refund.found && refund.type === 'CREDIT_PURCHASE') {
@@ -512,6 +543,27 @@ export class PerfectpayWebhookService {
    * cadastrado em `perfectpayPlanCode`. Casa o plano ativo cujo slug apareça como
    * palavra no nome do postback. Usado só para vendas recorrentes.
    */
+  /** Plano do candy-vitrine pelo código do postback (env CANDY_PLAN_CODES); vale com isActive:false. */
+  private async findCandyPlan(candidates: string[]): Promise<{ id: string; slug: string; name: string } | null> {
+    const slug = candyPlanSlugForCodes(candidates);
+    if (!slug) return null;
+    return this.prisma.plan.findUnique({ where: { slug }, select: { id: true, slug: true, name: true } });
+  }
+
+  /** Pacote do bump do plano (env PERFECTPAY_PLAN_BUMP_CODES "CODIGO=NomeDoPacote"). */
+  private async findPlanBumpPackage(candidates: string[]): Promise<{ id: string; name: string; credits: number } | null> {
+    const packageName = bumpPackageNameForCodes(candidates);
+    if (!packageName) return null;
+    const creditPackage = await this.prisma.creditPackage.findFirst({
+      where: { name: { equals: packageName, mode: 'insensitive' } },
+      select: { id: true, name: true, credits: true },
+    });
+    if (!creditPackage) {
+      this.logger.error(`Perfectpay: bump mapeado para o pacote "${packageName}", que não existe. Bump NÃO creditado.`);
+    }
+    return creditPackage;
+  }
+
   private async matchPlanByName(
     payload: any,
   ): Promise<{ id: string; slug: string; name: string } | null> {

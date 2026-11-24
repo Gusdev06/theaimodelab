@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { SubscriptionStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CronLoggerService } from './cron-logger.service';
+import { MONTHLY_REFILL_INTERVALS, QUARTER_INTERVAL } from '../plans/candy-vitrine';
 
 const SCHEDULE = '15 * * * *';
 
@@ -35,14 +36,15 @@ export class AnnualCreditsRefillService {
             where: {
               status: SubscriptionStatus.ACTIVE,
               currentPeriodEnd: { gt: now },
-              plan: { billingInterval: 'year' },
+              // Trimestral (candy-vitrine L13) recarrega mês a mês como o anual.
+              plan: { billingInterval: { in: [...MONTHLY_REFILL_INTERVALS] } },
               user: { creditBalance: { periodEnd: { lte: now } } },
             },
             select: {
               id: true,
               userId: true,
               currentPeriodEnd: true,
-              plan: { select: { name: true, creditsPerMonth: true } },
+              plan: { select: { name: true, creditsPerMonth: true, billingInterval: true } },
               user: { select: { creditBalance: { select: { periodEnd: true } } } },
             },
           });
@@ -75,7 +77,7 @@ export class AnnualCreditsRefillService {
                     type: 'SUBSCRIPTION_RENEWAL',
                     amount: sub.plan.creditsPerMonth,
                     source: 'plan',
-                    description: `Ciclo mensal do plano anual ${sub.plan.name} — ${sub.plan.creditsPerMonth} créditos`,
+                    description: `Ciclo mensal do plano ${sub.plan.billingInterval === QUARTER_INTERVAL ? 'trimestral' : 'anual'} ${sub.plan.name} — ${sub.plan.creditsPerMonth} créditos`,
                   },
                 });
               });

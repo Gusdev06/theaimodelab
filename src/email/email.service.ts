@@ -519,6 +519,8 @@ export class EmailService implements OnModuleInit {
     planName: string,
     credits: number,
     brand?: Brand,
+    /** candy-vitrine: linha de cobrança honesta (1º mês de entrada, trimestral, 28 dias). Ausente = e-mail igual. */
+    billingNote?: string | null,
   ): Promise<void> {
     if (!this.client) {
       this.logger.warn('Email service not configured — skipping subscription email');
@@ -527,7 +529,7 @@ export class EmailService implements OnModuleInit {
 
     try {
       const { error } = await this.client.emails.send({
-        ...this.branded({ subject: `Your ${planName} subscription is active — The AI Model Lab`, html: this.withX1(this.getSubscriptionTemplate(name, planName, credits), 'en', brand) }, brand),
+        ...this.branded({ subject: `Your ${planName} subscription is active — The AI Model Lab`, html: this.withX1(this.getSubscriptionTemplate(name, planName, credits, billingNote), 'en', brand) }, brand),
         to: [to],
       });
 
@@ -1054,6 +1056,7 @@ export class EmailService implements OnModuleInit {
     name: string,
     planName: string,
     credits: number,
+    billingNote?: string | null,
   ): string {
     const dashboardUrl = `${this.frontendUrl}`;
     const logoHtml = this.logoUrl
@@ -1091,6 +1094,7 @@ export class EmailService implements OnModuleInit {
                   </tr>
                 </table>
               </div>
+              ${billingNote ? `<p style="margin: 0 0 20px; font-size: 15px; font-weight: 600; color: #1a1a1a; line-height: 1.6;">${billingNote}</p>` : ''}
               <p style="margin: 0 0 28px; font-size: 15px; color: #666; line-height: 1.6;">You can manage your subscription anytime from your dashboard. Cancel whenever you want, no hassle.</p>
               <div style="margin: 0 0 0;">
                 <a href="${dashboardUrl}"

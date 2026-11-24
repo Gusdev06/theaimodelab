@@ -33,6 +33,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MetaConversionsService } from '../meta/meta-conversions.service';
 import { CheckoutCodesService } from '../checkout-codes/checkout-codes.service';
 import { entryPackageNames, hasEntryPackage, withoutEntryPackages } from './entry-packages';
+import {
+  inSubscribersOnlyArm,
+  lockPackagesForNonSubscribers,
+  resolvePacksSubscribersOnlyPct,
+} from '../plans/candy-vitrine';
 
 @ApiTags('credits')
 @ApiBearerAuth()
@@ -109,7 +114,26 @@ export class CreditsController {
       resolvedCurrency = user.currency;
     }
     const packages = await this.buildPackagesForCurrency(resolvedCurrency!, true, req?.headers);
-    return this.hideEntryPackagesFromPayers(userId, packages);
+    const visible = await this.hideEntryPackagesFromPayers(userId, packages);
+    return this.lockPackagesForArmB(userId, visible);
+  }
+
+  /**
+   * candy-vitrine L28 (molde OurDream: só assinante compra moeda). A/B por hash do userId com
+   * PACKS_SUBSCRIBERS_ONLY_PCT (padrão 0 = desligado, lista igual). No braço B, conta sem plano pago
+   * ativo vê só o pacote de entrada comprável; os outros voltam com locked:true e sem link.
+   */
+  private async lockPackagesForArmB<T extends { name: string; checkoutUrl?: string | null }>(
+    userId: string,
+    packages: T[],
+  ): Promise<(T & { locked?: boolean })[]> {
+    const pct = resolvePacksSubscribersOnlyPct();
+    if (!inSubscribersOnlyArm(userId, pct)) return packages;
+    const paidPlan = await this.prisma.subscription.findFirst({
+      where: { userId, status: 'ACTIVE', plan: { slug: { not: 'free' } } },
+      select: { id: true },
+    });
+    return paidPlan ? packages : lockPackagesForNonSubscribers(packages, entryPackageNames());
   }
 
   /** Pacote de entrada (env ENTRY_PACKAGE_NAMES) só aparece para quem nunca pagou nada. */

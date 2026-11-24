@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreditTransactionType, Plan, Subscription, SubscriptionStatus } from '@prisma/client';
 import { CronLoggerService } from './cron-logger.service';
+import { addBillingPeriod } from '../plans/candy-vitrine';
 
 const SCHEDULE = '0 * * * *';
 
@@ -91,8 +92,8 @@ export class SubscriptionRenewalService {
     subscription: Subscription & { plan: Plan },
   ) {
     const newPeriodStart = subscription.currentPeriodEnd;
-    const newPeriodEnd = new Date(newPeriodStart);
-    newPeriodEnd.setMonth(newPeriodEnd.getMonth() + 1);
+    // Plano de 28 dias (candy-vitrine L21) avança 28 dias; os outros, 1 mês como sempre.
+    const newPeriodEnd = addBillingPeriod(new Date(newPeriodStart), subscription.plan, 1);
 
     // Plans without monthly renewal (creditsPerMonth === 0) only advance the
     // period — saldo é preservado. Usado pelo Free em v5 (sem créditos).

@@ -19,7 +19,16 @@ import {
   ANNUAL_FIRST_MONTH_BONUS_KIND,
   computeAnnualFirstMonthBonusCredits,
 } from './annual-bonus';
-import { isPrepaidPlanSlug, prepaidPeriodMonths } from '../plans/prepaid-plan';
+import { isPrepaidPlanSlug } from '../plans/prepaid-plan';
+import {
+  activationPlanCredits,
+  addBillingPeriod,
+  affiliateMaxPercentForPlan,
+  billingPeriodMonths,
+  isCandyBillingPlan,
+  isFirstMonthOfferSlug,
+  subscriptionBillingNote,
+} from '../plans/candy-vitrine';
 
 const ULTRA_BASIC_WELCOME_FREE_GENERATIONS = 2;
 
@@ -326,7 +335,9 @@ export class PaymentsService {
     // cada virada até o fim da assinatura.
     // Pré-pago de 90 dias (*-90d): 3 meses de acesso e os créditos dos 3 meses de uma vez (o plano oculto já
     // guarda 3× o mensal em creditsPerMonth; não há recarga mensal para ele).
-    const periodMonths = plan.billingInterval === 'year' ? 12 : prepaidPeriodMonths(plan.slug);
+    // Trimestral (candy-vitrine L13): 3 meses de acesso, créditos mês a mês como o anual. 28 dias (L21):
+    // 1 período de 28 dias (addBillingPeriod), créditos do período inteiro.
+    const periodMonths = billingPeriodMonths(plan);
     // Pré-pago (slug *-30d) não renova sozinho: já nasce "cancelado no fim do período".
     // O cron de vencimento corta na hora do fim (sem a carência de 3 dias) e o site mostra
     // "acesso até {data}". Vale também na recompra, que antes voltava o flag para false.
@@ -335,6 +346,7 @@ export class PaymentsService {
     let created = false;
     let skipped = false;
     let annualBonusCredits = 0;
+    let grantedPlanCredits = plan.creditsPerMonth;
 
     await this.prisma.$transaction(async (tx) => {
       // Idempotência dentro da transaction (evita crédito duplicado em retries do webhook)
@@ -406,7 +418,7 @@ export class PaymentsService {
         const base =
           renewSub.currentPeriodEnd > now ? renewSub.currentPeriodEnd : now;
         const periodEnd = new Date(base);
-        periodEnd.setMonth(periodEnd.getMonth() + periodMonths);
+        addBillingPeriod(periodEnd, plan, periodMonths);
         subscription = await tx.subscription.update({
           where: { id: renewSub.id },
           data: {
@@ -443,7 +455,7 @@ export class PaymentsService {
           data: { status: 'CANCELED', cancelAtPeriodEnd: false },
         });
         const periodEnd = new Date(now);
-        periodEnd.setMonth(periodEnd.getMonth() + periodMonths);
+        addBillingPeriod(periodEnd, plan, periodMonths);
         subscription = await tx.subscription.create({
           data: {
             userId,
@@ -465,18 +477,21 @@ export class PaymentsService {
       // No anual o ciclo de crédito é de 1 mês (não o período de 12 da assinatura).
       const creditPeriodEnd =
         periodMonths === 1 || isPrepaidPlanSlug(plan.slug) ? subscription.currentPeriodEnd : (() => { const d = new Date(now); d.setMonth(d.getMonth() + 1); return d; })();
+      // 1º mês de entrada (candy-vitrine L03): na ativação, FIRST_MONTH_CREDITS; renovação e todo outro plano = cheio.
+      const planCredits = created ? activationPlanCredits(plan) : plan.creditsPerMonth;
+      grantedPlanCredits = planCredits;
       await tx.creditBalance.upsert({
         where: { userId },
         create: {
           userId,
-          planCreditsRemaining: plan.creditsPerMonth,
+          planCreditsRemaining: planCredits,
           bonusCreditsRemaining: 0,
           planCreditsUsed: 0,
           periodStart: now,
           periodEnd: creditPeriodEnd,
         },
         update: {
-          planCreditsRemaining: plan.creditsPerMonth,
+          planCreditsRemaining: planCredits,
           planCreditsUsed: 0,
           periodStart: now,
           periodEnd: creditPeriodEnd,
@@ -500,7 +515,7 @@ export class PaymentsService {
         data: {
           userId,
           type: 'SUBSCRIPTION_RENEWAL',
-          amount: plan.creditsPerMonth,
+          amount: planCredits,
           source: 'plan',
           description: created
             ? `Assinatura criada — plano ${plan.name}`
@@ -527,7 +542,8 @@ export class PaymentsService {
       }
 
       if (created || (await this.renewalEarnsAffiliateCommission(tx, userId, referredByCode, now))) {
-        await this.recordAffiliateEarning(tx, userId, payment, amountCents, referredByCode);
+        // Plano novo do candy-vitrine com teto de comissão (pior caso da conta de prejuízo zero); null = sem teto.
+        await this.recordAffiliateEarning(tx, userId, payment, amountCents, referredByCode, affiliateMaxPercentForPlan(plan.slug));
       }
     });
 
@@ -537,7 +553,7 @@ export class PaymentsService {
     }
 
     this.logger.log(
-      `${provider} subscription ${created ? 'ATIVADA' : 'RENOVADA'} — user ${userId}, plano ${plan.slug} (${plan.creditsPerMonth} créditos)`,
+      `${provider} subscription ${created ? 'ATIVADA' : 'RENOVADA'} — user ${userId}, plano ${plan.slug} (${grantedPlanCredits} créditos)`,
     );
     if (annualBonusCredits > 0) {
       this.logger.log(
@@ -562,12 +578,17 @@ export class PaymentsService {
         },
       });
       if (user?.email) {
+        // candy-vitrine: plano novo (entrada, trimestral, 28 dias) leva a cobrança escrita no e-mail; o resto, igual.
+        const billingNote = isCandyBillingPlan(plan)
+          ? await this.candyBillingNote(plan, grantedPlanCredits, amountCents, currency)
+          : null;
         await this.emailService.sendSubscriptionEmail(
           user.email,
           user.name,
           plan.name,
-          plan.creditsPerMonth,
+          grantedPlanCredits,
           resolveBrand(user.signupBrand),
+          ...(billingNote ? [billingNote] : []),
         );
         // Purchase no Meta CAPI apenas na ATIVAÇÃO (primeira compra/troca de
         // plano). Renovações mensais não disparam — decisão de negócio: o pixel
@@ -1606,6 +1627,31 @@ export class PaymentsService {
   }
 
   /**
+   * candy-vitrine: linha de cobrança do e-mail de boas-vindas. No 1º mês de entrada busca o preço do mensal
+   * irmão (basePlanSlug) na moeda da venda para escrever a renovação cheia; falha de leitura = texto sem o preço.
+   */
+  private async candyBillingNote(
+    plan: { slug: string; billingInterval: string; creditsPerMonth: number; basePlanSlug?: string | null },
+    grantedPlanCredits: number,
+    amountCents: number,
+    currency: string,
+  ): Promise<string | null> {
+    let renewalPriceCents: number | null = null;
+    if (isFirstMonthOfferSlug(plan.slug) && plan.basePlanSlug) {
+      try {
+        const renewal = await this.prisma.planPrice.findFirst({
+          where: { currency: currency.toUpperCase(), isActive: true, plan: { slug: plan.basePlanSlug } },
+          select: { priceCents: true },
+        });
+        renewalPriceCents = renewal?.priceCents ?? null;
+      } catch (error) {
+        this.logger.warn(`candy-vitrine: preço da renovação de ${plan.slug} não lido (${(error as Error).message})`);
+      }
+    }
+    return subscriptionBillingNote(plan, { firstMonthCredits: grantedPlanCredits, amountCents, currency, renewalPriceCents });
+  }
+
+  /**
    * Registra comissão do afiliado para um pagamento.
    * Busca o afiliado pelo código, calcula a comissão e cria o registro.
    * A base é o valor líquido da venda: taxa do gateway vinda de AFFILIATE_GATEWAY_FEE_PERCENT
@@ -1617,6 +1663,8 @@ export class PaymentsService {
     payment: { id: string; provider?: string | null; currency?: string | null },
     amountCents: number,
     referredByCode?: string,
+    /** Teto da % do afiliado (candy-vitrine); ausente/null = a % cadastrada no afiliado. */
+    maxCommissionPercent?: number | null,
   ): Promise<void> {
     if (!referredByCode || amountCents <= 0) return;
 
@@ -1640,8 +1688,10 @@ export class PaymentsService {
       process.env.AFFILIATE_GATEWAY_FEE_PERCENT,
     );
 
+    const commissionPercent =
+      maxCommissionPercent != null ? Math.min(affiliate.commissionPercent, maxCommissionPercent) : affiliate.commissionPercent;
     const commissionCents = Math.round(
-      (netAmountCents * affiliate.commissionPercent) / 100,
+      (netAmountCents * commissionPercent) / 100,
     );
 
     if (commissionCents <= 0) return;
@@ -1661,7 +1711,7 @@ export class PaymentsService {
     });
 
     this.logger.log(
-      `Affiliate earning recorded: ${commissionCents} centavos${currency ? ` ${currency}` : ''} for affiliate ${affiliate.id} (${affiliate.commissionPercent}% of net ${netAmountCents}, original ${amountCents}, ${rule === 'gateway-percent' ? `${provider} fee` : 'stripe fee'} ${feeCents})`,
+      `Affiliate earning recorded: ${commissionCents} centavos${currency ? ` ${currency}` : ''} for affiliate ${affiliate.id} (${commissionPercent}% of net ${netAmountCents}, original ${amountCents}, ${rule === 'gateway-percent' ? `${provider} fee` : 'stripe fee'} ${feeCents})`,
     );
 
     await this.recordSecondLevelEarning(tx, {

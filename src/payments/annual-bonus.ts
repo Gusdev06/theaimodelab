@@ -32,11 +32,37 @@ export function resolveAnnualFirstMonthBonusPercent(
  * ou quando o plano não é anual (mensal nunca ganha o bônus).
  */
 export function computeAnnualFirstMonthBonusCredits(
-  plan: { billingInterval: string; creditsPerMonth: number },
+  plan: { billingInterval: string; creditsPerMonth: number; slug?: string | null },
   env: Record<string, string | undefined> = process.env,
 ): number {
   if (plan.billingInterval !== 'year') return 0;
+  if (!isAnnualBonusPlanAllowed(plan.slug, env)) return 0;
   const percent = resolveAnnualFirstMonthBonusPercent(env);
   if (percent <= 0) return 0;
   return Math.round((plan.creditsPerMonth * percent) / 100);
+}
+
+/**
+ * ANNUAL_BONUS_PLANS (candy-vitrine, L08): slugs anuais que podem ganhar o bônus
+ * ("creator-anual,pro-anual"). Vazia/ausente = como antes (todo anual). Advanced e Studio
+ * anual já são negativos no pior caso SEM bônus: preencher a lista ANTES de ligar a %.
+ */
+export const ANNUAL_BONUS_PLANS_ENV = 'ANNUAL_BONUS_PLANS';
+
+export function resolveAnnualBonusPlans(env: Record<string, string | undefined> = process.env): Set<string> {
+  return new Set(
+    (env[ANNUAL_BONUS_PLANS_ENV] ?? '')
+      .split(',')
+      .map((slug) => slug.trim().toLowerCase())
+      .filter((slug) => slug.length > 0),
+  );
+}
+
+export function isAnnualBonusPlanAllowed(
+  slug: string | null | undefined,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const allowed = resolveAnnualBonusPlans(env);
+  if (allowed.size === 0) return true;
+  return typeof slug === 'string' && allowed.has(slug.trim().toLowerCase());
 }

@@ -13,6 +13,7 @@ import { PaymentsService } from '../payments/payments.service';
 import { CheckoutCodesService, SalePackage } from '../checkout-codes/checkout-codes.service';
 import { NoAccountPurchasesService } from './no-account-purchases.service';
 import { resolveBuyerLocale } from './buyer-locale';
+import { candyPlanSlugForCodes } from '../plans/candy-vitrine';
 
 /** De onde veio a venda: webhook ao vivo (com log) ou reprocesso de venda guardada sem conta (B-01). */
 interface SaleContext {
@@ -126,6 +127,17 @@ export class CaktoWebhookService {
       });
       if (extra?.kind === 'plan') plan = extra.plan;
       else if (extra?.kind === 'package') extraPackage = extra.creditPackage;
+    }
+
+    // candy-vitrine: oferta nova (1º mês, trimestral, 28 dias) mapeada só na env CANDY_PLAN_CODES.
+    if (!plan && !extraPackage) {
+      const candySlug = candyPlanSlugForCodes(offerCandidates);
+      if (candySlug) {
+        plan = await this.prisma.plan.findUnique({
+          where: { slug: candySlug },
+          select: { id: true, slug: true, name: true },
+        });
+      }
     }
 
     const kind = this.classifyEvent(payload, data);
