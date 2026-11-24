@@ -59,6 +59,8 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { ContentSafetyModule } from './content-safety/content-safety.module';
 import { ReportsModule } from './reports/reports.module';
 import { InflightRunsModule } from './shutdown/inflight-runs.module';
+// candy-series: séries com cadeado nos Reels (SCENE_SERIES_ENABLED, padrão desligado)
+import { SceneSeriesModule } from './scene-series/scene-series.module';
 import { GracefulShutdownService } from './shutdown/graceful-shutdown.service';
 
 
@@ -151,6 +153,7 @@ import { GracefulShutdownService } from './shutdown/graceful-shutdown.service';
     AnalyticsModule,
     DiscoveryModule,
     InflightRunsModule,
+    SceneSeriesModule,
   ],
   controllers: [AppController],
   providers: [
