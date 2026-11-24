@@ -20,6 +20,7 @@ import {
   computeAnnualFirstMonthBonusCredits,
 } from './annual-bonus';
 import { isPrepaidPlanSlug, prepaidPeriodMonths } from '../plans/prepaid-plan';
+import { isRefundDebtCarryoverEnabled, recordRefundDebt, settleRefundDebt } from './refund-debt';
 
 const ULTRA_BASIC_WELCOME_FREE_GENERATIONS = 2;
 
@@ -335,6 +336,7 @@ export class PaymentsService {
     let created = false;
     let skipped = false;
     let annualBonusCredits = 0;
+    let refundDebtSettled = 0;
 
     await this.prisma.$transaction(async (tx) => {
       // Idempotência dentro da transaction (evita crédito duplicado em retries do webhook)
@@ -509,6 +511,18 @@ export class PaymentsService {
         },
       });
 
+      // TKT-363 (env REFUND_DEBT_CARRYOVER, padrão desligado): créditos usados antes de
+      // um estorno são descontados desta concessão paga. Mesma transaction do pagamento,
+      // então o retry do webhook (venda já gravada) nunca desconta 2x.
+      if (isRefundDebtCarryoverEnabled()) {
+        refundDebtSettled = await settleRefundDebt(tx, {
+          userId,
+          paymentId: payment.id,
+          grantedCredits: plan.creditsPerMonth,
+          bucket: 'plan',
+        });
+      }
+
       // Bônus do anual no 1º mês (atrás da env ANNUAL_FIRST_MONTH_BONUS_PERCENT, padrão
       // desligado). Só na ATIVAÇÃO da assinatura (`created`): renovação e cron mensal
       // não passam aqui. Entra na mesma transaction do pagamento, então o retry do
@@ -542,6 +556,11 @@ export class PaymentsService {
     if (annualBonusCredits > 0) {
       this.logger.log(
         `${provider} bônus do anual (1º mês) concedido — user ${userId}, plano ${plan.slug}, +${annualBonusCredits} créditos`,
+      );
+    }
+    if (refundDebtSettled > 0) {
+      this.logger.warn(
+        `${provider} venda ${saleCode}: ${refundDebtSettled} créditos descontados por uso antes de estorno (TKT-363) — user ${userId}`,
       );
     }
 
@@ -737,7 +756,10 @@ export class PaymentsService {
     creditsRevoked?: number;
     creditsShortfall?: number;
     earningsCanceled?: number;
+    /** Créditos que viraram dívida (só com REFUND_DEBT_CARRYOVER ligada). */
+    debtRecorded?: number;
   }> {
+    const carryover = isRefundDebtCarryoverEnabled();
     return this.prisma.$transaction(async (tx) => {
       await this.lockExternalPayment(tx, externalPaymentId);
       const payment = await tx.payment.findFirst({
@@ -793,6 +815,37 @@ export class PaymentsService {
         }
       }
 
+      // TKT-363: o que o clawback não recuperou vira dívida no extrato (sem saldo
+      // negativo, sem bloquear a conta), quitada na próxima concessão paga.
+      let debtRecorded = 0;
+      if (carryover && payment.type === PaymentType.CREDIT_PURCHASE && creditsShortfall > 0) {
+        debtRecorded = await recordRefundDebt(tx, {
+          userId: payment.userId,
+          paymentId: payment.id,
+          externalPaymentId,
+          debtCredits: creditsShortfall,
+          reason,
+          bucket: 'bonus',
+          granted: creditsRevoked + creditsShortfall,
+          revoked: creditsRevoked,
+        });
+      } else if (carryover && payment.type === PaymentType.SUBSCRIPTION) {
+        const usage = await this.subscriptionRefundUsage(tx, payment);
+        if (usage) {
+          creditsShortfall = usage.used;
+          debtRecorded = await recordRefundDebt(tx, {
+            userId: payment.userId,
+            paymentId: payment.id,
+            externalPaymentId,
+            debtCredits: usage.used,
+            reason,
+            bucket: 'plan',
+            granted: usage.granted,
+            revoked: usage.remaining,
+          });
+        }
+      }
+
       await tx.payment.update({
         where: { id: payment.id },
         data: { status: PaymentStatus.REFUNDED },
@@ -809,7 +862,7 @@ export class PaymentsService {
         );
       }
       this.logger.warn(
-        `Venda ${externalPaymentId} (${payment.type}) reembolsada (${reason}): créditos retirados ${creditsRevoked}, já consumidos ${creditsShortfall}, comissões canceladas ${canceled.count}`,
+        `Venda ${externalPaymentId} (${payment.type}) reembolsada (${reason}): créditos retirados ${creditsRevoked}, já consumidos ${creditsShortfall}, comissões canceladas ${canceled.count}${carryover ? `, dívida registrada ${debtRecorded}` : ''}`,
       );
       return {
         found: true,
@@ -817,8 +870,46 @@ export class PaymentsService {
         creditsRevoked,
         creditsShortfall,
         earningsCanceled: canceled.count,
+        ...(carryover ? { debtRecorded } : {}),
       };
     });
+  }
+
+  /**
+   * Créditos do plano já usados de um pagamento de assinatura estornado (TKT-363).
+   * Só conta quando o pagamento é a concessão do ciclo ATUAL (última recarga do plano)
+   * e a assinatura dele ainda está ativa (quem chama revoga e zera o que sobra). Ciclo
+   * antigo, recarga do anual ou assinatura já trocada: o uso não é mensurável pelo
+   * saldo de hoje, então não vira dívida (nunca cobrar a mais).
+   */
+  private async subscriptionRefundUsage(
+    tx: Prisma.TransactionClient,
+    payment: { id: string; userId: string; subscriptionId: string | null },
+  ): Promise<{ granted: number; remaining: number; used: number } | null> {
+    if (!payment.subscriptionId) return null;
+    const subscription = await tx.subscription.findUnique({
+      where: { id: payment.subscriptionId },
+      select: { status: true },
+    });
+    if (!subscription || !['ACTIVE', 'PAST_DUE'].includes(subscription.status)) return null;
+    const grant = await tx.creditTransaction.findFirst({
+      where: { paymentId: payment.id, type: 'SUBSCRIPTION_RENEWAL', amount: { gt: 0 } },
+      select: { id: true, amount: true },
+    });
+    if (!grant) return null;
+    const latestGrant = await tx.creditTransaction.findFirst({
+      where: { userId: payment.userId, type: 'SUBSCRIPTION_RENEWAL', amount: { gt: 0 } },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+    if (latestGrant?.id !== grant.id) return null;
+    const balance = await tx.creditBalance.findUnique({
+      where: { userId: payment.userId },
+      select: { planCreditsRemaining: true },
+    });
+    const remaining = Math.max(0, balance?.planCreditsRemaining ?? 0);
+    const used = Math.max(0, grant.amount - remaining);
+    return used > 0 ? { granted: grant.amount, remaining, used } : null;
   }
 
   /**
@@ -894,6 +985,22 @@ export class PaymentsService {
           paymentId: payment.id,
         },
       });
+
+      // TKT-363 (env REFUND_DEBT_CARRYOVER, padrão desligado): desconta desta compra
+      // paga os créditos usados antes de um estorno. Idempotente pela venda (acima).
+      const refundDebtSettled = isRefundDebtCarryoverEnabled()
+        ? await settleRefundDebt(tx, {
+            userId,
+            paymentId: payment.id,
+            grantedCredits: creditPackage.credits,
+            bucket: 'bonus',
+          })
+        : 0;
+      if (refundDebtSettled > 0) {
+        this.logger.warn(
+          `Venda ${externalPaymentId}: ${refundDebtSettled} créditos descontados por uso antes de estorno (TKT-363) — user ${userId}`,
+        );
+      }
 
       // Registrar comissão do afiliado se o usuário foi indicado
       await this.recordAffiliateEarning(tx, userId, payment, amountCents, referredByCode);
